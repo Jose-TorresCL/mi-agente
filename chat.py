@@ -19,7 +19,8 @@ from pathlib import Path
 from rich.markdown import Markdown
 
 from app.router import route_query
-from app.tools import list_project_files, read_project_file
+from app.tools import list_project_files, read_project_file, extract_file_path
+
 from app.chat_core import (
     CHROMA_DIR,
     MEMORY_FILE,
@@ -74,8 +75,11 @@ def main():
             continue
 
         if route == "tool_read_file":
-            console.print("Escribe la ruta del archivo:")
-            file_path = console.input("> ").strip()
+            file_path = extract_file_path(user_input)
+            if not file_path:
+                console.print("Escribe la ruta del archivo")
+                file_path = console.input("> ").strip()
+
             content = read_project_file(file_path)
             console.print(content)
             continue
