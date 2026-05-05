@@ -27,6 +27,7 @@ from app.chat_core import (
     build_memory,
     build_retriever,
     build_chain,
+    build_structured_memory_context,
 )
 from app.chat_ui import console, print_debug_retrieval, print_sources
 
@@ -70,9 +71,10 @@ def main():
         debug_docs = retriever.invoke(user_input)
         print_debug_retrieval(user_input, debug_docs)
 
-        chain = build_chain(retriever, memory)
+        memory_context = build_structured_memory_context()
+        chain = build_chain(retriever, memory, memory_context)
         result = chain.invoke({"question": user_input})
-
+        
         answer = result["answer"]
         docs = result.get("source_documents", [])
 
