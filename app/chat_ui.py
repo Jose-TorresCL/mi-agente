@@ -1,0 +1,51 @@
+from pathlib import Path
+
+from rich.console import Console
+
+console = Console()
+DEBUG_RETRIEVAL = True
+
+
+def print_debug_retrieval(question: str, docs):
+    if not DEBUG_RETRIEVAL:
+        return
+
+    console.print("[blue]DEBUG RETRIEVAL:[/blue]")
+    console.print(f"[blue]Pregunta:[/blue] {question}")
+
+    if not docs:
+        console.print("[blue]No se recuperaron documentos.[/blue]\n")
+        return
+
+    for i, d in enumerate(docs, 1):
+        src = d.metadata.get("source", "desconocido")
+        name = Path(src).name if src != "desconocido" else src
+        doc_type = d.metadata.get("doc_type", "sin_tipo")
+        section = d.metadata.get("section", "sin_seccion")
+        preview = d.page_content[:220].replace("\n", " ")
+
+        console.print(f"[blue]{i}. {name} | {doc_type} | {section}[/blue]")
+        console.print(f"[dim]{preview}...[/dim]")
+
+    console.print()
+
+
+def print_sources(docs):
+    if not docs:
+        return
+
+    console.print("[dim]Basado en:[/dim]")
+    seen = set()
+    idx = 1
+
+    for d in docs:
+        src = d.metadata.get("source", "desconocido")
+        name = Path(src).name if src != "desconocido" else src
+        doc_type = d.metadata.get("doc_type", "sin_tipo")
+        section = d.metadata.get("section", "sin_seccion")
+
+        key = (src, doc_type, section)
+        if key not in seen:
+            console.print(f"  {idx}. {name} | {doc_type} | {section}")
+            seen.add(key)
+            idx += 1
