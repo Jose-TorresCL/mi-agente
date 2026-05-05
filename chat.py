@@ -18,8 +18,9 @@ from pathlib import Path
 
 from rich.markdown import Markdown
 
+from app.router import route_query
+from app.tools import list_project_files, read_project_file
 from app.chat_core import (
-    STORAGE_DIR,
     CHROMA_DIR,
     MEMORY_FILE,
     ensure_storage,
@@ -65,6 +66,20 @@ def main():
         if not user_input:
             continue
 
+        route = route_query(user_input)
+
+        if route == "tool_list_files":
+            files = list_project_files()
+            console.print("\n".join(files[:50]))
+            continue
+
+        if route == "tool_read_file":
+            console.print("Escribe la ruta del archivo:")
+            file_path = console.input("> ").strip()
+            content = read_project_file(file_path)
+            console.print(content)
+            continue
+
         console.print("[magenta]Pensando...[/magenta]")
 
         retriever = build_retriever(vectordb, user_input)
@@ -74,7 +89,7 @@ def main():
         memory_context = build_structured_memory_context()
         chain = build_chain(retriever, memory, memory_context)
         result = chain.invoke({"question": user_input})
-        
+
         answer = result["answer"]
         docs = result.get("source_documents", [])
 
