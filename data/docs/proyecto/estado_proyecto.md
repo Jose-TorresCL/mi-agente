@@ -2,63 +2,83 @@
 
 ## Objetivo general
 
-Construir un asistente local con Ollama, LangChain y Chroma para responder preguntas usando recuperación de contexto desde documentos del proyecto.
+Construir un asistente local con Ollama, LangChain y Chroma para responder preguntas usando recuperación de contexto desde documentos del proyecto, evolucionando hacia agente útil con memoria estructurada y tools básicas.
 
-## Objetivo de esta etapa
+## Fase actual: Fase 2 - Memoria estructurada y herramientas básicas
 
-Dejar firme la base de conocimiento antes de agregar tools, memoria híbrida o más complejidad al sistema.
+**Objetivo de fase 2**:
 
-## Estado actual
+- Implementar memoria por capas (conversación, perfil, hechos, tareas, estado de trabajo).
+- Conectar memoria al flujo del chat.
+- Agregar tools básicas de lectura y escritura segura.
+- Crear router simple para decidir entre RAG, memoria o tool.
 
-- La indexación ya funciona.
-- `chat.py` ya arranca y permite hacer preguntas al asistente.
-- El asistente ya recupera contexto desde Chroma.
-- La base documental fue mejorada para que las respuestas dependan menos de inferencias generales y más de evidencia explícita.
-- El RAG todavía necesita mejorar precisión y grounding.
-- La memoria conversacional existe, pero no debe reemplazar una buena recuperación documental.
+## Estado actual (05/05/2026)
+
+**Qué ya está firme**:
+
+- **Fase 1 completada**: indexación funcional, RAG básico estable, modularización inicial (`chat.py` e `indexacion.py` ya separados en módulos).
+- **Memoria estructurada base implementada**:
+  - `storage/memory.json`: conversación reciente.
+  - `storage/profile.json`: preferencias de trabajo.
+  - `storage/project_facts.json`: hechos estables del proyecto.
+  - `storage/tasks.json`: pendientes y acciones.
+  - `storage/work_state.json`: estado actual de trabajo.
+- **Módulos creados**: `app/memory_store.py`, `app/session_state.py`, `app/prompts.py`.
+- **Base documental actualizada** para fase 2.
+
+**Próximos pasos inmediatos**:
+
+1. Conectar memoria estructurada al flujo de `chat_core.py`.
+2. Crear 4 tools básicas (leer archivo, listar archivos, guardar hecho, crear tarea).
+3. Implementar router simple (RAG vs memoria vs tool).
+4. Probar casos reales de uso diario.
 
 ## Qué ya está firme
 
-- La diferencia entre arquitectura y base documental ya está definida.
-- El asistente ya distingue mejor documentos fuente, arquitectura y conceptos de memoria.
-- La indexación ya usa chunks más adecuados para Markdown.
-- El sistema ya responde mejor preguntas literales sobre el proyecto.
+- RAG básico funcional con Chroma y documentos fuente actualizados.
+- Diferencia clara entre arquitectura (componentes técnicos) y base documental (conocimiento del proyecto).
+- Modularización inicial completada y versionada en GitHub.
+- Memoria estructurada con acceso Python validado.
 
-## Problemas detectados
+## Problemas detectados (ya resueltos o en proceso)
 
-- Algunas respuestas siguen siendo demasiado generales.
-- En ciertas preguntas el sistema mezcla arquitectura, documentos fuente y conceptos de memoria.
-- Hay preguntas donde la respuesta correcta sería abstenerse, pero el sistema antes tendía a completar con conocimiento general.
-- En preguntas cruzadas, el asistente a veces se abstiene aunque sí hay evidencia repartida entre varias fuentes.
-- La base documental todavía es breve para responder preguntas conceptuales más finas.
+- Modularización de archivos grandes: resuelto.
+- Falta de memoria persistente más allá de historial conversacional: memoria estructurada implementada.
+- Documentación desactualizada: documentos base actualizados.
 
-## Próximos pasos
+## Problemas pendientes
 
-1. Mejorar documentos fuente.
-2. Mejorar chunking.
-3. Mejorar recuperación.
-4. Ajustar el criterio para preguntas cruzadas.
-5. Más adelante incorporar memoria híbrida.
+- RAG todavía puede mejorar grounding en preguntas cruzadas.
+- No hay integración real entre RAG y memoria estructurada.
+- Falta router para decidir qué usar según la consulta.
 
-## Criterio para avanzar de fase
+## Criterio para avanzar de fase 2
 
-Se puede avanzar a la siguiente fase cuando el asistente:
+Se puede avanzar a fase 3 (agente con planificación y proactividad) cuando:
 
-- responda bien preguntas literales sobre el proyecto,
-- distinga conceptos cercanos sin mezclar categorías,
-- una evidencia de más de una fuente cuando la relación sea clara,
-- y diga claramente cuando no tiene suficiente evidencia en el contexto recuperado.
+- El agente use simultáneamente RAG y memoria estructurada.
+- Las 4 tools básicas funcionen de forma segura y útil.
+- El router simple decida correctamente entre RAG, memoria o tool.
+- El agente mantenga estado de trabajo entre sesiones.
 
 ## Criterio de respuesta
 
-- Si existe una respuesta breve y directa respaldada por el contexto, el asistente debe responderla.
-- Si la pregunta requiere combinar fragmentos de más de una fuente, puede hacerlo solo cuando la relación entre ellos sea clara y esté apoyada por los documentos recuperados.
-- Si el contexto trae piezas compatibles pero fragmentadas, el asistente debe sintetizarlas de forma breve, fiel y directa.
-- Si la pregunta pide una estructura específica, debe respetarla exactamente.
-- Si no hay evidencia suficiente, debe abstenerse sin completar con conocimiento general.
+- **RAG**: usar solo cuando la pregunta sea documental (“qué dice X”, “según los documentos”).
+- **Memoria**: usar para hechos persistentes, tareas, preferencias, estado actual.
+- **Tools**: usar para acciones concretas (“guarda esto”, “agrega tarea”).
+- Si no hay evidencia suficiente en ninguna capa, abstenerse claramente.
 
-## Relación entre RAG y memoria híbrida
+## Relación entre RAG, memoria y tools
 
-En esta etapa, el foco principal está en mejorar el RAG.
-La memoria híbrida es una evolución posterior y no debe reemplazar la recuperación documental.
-Primero se consolidan documentos fuente, chunking y recuperación; después se incorpora memoria persistente.
+- **RAG**: conocimiento estable del proyecto (arquitectura, objetivos, fases).
+- **Memoria estructurada**: estado dinámico (tareas, hechos nuevos, preferencias).
+- **Tools**: acciones concretas sobre el proyecto.
+- **Router**: decide qué capa usar según intención de la consulta.
+
+## Próximos commits esperados
+
+1. "2B: memoria estructurada base implementada y probada"
+2. "2C: tools básicas y conexión memoria al chat"
+3. "2D: router simple funcional"
+4. "2E: estado de trabajo integrado"

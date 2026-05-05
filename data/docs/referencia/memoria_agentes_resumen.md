@@ -1,39 +1,91 @@
-# Memoria en agentes
+# Memoria en mi-agente (Fase 2 - 05/05/2026)
 
 ## Idea general
 
-La memoria mejora a un agente porque le permite usar contexto previo y hechos persistentes de forma más útil que una conversación aislada.
+La memoria permite al asistente usar contexto previo y hechos persistentes de forma más útil que solo historial conversacional.
 
-## Tipos de memoria
+## Tipos de memoria implementados
 
-- **Memoria de corto plazo**: conversación reciente o contexto inmediato de la sesión actual.
-- **Memoria de largo plazo**: hechos estables, preferencias o conocimiento persistente que conviene conservar entre sesiones.
+| Tipo | Archivo | Contenido | Uso |
+|------|---------|-----------|-----|
+| **Corto plazo** | `storage/memory.json` | Conversación reciente | Contexto inmediato de sesión |
+| **Perfil** | `storage/profile.json` | Preferencias usuario | Cómo prefiere trabajar Lautaro |
+| **Semántica** | `storage/project_facts.json` | Hechos estables proyecto | Estado de fases, prioridades |
+| **Episódica/Continuidad** | `storage/work_state.json` | Estado actual trabajo | En qué iba, qué sigue |
+| **Tareas** | `storage/tasks.json` | Pendientes y acciones | Qué hacer, qué está hecho |
 
-## Diferencia práctica entre RAG y memoria
+## Módulos de memoria
 
-- **RAG**: recupera información desde documentos externos para responder una pregunta con contexto relevante.
-- **Memoria**: conserva información útil del historial o de hechos persistentes para reutilizarla después.
+- **`app/memory_store.py`**: lectura/escritura segura de JSON.
+- **`app/session_state.py`**: vista resumida de estado actual.
+- **`app/prompts.py`**: instrucciones que guían uso de memoria.
 
-## Aplicación al proyecto
+## Diferencia práctica: RAG vs Memoria
 
-En este proyecto, primero se debe mejorar el RAG.
-Eso implica mejorar documentos fuente, chunking y recuperación.
-Después conviene agregar memoria híbrida con hechos persistentes.
-La memoria no debe mezclarse sin criterio con todos los documentos del proyecto.
+| RAG (Chroma) | Memoria estructurada |
+|--------------|---------------------|
 
-## Qué sería memoria híbrida aquí
+| Conocimiento estable del proyecto (`estado_proyecto.md`, `arquitectura_actual.md`) | Estado dinámico del trabajo (`tasks.json`, `work_state.json`) |
+| “Qué es el proyecto” | “En qué estamos hoy” |
+| Recuperación semántica | Acceso directo por clave |
+| Preguntas documentales | Consultas de estado/tareas |
 
-En este proyecto, memoria híbrida significa combinar:
+## Estado actual de memoria (Fase 2)
 
-- memoria de conversación reciente,
-- hechos persistentes del usuario o del proyecto,
-- y recuperación selectiva, en vez de reenviar siempre todo el historial.
+**Implementado**:
+
+- 5 JSON con estructura base.
+- `memory_store.py` funcional (leer, escribir, actualizar).
+- Datos iniciales cargados (perfil, hechos, tareas, estado).
+
+**Próximo**:
+
+- Conectar memoria al chat.
+- Router para decidir RAG vs memoria.
+- Tools para actualizar memoria (guardar hecho, agregar tarea).
+
+## Qué es memoria híbrida en mi-agente
+
+Combinación práctica:
+
+1. **RAG**: consulta documentos estables.
+2. **Memoria corta**: contexto reciente.
+3. **Memoria persistente**: hechos, tareas, estado.
+4. **Router**: decide qué usar según consulta.
+
+**Ejemplo**:Pregunta: "¿En qué fase estamos?"
+→ Router: memoria semántica → project_facts.json → "fase_2"
+
+Pregunta: "¿Qué dice arquitectura_actual.md?"
+→ Router: RAG → Chroma → documentos fuente
 
 ## Respuesta correcta vs respuesta grounded
 
-- Una **respuesta correcta** es una respuesta que coincide con el contenido real del proyecto.
-- Una **respuesta grounded** es una respuesta correcta que además está apoyada explícitamente en evidencia del contexto recuperado.
+| Correcta | Grounded |
+|----------|----------|
 
-## Comportamiento ideal cuando falta evidencia
+| Coincide con realidad del proyecto | + Evidencia explícita (fuente/cita) |
 
-Si el contexto recuperado no alcanza para responder, el asistente debe decir claramente que no tiene suficiente evidencia en el contexto recuperado y no debe inventar ni completar con teoría general.
+| “Estamos en fase 2” | “project_facts.json indica fase_2” |
+
+## Comportamiento ideal por capa
+
+**RAG**:
+
+- Responder solo con evidencia documental clara.
+- Abstenerse si falta contexto.
+
+**Memoria**:
+
+- Usar datos estructurados para hechos, estado, tareas.
+- Actualizar vía tools cuando corresponda.
+
+**Router**:"guarda esto" → tool → memory_store.update()
+"qué sigue" → memoria → work_state.json
+"qué dice X" → RAG → Chroma
+
+## Próximos commits de memoria
+
+1. "2B: memoria estructurada base + conexión al chat"
+2. "2C: tools para memoria (guardar hecho, agregar tarea)"
+3. "2D: router RAG/memoria/tool"

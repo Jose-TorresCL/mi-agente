@@ -1,36 +1,64 @@
-# Arquitectura actual
-
-## Propósito
-
-Este archivo describe cómo está armado hoy el asistente local y qué rol cumple cada componente técnico.
-
-## Componentes principales
-
-- **Ollama**: ejecuta el modelo de lenguaje local.
-- **nomic-embed-text**: genera embeddings para indexación y búsqueda semántica.
-- **Chroma**: guarda la base vectorial persistida.
-- **LangChain**: orquesta el chat, la recuperación y la integración entre componentes.
-
 ## Archivos principales del sistema
 
-- **indexacion.py**: carga documentos, los divide en chunks y construye el índice vectorial.
-- **chat.py**: consulta el índice, envía contexto al modelo y muestra la respuesta al usuario.
-- **storage/chroma**: contiene la base vectorial persistida.
-- **storage/memory.json**: guarda la memoria conversacional actual.
+| Archivo | Rol |
+|---------|-----|
+
+| `indexacion.py` | Entrada para cargar documentos y construir Chroma |
+| `chat.py` | Punto de entrada principal (delegación a `app/`) |
+| `storage/chroma/` | Base vectorial RAG |
+| `storage/memory.json` | Memoria conversacional reciente |
+| `storage/profile.json` | Perfil y preferencias de usuario |
+| `storage/project_facts.json` | Hechos estables del proyecto |
+| `storage/tasks.json` | Tareas y pendientes |
+| `storage/work_state.json` | Estado actual de trabajo |
 
 ## Base documental actual
 
-La base documental actual del asistente, en esta etapa, está formada por estos documentos fuente en Markdown:
+Documentos fuente en Markdown que el agente consulta como conocimiento del proyecto:
 
-- `estado_proyecto.md`
-- `arquitectura_actual.md`
-- `memoria_agentes_resumen.md`
+- `estado_proyecto.md` (fases, objetivos, estado actual)
+- `arquitectura_actual.md` (componentes técnicos, flujo)
+- `memoria_agentes_resumen.md` (conceptos de memoria aplicada)
+
+## Flujo actual del sistema
+
+Usuario → chat.py → chat_ui.py → chat_core.py
+↓
+Router simple → RAG (Chroma) | Memoria (JSON) | Tool
+↓
+Ollama (llama3.2) → Respuesta
+
+text
 
 ## Diferencia entre arquitectura y base documental
 
-- La **arquitectura** describe componentes, scripts, almacenamiento y flujo técnico.
-- La **base documental** contiene los textos que el asistente consulta como conocimiento del proyecto.
+| Arquitectura | Base documental |
+|--------------|-----------------|
 
-## Objetivo de esta etapa
+| Componentes, scripts, módulos, flujo técnico | Textos que el agente consulta como conocimiento del proyecto |
+| `app/memory_store.py`, `storage/tasks.json` | `estado_proyecto.md`, objetivos de fase 2 |
+| Cómo funciona internamente | Qué sabe el agente sobre sí mismo |
 
-El objetivo técnico actual no es agregar más complejidad, sino dejar firme la base de conocimiento y mejorar la calidad del RAG antes de sumar tools o memoria híbrida.
+## Estado de fase 2
+
+**Implementado**:
+
+- Modularización inicial (`chat`, `indexacion`).
+- Memoria estructurada base (5 JSON + `memory_store.py`).
+- Paquete `app/` funcional.
+
+**Próximo**:
+
+- Conectar memoria al chat.
+- 4 tools básicas.
+- Router simple.
+
+## Objetivo de esta etapa (Fase 2)
+
+Construir agente útil con memoria estructurada, tools básicas y routing simple, manteniendo arquitectura pequeña y extensible.
+
+**No agregar todavía**:
+
+- Multiagente complejo.
+- Tools de alto riesgo (ejecución shell arbitraria).
+- Planner sofisticado.
