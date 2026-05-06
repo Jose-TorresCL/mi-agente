@@ -73,6 +73,25 @@ Ollama (llama3.2)
 Respuesta
 ```
 
+## Tools operativas — Fase 3A
+
+El asistente tiene 6 tools activas que ejecutan acciones concretas sobre el proyecto.
+Cada tool tiene su propio carril en el router y actúa sobre un archivo JSON de memoria.
+
+| Tool | Estado | Acción | Archivo afectado |
+|------|--------|--------|------------------|
+| `tool_list_files` | ✅ operativa | Lista todos los archivos del proyecto | solo lectura |
+| `tool_read_file` | ✅ operativa | Lee el contenido de un archivo específico | solo lectura |
+| `tool_save_fact` | ✅ operativa | Guarda un hecho estable del proyecto | `project_facts.json` |
+| `tool_create_task` | ✅ operativa | Crea una tarea nueva | `tasks.json` |
+| `tool_complete_task` | ✅ operativa | Marca una tarea como completada | `tasks.json` |
+| `tool_update_work_state` | ✅ operativa | Actualiza el foco, fase o siguiente paso | `work_state.json` |
+
+Además de las 6 tools, el router tiene dos carriles de consulta:
+
+- **`memory`**: consulta la memoria estructurada (perfil, tareas, hechos, estado de trabajo).
+- **`rag`**: recuperación semántica en Chroma para preguntas documentales o conceptuales.
+
 ## Router híbrido — carriles disponibles
 
 | Carril | Qué hace | Cómo se activa |
