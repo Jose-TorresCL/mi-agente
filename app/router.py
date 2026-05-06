@@ -127,12 +127,10 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "complete la tarea",
     "tarea completada",
     "completar tarea",
-    # patrones con ID intercalado: "marca T-001 como completada"
     "como completada",
     "como completado",
 ]
 
-# Regex complementario para detectar patrones con ID: "marca T-001 ..."
 _COMPLETE_TASK_PATTERN = re.compile(
     r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d{3}",
     re.IGNORECASE,
@@ -215,40 +213,29 @@ def route_query(question: str) -> str:
     - rag
     """
     q = question.lower().strip()
+    lane = "rag"  # fallback por defecto
 
-    # Tools de escritura (prioridad alta: intención explícita)
     if any(keyword in q for keyword in TOOL_SAVE_FACT_KEYWORDS):
-        return "tool_save_fact"
-
-    if any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
-        return "tool_create_task"
-
-    # Nuevos carriles Fase 2
-    # Doble detección: keywords estáticas + regex con ID intercalado
-    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
+        lane = "tool_save_fact"
+    elif any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
+        lane = "tool_create_task"
+    elif any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):
-        return "tool_complete_task"
+        lane = "tool_complete_task"
+    elif any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
+        lane = "tool_update_work_state"
+    elif extract_file_path(question) is not None:
+        lane = "tool_read_file"
+    elif any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
+        lane = "tool_list_files"
+    elif any(keyword in q for keyword in TOOL_READ_KEYWORDS):
+        lane = "tool_read_file"
+    elif classify_memory_query(question) is not None:
+        lane = "memory"
+    elif any(keyword in q for keyword in RAG_HINTS):
+        lane = "rag"
 
-    if any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
-        return "tool_update_work_state"
+    # ── Item 1: Logging del router ────────────────────────────────
+    print(f"[router] '{question[:50]}' → {lane}")
 
-    # Tools de lectura de archivos
-    if extract_file_path(question) is not None:
-        return "tool_read_file"
-
-    if any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
-        return "tool_list_files"
-
-    if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
-        return "tool_read_file"
-
-    # Memoria estructurada
-    memory_kind = classify_memory_query(question)
-    if memory_kind is not None:
-        return "memory"
-
-    # RAG (fallback documental)
-    if any(keyword in q for keyword in RAG_HINTS):
-        return "rag"
-
-    return "rag"
+    return lane

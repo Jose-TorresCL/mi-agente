@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -27,7 +28,11 @@ def _read_json(path: Path, default):
 
 
 def _write_json(path: Path, data):
+    """Escribe JSON con backup automático del archivo anterior (item 2)."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # ── Item 2: Backup automático ─────────────────────────────
+    if path.exists():
+        shutil.copy2(path, path.with_suffix(".bak"))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -113,11 +118,17 @@ def save_tasks(data):
 
 
 def add_task(title: str, priority: str = "medium", notes: str = "") -> str:
-    """Agrega una nueva tarea y devuelve su ID."""
+    """Agrega una nueva tarea y devuelve su ID.
+
+    Item 4: ID único basado en timestamp para evitar duplicados
+    al borrar tareas.
+    """
     data = load_tasks()
     tasks = data.get("tasks", [])
 
-    new_id = f"T-{len(tasks) + 1:03d}"
+    # ── Item 4: ID único por timestamp ───────────────────────────
+    new_id = f"T-{datetime.now().strftime('%m%d%H%M%S')}"
+
     tasks.append(
         {
             "id": new_id,
