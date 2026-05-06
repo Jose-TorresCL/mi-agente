@@ -41,7 +41,7 @@ Reglas principales:
 4. No inventes nada. Si la información no está explícita en la memoria estructurada ni en el contexto recuperado, responde exactamente:
 "No tengo suficiente evidencia en el contexto recuperado."
 5. Si la respuesta está explícita, respóndela directamente.
-6. Si la respuesta requiere unir 2 o 3 fragmentos compatibles, sintetízala de forma breve y fiel.
+6. Si la respuesta requiere unir 2 o 3 fragmentos compatibles, sintétizala de forma breve y fiel.
 7. No agregues introducciones, rodeos ni explicaciones extra.
 
 Reglas de prioridad:
@@ -98,7 +98,8 @@ def _format_project_facts_answer(facts: dict) -> str:
 
 def _format_tasks_answer(tasks_data: dict) -> str:
     tasks = tasks_data.get("tasks", [])
-    pending = [t for t in tasks if t.get("status") != "done"]
+    # ── Item 5: filtra completadas Y done ───────────────────────────
+    pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
 
     if not pending:
         return "No hay tareas pendientes registradas."
@@ -177,7 +178,7 @@ def build_structured_memory_context() -> str:
     tasks_data = load_tasks()
 
     tasks = tasks_data.get("tasks", [])
-    pending_tasks = [t for t in tasks if t.get("status") != "done"][:3]
+    pending_tasks = [t for t in tasks if t.get("status") not in ("done", "completed")][:3]
 
     lines = []
 
@@ -329,7 +330,7 @@ def handle_query(
     """
     route = route_query(user_input)
 
-    # ── Tools de escritura seguras ──────────────────────────────────────
+    # ── Tools de escritura seguras ──────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que",
@@ -376,7 +377,7 @@ def handle_query(
         answer = tool_create_task(title=user_input, priority="medium")
         return answer, []
 
-    # ── Nuevos carriles — Fase 2 ────────────────────────────────────────
+    # ── Nuevos carriles — Fase 2 ──────────────────────────────────
     if route == "tool_complete_task":
         task_id = extract_task_id(user_input)
         if not task_id:
@@ -405,7 +406,7 @@ def handle_query(
         answer = tool_update_work_state(field, value)
         return answer, []
 
-    # ── Tools de lectura de archivos ────────────────────────────────────
+    # ── Tools de lectura de archivos ──────────────────────────────
     if route == "tool_list_files":
         files = list_project_files()
         if not files:
@@ -420,13 +421,13 @@ def handle_query(
         content = read_project_file(path)
         return content, []
 
-    # ── Memoria estructurada ─────────────────────────────────────────────
+    # ── Memoria estructurada ───────────────────────────────────
     if route == "memory":
         memory_answer = answer_from_memory(user_input)
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG (fallback documental) ────────────────────────────────────────
+    # ── RAG (fallback documental) ──────────────────────────────
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
     chain = build_chain(retriever, memory, memory_context)
