@@ -29,6 +29,18 @@ from app.tools import extract_file_path
 
 
 # ─────────────────────────────────────────────
+# Estadísticas de sesión — para !estado
+# ─────────────────────────────────────────────
+
+SESSION_STATS: dict[str, int] = {
+    "kw":    0,   # Capa 1: keywords
+    "emb":   0,   # Capa 2: embeddings
+    "llm":   0,   # Capa 3: LLM fallback
+    "total": 0,   # total de consultas en la sesión
+}
+
+
+# ─────────────────────────────────────────────
 # Configuración de embeddings (Capa 2)
 # ─────────────────────────────────────────────
 
@@ -220,7 +232,6 @@ def _route_by_embeddings(question: str) -> str | None:
                distancia 0.7 → similitud 0.65 (debajo del umbral, renuncia).
     """
     if not INTENT_DIR.exists():
-        # El índice aún no fue construido — salta silenciosamente a Capa 3
         return None
 
     try:
@@ -247,7 +258,7 @@ def _route_by_embeddings(question: str) -> str | None:
             return None
 
         doc, distance = results[0]
-        similarity = 1.0 - (distance / 2.0)  # normaliza distancia coseno a [0, 1]
+        similarity = 1.0 - (distance / 2.0)
         lane = doc.metadata.get("lane", "")
 
         print(f"[router:emb] similitud={similarity:.2f} lane_candidato={lane}")
@@ -255,7 +266,6 @@ def _route_by_embeddings(question: str) -> str | None:
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
 
-        # Similitud baja: renuncia y deja que Capa 3 decida
         print(f"[router:emb] similitud baja ({similarity:.2f} < {EMBED_THRESHOLD}) → pasa a LLM")
         return None
 
@@ -313,22 +323,29 @@ def route_query(question: str) -> str:
       1. keywords   → 0ms,   sin modelo.
       2. embeddings → ~50ms, nomic-embed-text + intent_index.
       3. LLM        → ~3-8s, solo si las dos anteriores fallan.
+
+    Actualiza SESSION_STATS con el conteo por capa para !estado.
     """
+    SESSION_STATS["total"] += 1
+
     # Capa 1: keywords — instantáneo
     kw_lane = _route_by_keywords(question)
     has_rag_hint = any(hint in question.lower() for hint in RAG_HINTS)
 
     if kw_lane != "rag" or has_rag_hint:
+        SESSION_STATS["kw"] += 1
         print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
         return kw_lane
 
     # Capa 2: embeddings — semántico rápido
     emb_lane = _route_by_embeddings(question)
     if emb_lane is not None:
+        SESSION_STATS["emb"] += 1
         print(f"[router:emb] '{question[:50]}' → {emb_lane}")
         return emb_lane
 
     # Capa 3: LLM fallback — solo cuando todo lo anterior falla
+    SESSION_STATS["llm"] += 1
     llm_lane = _route_by_llm(question)
     print(f"[router:llm] '{question[:50]}' → {llm_lane}")
     return llm_lane
