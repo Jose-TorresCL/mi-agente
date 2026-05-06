@@ -165,25 +165,23 @@ def save_work_state(data):
     _write_json(WORK_STATE_FILE, data)
 
 
-def update_work_state(
-    current_focus: str | None = None,
-    last_completed_step: str | None = None,
-    next_step: str | None = None,
-    blocker: str | None = None,
-) -> None:
-    """Actualiza campos específicos del work_state sin tocar el resto."""
+def update_work_state(field: str, value: str) -> None:
+    """Actualiza un campo específico de work_state.json de forma dinámica.
+
+    Uso: update_work_state("current_focus", "fase 3 — router semántico")
+
+    Para current_blockers acepta un string que se añade a la lista
+    si no está ya presente.
+    """
     data = load_work_state()
 
-    if current_focus is not None:
-        data["current_focus"] = current_focus.strip()
-    if last_completed_step is not None:
-        data["last_completed_step"] = last_completed_step.strip()
-    if next_step is not None:
-        data["next_step"] = next_step.strip()
-    if blocker is not None:
+    if field == "current_blockers":
         blockers = data.get("current_blockers", [])
-        if blocker.strip() and blocker.strip() not in blockers:
-            blockers.append(blocker.strip())
+        if value.strip() and value.strip() not in blockers:
+            blockers.append(value.strip())
         data["current_blockers"] = blockers
+    else:
+        data[field] = value.strip()
 
+    data["last_updated"] = datetime.now().strftime("%Y-%m-%d")
     _write_json(WORK_STATE_FILE, data)
