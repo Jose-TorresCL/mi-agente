@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from app.memory_store import (
     load_profile,
@@ -20,15 +21,17 @@ from app.tools import (
 
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_classic.chains import ConversationalRetrievalChain
-from langchain_classic.memory import ConversationBufferWindowMemory
 from langchain_community.chat_message_histories import FileChatMessageHistory
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 STORAGE_DIR = Path("storage")
 CHROMA_DIR = str(STORAGE_DIR / "chroma")
 MEMORY_FILE = STORAGE_DIR / "memory.json"
 MODEL_NAME = "llama3.2:latest"
+MAX_TURNS = 8   # equivale al k=8 anterior
 
 
 QA_SYSTEM_PROMPT = """
@@ -57,6 +60,9 @@ Formato:
 
 Memoria estructurada:
 {memory_context}
+
+Historial de conversación:
+{chat_history}
 
 Contexto recuperado:
 {context}
@@ -98,7 +104,6 @@ def _format_project_facts_answer(facts: dict) -> str:
 
 def _format_tasks_answer(tasks_data: dict) -> str:
     tasks = tasks_data.get("tasks", [])
-    # ── Item 5: filtra completadas Y done ───────────────────────────
     pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
 
     if not pending:
@@ -282,19 +287,51 @@ def build_retriever(vectordb, question: str):
     return retriever
 
 
-def build_memory():
-    chat_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
-    memory = ConversationBufferWindowMemory(
-        k=8,
-        memory_key="chat_history",
-        chat_memory=chat_history,
-        return_messages=True,
-        output_key="answer",
-    )
-    return memory
+# ─────────────────────────────────────────────
+# Historial de conversación — reemplaza
+# ConversationBufferWindowMemory (deprecada)
+# ─────────────────────────────────────────────
+
+def build_memory() -> list:
+    """Carga el historial desde disco y lo devuelve como lista de mensajes.
+
+    Retorna una lista de HumanMessage / AIMessage (últimos MAX_TURNS turnos).
+    FileChatMessageHistory sigue leyendo/escribiendo storage/memory.json,
+    pero ya no dependemos de ConversationBufferWindowMemory.
+    """
+    file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
+    messages = file_history.messages
+    # Mantener solo los últimos MAX_TURNS turnos (cada turno = 2 mensajes)
+    return list(messages[-(MAX_TURNS * 2):])
 
 
-def build_chain(retriever, memory, memory_context: str):
+def _format_chat_history(messages: list) -> str:
+    """Convierte la lista de mensajes en texto plano para el prompt."""
+    if not messages:
+        return "(sin historial previo)"
+    lines = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            lines.append(f"Usuario: {msg.content}")
+        elif isinstance(msg, AIMessage):
+            lines.append(f"Lautaro: {msg.content}")
+    return "\n".join(lines)
+
+
+def _persist_turn(user_input: str, answer: str) -> None:
+    """Guarda el turno actual en storage/memory.json para sesiones futuras."""
+    file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
+    file_history.add_user_message(user_input)
+    file_history.add_ai_message(answer)
+
+
+def build_chain(retriever, memory_context: str):
+    """Construye la cadena RAG con LCEL.
+
+    Reemplaza ConversationalRetrievalChain (deprecada).
+    El historial de chat se pasa como texto al prompt — sin objetos LangChain
+    de memoria intermedia.
+    """
     llm = ChatOllama(
         model=MODEL_NAME,
         base_url="http://localhost:11434",
@@ -303,14 +340,7 @@ def build_chain(retriever, memory, memory_context: str):
 
     qa_prompt_with_memory = QA_PROMPT.partial(memory_context=memory_context)
 
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        return_source_documents=True,
-        output_key="answer",
-        combine_docs_chain_kwargs={"prompt": qa_prompt_with_memory},
-    )
+    chain = qa_prompt_with_memory | llm | StrOutputParser()
     return chain
 
 
@@ -320,8 +350,8 @@ def build_chain(retriever, memory, memory_context: str):
 
 def handle_query(
     user_input: str,
-    vectordb,
-    memory,
+    vectordb: Any,
+    chat_history: list,
 ) -> tuple[str, list]:
     """Orquesta el flujo completo de una consulta del usuario.
 
@@ -353,8 +383,6 @@ def handle_query(
         if not content:
             return "No pude guardar el hecho: no entendí el contenido.", []
 
-        from datetime import datetime
-        key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         answer = tool_save_fact(content)
         return answer, []
 
@@ -430,9 +458,27 @@ def handle_query(
     # ── RAG (fallback documental) ──────────────────────────────
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
-    chain = build_chain(retriever, memory, memory_context)
-    result = chain.invoke({"question": user_input})
 
-    answer = result.get("answer", "Sin respuesta.")
-    sources = result.get("source_documents", [])
-    return answer, sources
+    # Recuperar documentos manualmente para tener acceso a las fuentes
+    source_docs = retriever.invoke(user_input)
+    context_text = "\n\n".join(doc.page_content for doc in source_docs)
+    chat_history_text = _format_chat_history(chat_history)
+
+    chain = build_chain(retriever, memory_context)
+    answer = chain.invoke({
+        "question": user_input,
+        "context": context_text,
+        "chat_history": chat_history_text,
+    })
+
+    # Persistir el turno en disco
+    _persist_turn(user_input, answer)
+
+    # Actualizar la lista en memoria (para la sesión actual)
+    chat_history.append(HumanMessage(content=user_input))
+    chat_history.append(AIMessage(content=answer))
+    # Recortar si supera el límite
+    while len(chat_history) > MAX_TURNS * 2:
+        chat_history.pop(0)
+
+    return answer, source_docs
