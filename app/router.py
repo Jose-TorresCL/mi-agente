@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.tools import extract_file_path
 
 
@@ -124,10 +126,17 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "completé la tarea",
     "complete la tarea",
     "tarea completada",
-    "done T-",
-    "completar T-",
     "completar tarea",
+    # patrones con ID intercalado: "marca T-001 como completada"
+    "como completada",
+    "como completado",
 ]
+
+# Regex complementario para detectar patrones con ID: "marca T-001 ..."
+_COMPLETE_TASK_PATTERN = re.compile(
+    r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d{3}",
+    re.IGNORECASE,
+)
 
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
@@ -215,7 +224,9 @@ def route_query(question: str) -> str:
         return "tool_create_task"
 
     # Nuevos carriles Fase 2
-    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS):
+    # Doble detección: keywords estáticas + regex con ID intercalado
+    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
+            or _COMPLETE_TASK_PATTERN.search(q):
         return "tool_complete_task"
 
     if any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
