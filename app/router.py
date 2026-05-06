@@ -3,10 +3,12 @@
 Estrategia en tres capas:
   1. _route_by_keywords()   → instantáneo, sin costo de modelo.
      Si la pregunta tiene una keyword conocida, devuelve el carril directo.
+     Devuelve None si no reconoce nada (señal explícita de "no sé").
 
   2. _route_by_embeddings() → ~50ms, consulta storage/intent_index.
      Busca la frase más similar en el índice y devuelve su carril.
      Solo activa si la similitud supera el umbral EMBED_THRESHOLD.
+     Usa singleton _intent_db para no recrear Chroma en cada consulta.
 
   3. _route_by_llm()        → ~3-8s, solo si embeddings tiene baja confianza.
      Último recurso para frases muy nuevas o sin ningún ejemplo cercano.
@@ -56,6 +58,45 @@ EMBED_THRESHOLD = 0.70
 
 # Cuántos vecinos buscar. Con 1 es suficiente — queremos el más cercano.
 EMBED_TOP_K     = 1
+
+# ─────────────────────────────────────────────
+# Singleton para intent_db (Capa 2)
+# Se inicializa una sola vez al primer uso y se reutiliza en toda la sesión.
+# Evita recrear OllamaEmbeddings + Chroma en cada consulta (~50ms overhead).
+# ─────────────────────────────────────────────
+
+_intent_db = None
+_intent_embeddings = None
+
+
+def _get_intent_db():
+    """Devuelve la instancia compartida de Chroma para intent_index.
+
+    Si aún no existe, la crea una sola vez. Las llamadas siguientes
+    reutilizan la misma instancia sin costo adicional.
+    """
+    global _intent_db, _intent_embeddings
+    if _intent_db is None:
+        from langchain_ollama import OllamaEmbeddings
+        from langchain_chroma import Chroma
+
+        _intent_embeddings = OllamaEmbeddings(
+            model=EMBED_MODEL,
+            base_url=OLLAMA_URL,
+        )
+        _intent_db = Chroma(
+            persist_directory=str(INTENT_DIR),
+            embedding_function=_intent_embeddings,
+            collection_name="intent_index",
+        )
+    return _intent_db
+
+
+# ─────────────────────────────────────────────
+# Palabras de salida — interceptadas antes de cualquier capa
+# ─────────────────────────────────────────────
+
+_EXIT_WORDS = {"salir", "sali", "exit", "quit", "bye", "chao", "adios", "adiós"}
 
 
 # ─────────────────────────────────────────────
@@ -226,8 +267,14 @@ def classify_memory_query(question: str) -> str | None:
     return None
 
 
-def _route_by_keywords(question: str) -> str:
-    """Capa 1: keywords instantáneas. Devuelve 'rag' si no encuentra nada."""
+def _route_by_keywords(question: str) -> str | None:
+    """Capa 1: keywords instantáneas.
+
+    Devuelve el carril si reconoce la frase.
+    Devuelve None si no reconoce nada — señal explícita de 'no sé,
+    pasa a la siguiente capa'. Antes devolvía 'rag' con doble significado,
+    lo que hacía la lógica en route_query() más frágil.
+    """
     q = question.lower().strip()
 
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
@@ -240,28 +287,16 @@ def _route_by_keywords(question: str) -> str:
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
     if classify_memory_query(question) is not None:           return "memory"
     if any(k in q for k in RAG_HINTS):                        return "rag"
-    return "rag"  # señal para que la Capa 2 tome el relevo
+    return None  # no reconocida — pasa a Capa 2
 
 
 def _route_by_embeddings(question: str) -> str | None:
-    """Capa 2: clasificador semántico con intent_index."""
+    """Capa 2: clasificador semántico con intent_index (singleton)."""
     if not INTENT_DIR.exists():
         return None
 
     try:
-        from langchain_ollama import OllamaEmbeddings
-        from langchain_chroma import Chroma
-
-        embeddings = OllamaEmbeddings(
-            model=EMBED_MODEL,
-            base_url=OLLAMA_URL,
-        )
-
-        vectordb = Chroma(
-            persist_directory=str(INTENT_DIR),
-            embedding_function=embeddings,
-            collection_name="intent_index",
-        )
+        vectordb = _get_intent_db()
 
         results = vectordb.similarity_search_with_score(
             query=question,
@@ -328,20 +363,25 @@ def _route_by_llm(question: str) -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Flujo en tres capas:
-      1. keywords   → 0ms,   sin modelo.
-      2. embeddings → ~50ms, nomic-embed-text + intent_index.
+    Flujo:
+      0. Salida   → intercepta salir/exit/quit antes de cualquier capa.
+      1. keywords → 0ms,   sin modelo.
+      2. embeddings → ~50ms, nomic-embed-text + intent_index (singleton).
       3. LLM        → ~3-8s, solo si las dos anteriores fallan.
 
     Actualiza SESSION_STATS con el conteo por capa para !estado.
     """
+    # Capa 0: interceptar palabras de salida antes de cualquier capa
+    # Evita que typos como "sali" lleguen al LLM fallback y causen crash
+    if question.lower().strip() in _EXIT_WORDS:
+        return "exit"
+
     SESSION_STATS["total"] += 1
 
     # Capa 1: keywords — instantáneo
     kw_lane = _route_by_keywords(question)
-    has_rag_hint = any(hint in question.lower() for hint in RAG_HINTS)
 
-    if kw_lane != "rag" or has_rag_hint:
+    if kw_lane is not None:
         SESSION_STATS["kw"] += 1
         print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
         return kw_lane
