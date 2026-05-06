@@ -140,6 +140,7 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completado",
 ]
 
+# \d+ acepta IDs de cualquier longitud: T-003, T-0506132952, etc.
 _COMPLETE_TASK_PATTERN = re.compile(
     r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d+",
     re.IGNORECASE,
@@ -220,7 +221,7 @@ Ejemplos:
 "cambia mi foco a fase 3" → tool_update_work_state
 "qué tengo pendiente" → memory
 
-Responde Únicamente con el nombre del carril, sin explicación ni texto adicional.
+Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
 Pregunta del usuario: "{question}"
 Carril:"""
@@ -281,10 +282,11 @@ def _route_by_llm(question: str) -> str:
     """Capa 2: usa el LLM local para clasificar frases ambiguas.
 
     Solo se llama cuando _route_by_keywords() no encontró ninguna
-    keyword específica (devuelvó 'rag' como fallback).
+    keyword específica. Timeout de 30s para sobrevivir el cold start
+    de Ollama (primera llamada tras inactividad).
 
-    Si el LLM falla, tarda demasiado o devuelve un carril inválido,
-    retorna 'rag' de forma segura (nunca lanza excepción).
+    Si el LLM falla o devuelve un carril inválido, retorna 'rag'
+    de forma segura (nunca lanza excepción).
     """
     try:
         import requests
@@ -296,22 +298,22 @@ def _route_by_llm(question: str) -> str:
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "temperature": 0,       # máxima determinismo
+                    "temperature": 0,       # máximo determinismo
                     "num_predict": 10,      # solo necesitamos el nombre del carril
                     "stop": ["\n", " ", "."]  # corta en cuanto termina la palabra
                 },
             },
-            timeout=15,  # si Ollama no responde en 15s, cae a rag
+            timeout=30,  # 30s para sobrevivir cold start de Ollama
         )
         raw = response.json().get("response", "").strip().lower()
 
         # Limpia espacios, comillas o saltos que el LLM pueda añadir
-        lane = raw.strip('"\' \n\t')
+        lane = raw.strip("\"' \n\t")
 
         if lane in VALID_LANES:
             return lane
 
-        # Si devuelvió algo inesperado, log y fallback seguro
+        # Si devolvió algo inesperado, log y fallback seguro
         print(f"[router:llm] respuesta inesperada del LLM: '{raw}' → rag")
         return "rag"
 
@@ -329,15 +331,13 @@ def route_query(question: str) -> str:
 
     Flujo híbrido:
       1. Intenta clasificar por keywords (0ms, sin LLM).
-      2. Si keywords no encontró nada específico (devuelve 'rag'
-         como indicador), delega al LLM para frases ambiguas.
+      2. Si keywords no encontró nada específico, delega al LLM
+         para frases ambiguas o con vocabulario nuevo.
     """
     # Capa 1: keywords — rápido
     kw_lane = _route_by_keywords(question)
 
-    # Si la keyword encontró algo concreto, lo usamos directamente.
-    # 'rag' aquí significa 'no encontré keyword' — no es el carril final todavía.
-    # Excepción: si la pregunta tiene hints de RAG explícitos, va directo.
+    # Si encontró algo concreto O hay hints explícitos de RAG → va directo
     has_rag_hint = any(hint in question.lower() for hint in RAG_HINTS)
 
     if kw_lane != "rag" or has_rag_hint:
