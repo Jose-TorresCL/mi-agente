@@ -4,132 +4,100 @@
 
 Construir un asistente local con Ollama, LangChain y Chroma para responder preguntas usando recuperación de contexto desde documentos del proyecto, evolucionando hacia un agente útil con memoria estructurada, tools básicas y recuperación selectiva.
 
-## Fase actual: Fase 2 - Memoria estructurada y herramientas básicas
+## Fase actual: Fase 3A — Router híbrido
 
-**Objetivo de fase 2**:
+**Fecha de actualización**: 06/05/2026
 
-- Implementar memoria por capas: conversación, perfil, hechos, tareas y estado de trabajo.
-- Conectar memoria estructurada al flujo del chat.
-- Agregar tools básicas de lectura y escritura segura.
-- Incorporar un router simple para decidir entre RAG, memoria o tools.
-- Preparar la base para recuperación selectiva en vez de depender solo del historial completo.
+**Objetivo de Fase 3A**:
 
-## Estado actual (05/05/2026)
+- Reemplazar el router de reglas puras por un router híbrido en dos capas.
+- Capa 1: keywords (instantáneo, sin LLM).
+- Capa 2: LLM fallback solo para frases ambiguas o con vocabulario nuevo.
+- Preparar la base de ejemplos reales para el clasificador de embeddings (Fase 3B).
 
-**Qué ya está firme**:
+## Qué ya está firme (06/05/2026)
 
-- **Fase 1 completada**: indexación funcional, RAG básico estable y modularización inicial del proyecto.
-- **RAG básico operativo** con Chroma sobre documentos Markdown del proyecto.
-- **Memoria estructurada base implementada**:
-  - `storage/memory.json`: conversación reciente.
-  - `storage/profile.json`: preferencias de trabajo.
-  - `storage/project_facts.json`: hechos estables del proyecto.
-  - `storage/tasks.json`: pendientes y acciones.
-  - `storage/work_state.json`: estado actual de trabajo.
-- **Módulos creados**:
-  - `app/memory_store.py`
-  - `app/session_state.py`
-  - `app/prompts.py`
-  - `app/router.py`
-  - `app/tools.py`
-- **Tools básicas de lectura ya operativas**:
-  - listar archivos permitidos,
-  - leer archivos permitidos,
-  - extraer rutas desde lenguaje natural,
-  - bloquear rutas externas al proyecto.
-- **Router simple ya implementado** para distinguir entre:
-  - lectura de archivos,
-  - listado de archivos,
-  - memoria,
-  - RAG.
-- **Base documental actualizada** para reflejar la fase 2.
+- **Fase 1 completada**: indexación funcional, RAG básico estable y modularización inicial.
+- **Fase 2 completada**: memoria por capas, tools básicas, router simple, escritura segura.
+- **Fase 3A en producción**: router híbrido con 8 carriles y LLM fallback.
 
-## Qué ya está firme
+### Memoria estructurada — 4 capas operativas
 
-- RAG básico funcional con Chroma y documentos fuente actualizados.
-- Diferencia clara entre arquitectura técnica, memoria estructurada y base documental.
-- Modularización inicial completada y usable.
-- Memoria estructurada con lectura segura validada.
-- Tools de lectura funcionando con restricciones de rutas.
-- El sistema ya puede leer archivos de `app/`, `data/docs/` y `storage/`.
-- El sistema ya bloquea rutas externas como `C:\Windows\...`.
-- El listado de archivos ya excluye carpetas técnicas no útiles para el usuario.
-- El router ya resuelve casos básicos de uso diario sin depender solo del retriever.
+| Archivo | Contenido | Se actualiza con |
+|---------|-----------|------------------|
+| `storage/profile.json` | Preferencias y estilo de trabajo | Manualmente o tool futura |
+| `storage/work_state.json` | Foco actual, última sesión, next step | `tool_update_work_state` |
+| `storage/project_facts.json` | Hechos estables del proyecto | `tool_save_fact` |
+| `storage/tasks.json` | Tareas pendientes y completadas | `tool_create_task`, `tool_complete_task` |
 
-## Problemas detectados (ya resueltos o en proceso)
+### Tools operativas — 8 carriles
 
-- Modularización de archivos grandes: resuelto.
-- Falta de memoria persistente más allá del historial conversacional: resuelto en base.
-- Documentación desactualizada: resuelto en esta fase.
-- Falta de tools de lectura segura: resuelto en versión base.
-- Exposición innecesaria de archivos internos de Chroma en el listado: resuelto.
-- Router demasiado básico en su primera versión: mejorado.
+| Carril | Estado |
+|--------|--------|
+| `tool_list_files` | ✅ Operativo |
+| `tool_read_file` | ✅ Operativo |
+| `tool_save_fact` | ✅ Operativo |
+| `tool_create_task` | ✅ Operativo |
+| `tool_complete_task` | ✅ Operativo |
+| `tool_update_work_state` | ✅ Operativo |
+| `memory` | ✅ Operativo |
+| `rag` | ✅ Operativo |
+
+### Router híbrido (Fase 3A)
+
+- **Capa 1 — keywords**: clasifica la mayoría de frases cotidianas en 0ms.
+- **Capa 2 — LLM fallback**: activa solo para frases ambiguas. Timeout 30s para cold start de Ollama.
+- **Logging**: `[router:kw]` vs `[router:llm]` para observar qué frases necesitan el fallback.
+
+## Problemas resueltos en Fase 2 y 3A
+
+- Modularización de archivos grandes: ✅ resuelto.
+- Falta de memoria persistente: ✅ resuelto (4 capas JSON).
+- Documentación desactualizada: ✅ actualizada hoy.
+- Falta de tools de escritura segura: ✅ resuelto.
+- Router solo por reglas simples: ✅ reemplazado por router híbrido.
+- Tasks solo crecían, nunca se cerraban: ✅ resuelto con `tool_complete_task`.
+- Work state solo editable a mano: ✅ resuelto con `tool_update_work_state`.
+- Timeout de Ollama en cold start: ✅ corregido a 30s.
 
 ## Problemas pendientes
 
-- Todavía no hay integración fuerte entre RAG y memoria estructurada dentro del flujo de respuesta.
-- Las tools de escritura segura todavía no están implementadas o conectadas por completo.
-- El estado de trabajo aún no se actualiza automáticamente a partir de la conversación.
-- El router sigue siendo por reglas simples y puede refinarse más.
-- La recuperación selectiva todavía es básica y no usa una política clara por capa.
-- La memoria conversacional sigue apoyándose en `ConversationBufferWindowMemory`, que ya aparece como deprecada en LangChain.
-- Falta probar más casos reales de uso diario para validar estabilidad.
+- LLM fallback del router tarda 3-8s en cold start y frases ambiguas frecuentes.
+- `ConversationBufferWindowMemory` deprecada en LangChain 0.3.1 — aún en uso.
+- Sin evaluación mínima sistematizada (3 casos de prueba por semana).
+- Sin extracción de múltiples tareas desde texto largo en una instrucción.
+- Recuperación selectiva entre capas RAG + memoria aún básica.
 
-## Próximos pasos inmediatos
+## Próximos pasos — Fase 3B
 
-1. Dejar firme `router.py` como versión final de 2D.
-2. Integrar mejor memoria estructurada en `chat_core.py`.
-3. Implementar las tools de escritura segura:
-   - guardar hecho,
-   - crear tarea.
-4. Conectar `work_state.json` al flujo real del asistente.
-5. Probar casos reales combinando:
-   - lectura documental,
-   - memoria,
-   - tools.
-6. Actualizar la documentación del proyecto para que refleje el estado real del sistema.
-
-## Criterio para avanzar dentro de fase 2
-
-Se considera que la fase 2 está madura cuando:
-
-- el agente distingue correctamente entre consultas documentales, consultas de memoria y acciones concretas;
-- las tools básicas de lectura y escritura funcionan de forma segura;
-- el router toma decisiones razonables en casos comunes de uso;
-- el estado de trabajo persiste entre sesiones;
-- y la memoria no reemplaza al RAG, sino que lo complementa con recuperación selectiva.
-
-## Criterio para avanzar a fase 3
-
-Se puede avanzar a fase 3 (agente con planificación y proactividad) cuando:
-
-- el agente use simultáneamente RAG y memoria estructurada con criterio;
-- el estado de trabajo se mantenga actualizado entre sesiones;
-- las tools básicas sean estables y útiles en el trabajo diario;
-- el router ya no falle en casos frecuentes;
-- y exista una base mínima de recuperación selectiva por capas.
+1. Construir índice de intenciones con Chroma: ~10 frases de ejemplo por carril.
+2. Clasificar por similitud de embeddings en lugar de LLM fallback (~50ms).
+3. Reemplazar `_route_by_llm()` por `_route_by_embeddings()` en `router.py`.
+4. Medir precisión del clasificador de embeddings con los ejemplos reales observados.
+5. Agregar evaluación mínima semanal: 3 casos de prueba fijos.
 
 ## Criterio de respuesta
 
-- **RAG**: usar cuando la pregunta sea documental o esté basada en lo que dicen los archivos del proyecto.
-- **Memoria**: usar para preferencias, hechos persistentes, tareas, estado actual y datos operativos del trabajo.
+- **RAG**: usar cuando la pregunta sea documental o basada en archivos del proyecto.
+- **Memoria**: usar para preferencias, hechos persistentes, tareas, estado actual.
 - **Tools**: usar para acciones concretas sobre archivos o memoria estructurada.
-- Si una consulta incluye una ruta explícita, priorizar la tool de lectura de archivo.
+- Si una consulta incluye una ruta explícita, priorizar `tool_read_file`.
 - Si no hay evidencia suficiente en ninguna capa, abstenerse claramente.
 - No completar respuestas con teoría general si el proyecto no lo respalda.
 
 ## Relación entre RAG, memoria y tools
 
-- **RAG**: conocimiento estable del proyecto recuperado desde documentos.
-- **Memoria estructurada**: estado dinámico y persistente del trabajo.
+- **RAG**: conocimiento estable del proyecto recuperado desde documentos Markdown.
+- **Memoria estructurada**: estado dinámico y persistente del trabajo (JSON).
 - **Tools**: acciones controladas sobre archivos y memoria.
-- **Router**: decide qué capa usar según la intención de la consulta.
-- **Objetivo futuro**: pasar de historial completo a recuperación selectiva por capas.
+- **Router híbrido**: decide qué capa usar según la intención; keywords primero, LLM solo si es necesario.
+- **Objetivo Fase 3B**: reemplazar LLM fallback por clasificador de embeddings para latencia mínima.
 
-## Próximos commits esperados
+## Hitos completados
 
-1. `2B: memoria estructurada base implementada y probada`
-2. `2C: tools básicas y conexión memoria al chat`
-3. `2D: router simple funcional`
-4. `2E: estado de trabajo integrado`
-5. `2F: tools de escritura segura conectadas`
+| Hito | Fecha |
+|------|-------|
+| Fase 1: RAG básico + indexación | Antes de 05/05/2026 |
+| Fase 2A-2D: memoria, tools, router simple | 05/05/2026 |
+| Fase 2E-2F: tool_complete_task, tool_update_work_state | 06/05/2026 |
+| Fase 3A: router híbrido keywords + LLM fallback | 06/05/2026 |
