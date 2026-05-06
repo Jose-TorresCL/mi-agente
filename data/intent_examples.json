@@ -1,0 +1,107 @@
+[
+  // ── tool_create_task ────────────────────────────────────────────
+  // Frases donde el usuario quiere crear, apuntar o registrar una tarea nueva.
+  { "text": "crea una tarea para revisar el router",              "lane": "tool_create_task" },
+  { "text": "agrega una tarea: implementar embeddings",           "lane": "tool_create_task" },
+  { "text": "nueva tarea: actualizar los documentos del proyecto", "lane": "tool_create_task" },
+  { "text": "apunta que tengo que revisar el prompt del LLM",     "lane": "tool_create_task" },
+  { "text": "anota una tarea: probar el clasificador",            "lane": "tool_create_task" },
+  { "text": "registra una tarea pendiente sobre el router",       "lane": "tool_create_task" },
+  { "text": "añade esto como tarea: hacer merge del PR",          "lane": "tool_create_task" },
+  { "text": "apunta que mañana hay reunión de revisión",          "lane": "tool_create_task" },
+  { "text": "necesito recordar revisar el timeout de Ollama",     "lane": "tool_create_task" },
+  { "text": "ponme un recordatorio de actualizar el JSON",        "lane": "tool_create_task" },
+  { "text": "quiero agregar una tarea sobre la memoria de Chroma","lane": "tool_create_task" },
+
+  // ── tool_complete_task ───────────────────────────────────────────
+  // Frases donde el usuario quiere cerrar, marcar o completar una tarea existente.
+  { "text": "marca T-003 como completada",                        "lane": "tool_complete_task" },
+  { "text": "marca como completado T-006",                        "lane": "tool_complete_task" },
+  { "text": "cierra la tarea T-003",                              "lane": "tool_complete_task" },
+  { "text": "ya terminé con la tarea del router",                 "lane": "tool_complete_task" },
+  { "text": "completé la tarea de actualizar los documentos",     "lane": "tool_complete_task" },
+  { "text": "marcar como completada la tarea de embeddings",      "lane": "tool_complete_task" },
+  { "text": "la tarea T-006 ya está lista",                       "lane": "tool_complete_task" },
+  { "text": "cerrar tarea del merge del PR",                      "lane": "tool_complete_task" },
+  { "text": "esa tarea ya la hice, márcala como hecha",           "lane": "tool_complete_task" },
+  { "text": "completa T-0506132952",                              "lane": "tool_complete_task" },
+
+  // ── tool_update_work_state ───────────────────────────────────────
+  // Frases donde el usuario quiere cambiar su foco, fase o siguiente paso.
+  { "text": "actualiza el foco a fase 3B — embeddings",           "lane": "tool_update_work_state" },
+  { "text": "cambia el foco a implementar el clasificador",        "lane": "tool_update_work_state" },
+  { "text": "ahora estoy trabajando en el índice de intenciones",  "lane": "tool_update_work_state" },
+  { "text": "actualiza el siguiente paso a probar embeddings",     "lane": "tool_update_work_state" },
+  { "text": "cambia next_step a escribir intent_examples.json",    "lane": "tool_update_work_state" },
+  { "text": "pon en siguiente paso: hacer merge del PR",           "lane": "tool_update_work_state" },
+  { "text": "actualiza mi estado de trabajo a fase 3A completada", "lane": "tool_update_work_state" },
+  { "text": "ahora estoy en la etapa de pruebas del router",       "lane": "tool_update_work_state" },
+  { "text": "cambia la fase actual a 3B",                          "lane": "tool_update_work_state" },
+  { "text": "nuevo bloqueo: no tengo ejemplos suficientes",        "lane": "tool_update_work_state" },
+
+  // ── tool_save_fact ───────────────────────────────────────────────
+  // Frases donde el usuario quiere guardar un hecho estable del proyecto.
+  { "text": "guarda como hecho: el router híbrido ya está en producción", "lane": "tool_save_fact" },
+  { "text": "anota que decidimos usar nomic-embed-text para los embeddings", "lane": "tool_save_fact" },
+  { "text": "registra que la fase 2 está completada",             "lane": "tool_save_fact" },
+  { "text": "guarda el hecho de que usamos llama3.2 como modelo principal", "lane": "tool_save_fact" },
+  { "text": "registra esto como hecho: el timeout del LLM es 30s","lane": "tool_save_fact" },
+  { "text": "guarda esto como hecho del proyecto",                "lane": "tool_save_fact" },
+  { "text": "anota que el modelo de embeddings es nomic",         "lane": "tool_save_fact" },
+  { "text": "registra la decisión de no usar multiagente aún",    "lane": "tool_save_fact" },
+  { "text": "guarda que Chroma persiste en storage/chroma",       "lane": "tool_save_fact" },
+
+  // ── tool_list_files ──────────────────────────────────────────────
+  // SOLO frases donde el usuario quiere ver la lista de archivos del proyecto.
+  { "text": "listar archivos del proyecto",                        "lane": "tool_list_files" },
+  { "text": "qué archivos hay en el proyecto",                     "lane": "tool_list_files" },
+  { "text": "muéstrame los archivos",                              "lane": "tool_list_files" },
+  { "text": "ver archivos disponibles",                            "lane": "tool_list_files" },
+  { "text": "lista de archivos del proyecto",                      "lane": "tool_list_files" },
+  { "text": "qué hay disponible para leer",                        "lane": "tool_list_files" },
+  { "text": "mostrar archivos del proyecto",                       "lane": "tool_list_files" },
+
+  // ── tool_read_file ───────────────────────────────────────────────
+  // Frases donde el usuario quiere leer el CONTENIDO de un archivo específico.
+  { "text": "leer el archivo router.py",                           "lane": "tool_read_file" },
+  { "text": "muéstrame el contenido de chat_core.py",              "lane": "tool_read_file" },
+  { "text": "abre el archivo tasks.json",                          "lane": "tool_read_file" },
+  { "text": "lee el archivo work_state.json",                      "lane": "tool_read_file" },
+  { "text": "ver el contenido de profile.json",                    "lane": "tool_read_file" },
+  { "text": "mostrar el archivo memory_store.py",                  "lane": "tool_read_file" },
+  { "text": "leer estado_proyecto.md",                             "lane": "tool_read_file" },
+
+  // ── memory ───────────────────────────────────────────────────────
+  // Frases sobre estado actual, tareas, hechos guardados o perfil del usuario.
+  { "text": "en qué fase estamos",                                 "lane": "memory" },
+  { "text": "qué tengo pendiente",                                 "lane": "memory" },
+  { "text": "ponme al día de lo que tengo pendiente",              "lane": "memory" },
+  { "text": "cuál es mi foco actual",                              "lane": "memory" },
+  { "text": "qué estoy haciendo ahora",                            "lane": "memory" },
+  { "text": "cuál es el siguiente paso",                           "lane": "memory" },
+  { "text": "en qué quedamos la última vez",                       "lane": "memory" },
+  { "text": "dime el estado actual del proyecto",                  "lane": "memory" },
+  { "text": "cuáles son los hechos del proyecto",                  "lane": "memory" },
+  { "text": "cómo prefiero trabajar",                              "lane": "memory" },
+  { "text": "ponme al día de lo que hice ayer",                    "lane": "memory" },
+  { "text": "qué tareas hay abiertas",                             "lane": "memory" },
+  { "text": "resumen del proyecto",                                "lane": "memory" },
+  { "text": "qué decidimos sobre el router",                       "lane": "memory" },
+
+  // ── rag ──────────────────────────────────────────────────────────
+  // Preguntas conceptuales, técnicas o documentales sobre el sistema.
+  { "text": "qué tools están operativas",                          "lane": "rag" },
+  { "text": "cómo funciona el router híbrido",                     "lane": "rag" },
+  { "text": "cuáles son los componentes del sistema",              "lane": "rag" },
+  { "text": "explícame cómo funciona Chroma",                      "lane": "rag" },
+  { "text": "qué diferencia hay entre RAG y memoria estructurada", "lane": "rag" },
+  { "text": "cómo se indexan los documentos",                      "lane": "rag" },
+  { "text": "cuál es el objetivo del proyecto",                    "lane": "rag" },
+  { "text": "qué módulos tiene el proyecto",                       "lane": "rag" },
+  { "text": "cómo funciona la memoria por capas",                  "lane": "rag" },
+  { "text": "qué hace chat_core.py",                               "lane": "rag" },
+  { "text": "para qué sirve nomic-embed-text",                     "lane": "rag" },
+  { "text": "cuántos carriles tiene el router",                    "lane": "rag" },
+  { "text": "qué es el LLM fallback",                              "lane": "rag" },
+  { "text": "cómo se guarda la memoria entre sesiones",            "lane": "rag" }
+]
