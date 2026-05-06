@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.memory_store import save_project_fact, add_task
+
 PROJECT_ROOT = Path(".")
 ALLOWED_DIRS = [
     PROJECT_ROOT / "app",
@@ -9,8 +11,10 @@ ALLOWED_DIRS = [
     PROJECT_ROOT / "storage"
 ]
 
-SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db","chroma", ".pytest_cache",".mypy_cache",".ruff_cache",}
+SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db", "chroma", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 SKIP_SUFFIXES = {".pyc"}
+VALID_PRIORITIES = {"low", "medium", "high"}
+
 
 def _is_allowed(path: Path) -> bool:
     try:
@@ -28,12 +32,14 @@ def _is_allowed(path: Path) -> bool:
                 return True
     return False
 
+
 def _should_skip(path: Path) -> bool:
     if any(part in SKIP_DIR_NAMES for part in path.parts):
         return True
     if path.suffix in SKIP_SUFFIXES:
         return True
     return False
+
 
 def list_project_files() -> list[str]:
     files = []
@@ -49,6 +55,7 @@ def list_project_files() -> list[str]:
                 files.append(str(p.relative_to(PROJECT_ROOT)))
 
     return sorted(files)
+
 
 def extract_file_path(text: str) -> str | None:
     cleaned = text.strip()
@@ -82,6 +89,7 @@ def extract_file_path(text: str) -> str | None:
 
     return None
 
+
 def read_project_file(path: str, max_chars: int = 8000) -> str:
     p = Path(path)
     if not _is_allowed(p):
@@ -92,3 +100,45 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 
     text = p.read_text(encoding="utf-8", errors="ignore")
     return text[:max_chars]
+
+
+# ─────────────────────────────────────────────
+# Tools de escritura seguras
+# ─────────────────────────────────────────────
+
+def tool_save_fact(key: str, value: str) -> str:
+    """Guarda un hecho persistente en project_facts.json.
+
+    Uso esperado: key = nombre del hecho, value = valor del hecho.
+    Ejemplo: key='fase_actual', value='Fase 2 - Estabilización'
+    """
+    key = key.strip()
+    value = value.strip()
+
+    if not key:
+        return "No pude guardar el hecho: falta la clave (key)."
+    if not value:
+        return "No pude guardar el hecho: falta el valor."
+
+    save_project_fact(key, value)
+    return f"Hecho guardado correctamente → {key}: {value}"
+
+
+def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
+    """Crea una nueva tarea en tasks.json.
+
+    Prioridades válidas: low, medium, high.
+    Si la prioridad no es válida, se usa 'medium' por defecto.
+    """
+    title = title.strip()
+    priority = priority.strip().lower()
+    notes = notes.strip()
+
+    if not title:
+        return "No pude crear la tarea: falta el título."
+
+    if priority not in VALID_PRIORITIES:
+        priority = "medium"
+
+    task_id = add_task(title=title, priority=priority, notes=notes)
+    return f"Tarea creada correctamente → {task_id}: {title} [prioridad: {priority}]"

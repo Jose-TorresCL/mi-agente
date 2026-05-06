@@ -12,10 +12,13 @@ TASKS_FILE = STORAGE_DIR / "tasks.json"
 WORK_STATE_FILE = STORAGE_DIR / "work_state.json"
 
 
+# ─────────────────────────────────────────────
+# Helpers internos
+# ─────────────────────────────────────────────
+
 def _read_json(path: Path, default):
     if not path.exists():
         return default
-
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -28,6 +31,10 @@ def _write_json(path: Path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
+# ─────────────────────────────────────────────
+# Memoria de conversación (corta)
+# ─────────────────────────────────────────────
 
 def load_memory():
     return _read_json(MEMORY_FILE, {"messages": []})
@@ -53,6 +60,10 @@ def clear_memory():
     _write_json(MEMORY_FILE, {"messages": []})
 
 
+# ─────────────────────────────────────────────
+# Perfil del usuario
+# ─────────────────────────────────────────────
+
 def load_profile():
     return _read_json(PROFILE_FILE, {})
 
@@ -60,6 +71,10 @@ def load_profile():
 def save_profile(data):
     _write_json(PROFILE_FILE, data)
 
+
+# ─────────────────────────────────────────────
+# Hechos persistentes del proyecto
+# ─────────────────────────────────────────────
 
 def load_project_facts():
     return _read_json(PROJECT_FACTS_FILE, {})
@@ -70,10 +85,24 @@ def save_project_facts(data):
 
 
 def update_project_fact(key: str, value):
+    """Actualiza un campo específico de project_facts.json sin tocar el resto."""
     data = load_project_facts()
     data[key] = value
     _write_json(PROJECT_FACTS_FILE, data)
 
+
+def save_project_fact(key: str, value: str) -> None:
+    """Alias semántico de update_project_fact para uso desde tools."""
+    key = key.strip()
+    value = value.strip()
+    if not key or not value:
+        return
+    update_project_fact(key, value)
+
+
+# ─────────────────────────────────────────────
+# Tareas
+# ─────────────────────────────────────────────
 
 def load_tasks():
     return _read_json(TASKS_FILE, {"tasks": []})
@@ -83,7 +112,8 @@ def save_tasks(data):
     _write_json(TASKS_FILE, data)
 
 
-def add_task(title: str, priority: str = "medium", notes: str = ""):
+def add_task(title: str, priority: str = "medium", notes: str = "") -> str:
+    """Agrega una nueva tarea y devuelve su ID."""
     data = load_tasks()
     tasks = data.get("tasks", [])
 
@@ -91,10 +121,11 @@ def add_task(title: str, priority: str = "medium", notes: str = ""):
     tasks.append(
         {
             "id": new_id,
-            "title": title,
+            "title": title.strip(),
             "status": "pending",
-            "priority": priority,
-            "notes": notes
+            "priority": priority.strip().lower(),
+            "notes": notes.strip(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
         }
     )
 
@@ -104,6 +135,7 @@ def add_task(title: str, priority: str = "medium", notes: str = ""):
 
 
 def update_task_status(task_id: str, status: str):
+    """Cambia el estado de una tarea por su ID."""
     data = load_tasks()
     for task in data.get("tasks", []):
         if task["id"] == task_id:
@@ -111,6 +143,10 @@ def update_task_status(task_id: str, status: str):
             break
     _write_json(TASKS_FILE, data)
 
+
+# ─────────────────────────────────────────────
+# Work state (estado operativo actual)
+# ─────────────────────────────────────────────
 
 def load_work_state():
     return _read_json(
@@ -129,14 +165,25 @@ def save_work_state(data):
     _write_json(WORK_STATE_FILE, data)
 
 
-def update_work_state(current_focus=None, last_completed_step=None, next_step=None):
+def update_work_state(
+    current_focus: str | None = None,
+    last_completed_step: str | None = None,
+    next_step: str | None = None,
+    blocker: str | None = None,
+) -> None:
+    """Actualiza campos específicos del work_state sin tocar el resto."""
     data = load_work_state()
 
     if current_focus is not None:
-        data["current_focus"] = current_focus
+        data["current_focus"] = current_focus.strip()
     if last_completed_step is not None:
-        data["last_completed_step"] = last_completed_step
+        data["last_completed_step"] = last_completed_step.strip()
     if next_step is not None:
-        data["next_step"] = next_step
+        data["next_step"] = next_step.strip()
+    if blocker is not None:
+        blockers = data.get("current_blockers", [])
+        if blocker.strip() and blocker.strip() not in blockers:
+            blockers.append(blocker.strip())
+        data["current_blockers"] = blockers
 
     _write_json(WORK_STATE_FILE, data)

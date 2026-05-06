@@ -1,9 +1,17 @@
 from pathlib import Path
+
 from app.memory_store import (
     load_profile,
     load_project_facts,
     load_tasks,
     load_work_state,
+)
+from app.router import route_query, classify_memory_query
+from app.tools import (
+    list_project_files,
+    read_project_file,
+    tool_save_fact,
+    tool_create_task,
 )
 
 from langchain_chroma import Chroma
@@ -56,8 +64,107 @@ Pregunta:
 QA_PROMPT = ChatPromptTemplate.from_template(QA_SYSTEM_PROMPT)
 
 
+# ─────────────────────────────────────────────
+# Helpers de formato para respuestas de memoria
+# ─────────────────────────────────────────────
+
+def _format_profile_answer(profile: dict) -> str:
+    lines = ["**Perfil del usuario:**"]
+    lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
+    lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
+    lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
+
+    preferred_style = profile.get("preferred_style", [])
+    if preferred_style:
+        lines.append(f"- Estilo preferido: {', '.join(preferred_style)}")
+
+    preferred_workflow = profile.get("preferred_workflow", [])
+    if preferred_workflow:
+        lines.append(f"- Flujo preferido: {' | '.join(preferred_workflow)}")
+
+    return "\n".join(lines)
+
+
+def _format_project_facts_answer(facts: dict) -> str:
+    lines = ["**Hechos persistentes del proyecto:**"]
+    for key, value in facts.items():
+        lines.append(f"- {key}: {value}")
+    return "\n".join(lines)
+
+
+def _format_tasks_answer(tasks_data: dict) -> str:
+    tasks = tasks_data.get("tasks", [])
+    pending = [t for t in tasks if t.get("status") != "done"]
+
+    if not pending:
+        return "No hay tareas pendientes registradas."
+
+    lines = ["**Tareas pendientes:**"]
+    for t in pending:
+        lines.append(
+            f"- [{t.get('id', '?')}] {t.get('title', '')} "
+            f"(prioridad: {t.get('priority', 'media')}, estado: {t.get('status', 'pending')})"
+        )
+    return "\n".join(lines)
+
+
+def _format_work_state_answer(work_state: dict) -> str:
+    lines = ["**Estado actual de trabajo:**"]
+    lines.append(f"- Foco actual: {work_state.get('current_focus', 'sin definir')}")
+    lines.append(f"- Último paso completado: {work_state.get('last_completed_step', 'sin registrar')}")
+    lines.append(f"- Siguiente paso: {work_state.get('next_step', 'sin definir')}")
+
+    blockers = work_state.get("current_blockers", [])
+    if blockers:
+        lines.append(f"- Bloqueos: {', '.join(blockers)}")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# Respuesta directa desde memoria estructurada
+# ─────────────────────────────────────────────
+
+def answer_from_memory(question: str) -> str | None:
+    """Intenta responder desde memoria estructurada sin tocar RAG.
+    Devuelve None si no aplica ninguna capa de memoria.
+    """
+    memory_kind = classify_memory_query(question)
+
+    if memory_kind == "profile":
+        profile = load_profile()
+        if not profile:
+            return "No encontré información de perfil todavía."
+        return _format_profile_answer(profile)
+
+    if memory_kind == "project_facts":
+        facts = load_project_facts()
+        if not facts:
+            return "No encontré hechos del proyecto todavía."
+        return _format_project_facts_answer(facts)
+
+    if memory_kind == "tasks":
+        tasks = load_tasks()
+        if not tasks:
+            return "No encontré tareas registradas."
+        return _format_tasks_answer(tasks)
+
+    if memory_kind == "work_state":
+        work_state = load_work_state()
+        if not work_state:
+            return "No encontré estado de trabajo actual."
+        return _format_work_state_answer(work_state)
+
+    return None
+
+
+# ─────────────────────────────────────────────
+# Infraestructura RAG
+# ─────────────────────────────────────────────
+
 def ensure_storage():
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def build_structured_memory_context() -> str:
     profile = load_profile()
@@ -111,12 +218,12 @@ def build_structured_memory_context() -> str:
 
     return "\n".join(lines).strip()
 
+
 def load_vector_store():
     embeddings = OllamaEmbeddings(
         model="nomic-embed-text",
         base_url="http://localhost:11434",
     )
-
     vectordb = Chroma(
         embedding_function=embeddings,
         persist_directory=CHROMA_DIR,
@@ -200,3 +307,90 @@ def build_chain(retriever, memory, memory_context: str):
         combine_docs_chain_kwargs={"prompt": qa_prompt_with_memory},
     )
     return chain
+
+
+# ─────────────────────────────────────────────
+# Punto de entrada principal del chat
+# ─────────────────────────────────────────────
+
+def handle_query(
+    user_input: str,
+    vectordb,
+    memory,
+) -> tuple[str, list]:
+    """Orquesta el flujo completo de una consulta del usuario.
+
+    Retorna (respuesta, lista_de_fuentes).
+    La lista de fuentes está vacía cuando la respuesta viene de memoria o tools.
+    """
+    route = route_query(user_input)
+
+    # ── Tools de escritura seguras ──────────────────────────────────────
+    if route == "tool_save_fact":
+        # Extrae key/value del input del usuario de forma simple
+        parts = user_input.split(":", 1)
+        if len(parts) == 2:
+            key_raw = parts[0].strip()
+            value_raw = parts[1].strip()
+            # Limpia prefijos comunes del key
+            for prefix in ["guarda como hecho", "guardar hecho", "registra que", "anota que",
+                           "guarda el hecho", "registra el hecho", "guarda esto como hecho"]:
+                key_raw = key_raw.lower().replace(prefix, "").strip()
+            answer = tool_save_fact(key_raw, value_raw)
+        else:
+            answer = tool_save_fact(user_input, "")
+        return answer, []
+
+    if route == "tool_create_task":
+        # Extrae título y prioridad opcionales del input
+        text = user_input.lower()
+        for prefix in ["crea una tarea:", "crea una tarea", "crear tarea:", "crear tarea",
+                       "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
+                       "añade una tarea:", "añade una tarea", "anota una tarea:", "anota una tarea",
+                       "registra una tarea:", "registra una tarea"]:
+            if text.startswith(prefix):
+                raw = user_input[len(prefix):].strip()
+                # Detecta prioridad al final: "título [alta]" o "título (alta)"
+                priority = "medium"
+                for p in ["alta", "high", "baja", "low", "media", "medium"]:
+                    if raw.lower().endswith(p):
+                        raw = raw[:-len(p)].strip().rstrip(",;")
+                        priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
+                        break
+                answer = tool_create_task(title=raw, priority=priority)
+                return answer, []
+        answer = tool_create_task(title=user_input, priority="medium")
+        return answer, []
+
+    # ── Tools de lectura de archivos ────────────────────────────────────
+    if route == "tool_list_files":
+        files = list_project_files()
+        if not files:
+            return "No encontré archivos en las carpetas permitidas.", []
+        return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files), []
+
+    if route == "tool_read_file":
+        from app.tools import extract_file_path
+        path = extract_file_path(user_input)
+        if not path:
+            return "No pude identificar qué archivo querías leer.", []
+        content = read_project_file(path)
+        return content, []
+
+    # ── Memoria estructurada ─────────────────────────────────────────────
+    if route == "memory":
+        memory_answer = answer_from_memory(user_input)
+        if memory_answer is not None:
+            return memory_answer, []
+        # Si classify_memory_query devolvió algo pero answer_from_memory devolvió None
+        # (archivos vacíos), caemos a RAG como respaldo.
+
+    # ── RAG (fallback documental) ────────────────────────────────────────
+    memory_context = build_structured_memory_context()
+    retriever = build_retriever(vectordb, user_input)
+    chain = build_chain(retriever, memory, memory_context)
+    result = chain.invoke({"question": user_input})
+
+    answer = result.get("answer", "Sin respuesta.")
+    sources = result.get("source_documents", [])
+    return answer, sources

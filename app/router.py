@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.tools import extract_file_path
 
+
 TOOL_LIST_KEYWORDS = [
     "listar archivos",
     "lista de archivos",
@@ -15,6 +16,7 @@ TOOL_LIST_KEYWORDS = [
     "qué hay en el proyecto",
     "que hay en el proyecto",
 ]
+
 
 TOOL_READ_KEYWORDS = [
     "leer archivo",
@@ -30,6 +32,7 @@ TOOL_READ_KEYWORDS = [
     "mostrar documento",
 ]
 
+
 MEMORY_PROFILE_KEYWORDS = [
     "mi estilo",
     "estilo preferido",
@@ -43,6 +46,7 @@ MEMORY_PROFILE_KEYWORDS = [
     "mi perfil",
 ]
 
+
 MEMORY_WORK_STATE_KEYWORDS = [
     "estado actual",
     "foco actual",
@@ -55,7 +59,12 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en que estoy",
     "qué estoy haciendo",
     "que estoy haciendo",
+    "último paso",
+    "ultimo paso",
+    "en qué quedamos",
+    "en que quedamos",
 ]
+
 
 MEMORY_TASKS_KEYWORDS = [
     "tareas",
@@ -63,7 +72,10 @@ MEMORY_TASKS_KEYWORDS = [
     "pendiente",
     "qué tareas hay",
     "que tareas hay",
+    "mis tareas",
+    "lista de tareas",
 ]
+
 
 MEMORY_PROJECT_FACTS_KEYWORDS = [
     "fase actual",
@@ -71,7 +83,34 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "estado del proyecto",
     "hechos del proyecto",
     "datos del proyecto",
+    "en qué fase",
+    "en que fase",
+    "nombre del proyecto",
 ]
+
+
+TOOL_SAVE_FACT_KEYWORDS = [
+    "guarda como hecho",
+    "guardar hecho",
+    "registra que",
+    "anota que",
+    "guarda el hecho",
+    "registra el hecho",
+    "guarda esto como hecho",
+]
+
+
+TOOL_CREATE_TASK_KEYWORDS = [
+    "crea una tarea",
+    "crear tarea",
+    "agrega una tarea",
+    "agregar tarea",
+    "nueva tarea",
+    "añade una tarea",
+    "anota una tarea",
+    "registra una tarea",
+]
+
 
 RAG_HINTS = [
     "según los documentos",
@@ -81,6 +120,7 @@ RAG_HINTS = [
     "qué dice",
     "que dice",
     "explica",
+    "explícame",
     "explicame",
     "arquitectura",
     "objetivo",
@@ -90,7 +130,9 @@ RAG_HINTS = [
     "documentacion",
 ]
 
+
 def classify_memory_query(question: str) -> str | None:
+    """Devuelve el tipo de memoria que corresponde, o None si no aplica."""
     q = question.lower().strip()
 
     if any(keyword in q for keyword in MEMORY_PROFILE_KEYWORDS):
@@ -107,9 +149,28 @@ def classify_memory_query(question: str) -> str | None:
 
     return None
 
+
 def route_query(question: str) -> str:
+    """Clasifica la pregunta y devuelve el carril de ejecución correcto.
+
+    Carriles disponibles:
+    - tool_list_files
+    - tool_read_file
+    - tool_save_fact
+    - tool_create_task
+    - memory
+    - rag
+    """
     q = question.lower().strip()
 
+    # Tools de escritura (prioridad alta: intención explícita)
+    if any(keyword in q for keyword in TOOL_SAVE_FACT_KEYWORDS):
+        return "tool_save_fact"
+
+    if any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
+        return "tool_create_task"
+
+    # Tools de lectura de archivos
     if extract_file_path(question) is not None:
         return "tool_read_file"
 
@@ -119,9 +180,12 @@ def route_query(question: str) -> str:
     if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
         return "tool_read_file"
 
-    if classify_memory_query(question) is not None:
+    # Memoria estructurada
+    memory_kind = classify_memory_query(question)
+    if memory_kind is not None:
         return "memory"
 
+    # RAG (fallback documental)
     if any(keyword in q for keyword in RAG_HINTS):
         return "rag"
 
