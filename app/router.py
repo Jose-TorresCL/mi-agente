@@ -88,9 +88,25 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
 ]
 
+# Fix: eliminamos "tareas" como keyword genérica y usamos frases más específicas.
+# Las frases de sugerencia ("podríamos crear", "nuevas tareas") deben ir a RAG, no memory.
 MEMORY_TASKS_KEYWORDS = [
-    "tareas", "pendientes", "pendiente",
-    "qué tareas hay", "que tareas hay", "mis tareas", "lista de tareas",
+    "qué tareas hay", "que tareas hay",
+    "mis tareas", "mis tareas pendientes",
+    "lista de tareas pendientes",
+    "tareas pendientes", "tareas abiertas",
+    "qué tengo pendiente", "que tengo pendiente",
+    "qué tareas tengo", "que tareas tengo",
+    "ponme al día", "ponme al dia",
+]
+
+# Palabras que indican intención de SUGERIR/CREAR — si aparecen junto a "tareas",
+# la Capa 1 debe abstenerse y dejar pasar a embeddings (RAG).
+_TASK_SUGGESTION_SIGNALS = [
+    "podríamos", "podriamos", "podrías", "podrias",
+    "nuevas", "nuevo", "crear", "agregar", "sugerir",
+    "posibles", "ideas", "proponer", "qué más", "que mas",
+    "implementar", "añadir", "añade",
 ]
 
 MEMORY_PROJECT_FACTS_KEYWORDS = [
@@ -137,6 +153,7 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
 RAG_HINTS = [
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
+    "según los archivos", "segun los archivos",
     "qué dice", "que dice", "explica", "explícame", "explicame",
     "arquitectura", "objetivo", "relación entre", "relacion entre",
     "documentación", "documentacion",
@@ -152,20 +169,20 @@ _CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistent
 Tu única tarea es identificar a qué carril pertenece la pregunta del usuario.
 
 Carriles disponibles y cuándo usarlos:
-- tool_create_task    : el usuario quiere crear, apuntar, registrar o agregar una tarea o pendiente
+- tool_create_task    : el usuario quiere crear, apuntar, registrar o agregar una tarea nueva
 - tool_complete_task  : el usuario quiere marcar, cerrar o completar una tarea existente
 - tool_update_work_state : el usuario quiere cambiar el foco, fase, siguiente paso o estado de trabajo
 - tool_save_fact      : el usuario quiere guardar un hecho, dato o información del proyecto
 - tool_list_files     : el usuario quiere ver la LISTA DE ARCHIVOS del proyecto (solo esto)
 - tool_read_file      : el usuario quiere leer el CONTENIDO de un archivo específico
-- memory              : el usuario pregunta por su perfil, tareas, estado actual o hechos guardados
-- rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools o arquitectura
+- memory              : el usuario pregunta por su perfil, tareas EXISTENTES, estado actual o hechos guardados
+- rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools, arquitectura o SUGERENCIAS
 
-IMPORTANTE — tool_list_files vs rag:
-  "qué archivos hay en el proyecto" → tool_list_files
-  "qué tools están operativas"      → rag
-  "cómo funciona el router"         → rag
-  "qué módulos tiene el proyecto"   → rag
+IMPORTANTE — memory vs rag para tareas:
+  "qué tareas tengo pendientes"                  → memory   (consulta tareas existentes)
+  "hazme una lista de tareas que podríamos crear" → rag     (pide sugerencias nuevas)
+  "qué más podríamos implementar"                 → rag
+  "según los documentos qué falta por hacer"      → rag
 
 Ejemplos:
 "apunta que tengo que revisar el router"   → tool_create_task
@@ -189,11 +206,22 @@ Carril:"""
 # Funciones internas
 # ─────────────────────────────────────────────
 
+def _has_task_suggestion_signal(q: str) -> bool:
+    """Devuelve True si la frase contiene señales de sugerencia/creación de tareas.
+
+    Cuando es True, la Capa 1 debe abstenerse de enviar a memory aunque
+    la frase contenga keywords de tareas — la intención es pedir ideas (RAG).
+    """
+    return any(signal in q for signal in _TASK_SUGGESTION_SIGNALS)
+
+
 def classify_memory_query(question: str) -> str | None:
     q = question.lower().strip()
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
-    if any(k in q for k in MEMORY_TASKS_KEYWORDS):         return "tasks"
+    # Fix: solo clasifica como "tasks" si NO hay señales de sugerencia
+    if any(k in q for k in MEMORY_TASKS_KEYWORDS) \
+            and not _has_task_suggestion_signal(q):         return "tasks"
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
     return None
 
@@ -216,21 +244,7 @@ def _route_by_keywords(question: str) -> str:
 
 
 def _route_by_embeddings(question: str) -> str | None:
-    """Capa 2: clasificador semántico con intent_index.
-
-    Busca la frase más similar en storage/intent_index usando nomic-embed-text.
-    Devuelve el carril si la similitud supera EMBED_THRESHOLD.
-    Devuelve None si:
-      - El índice no existe (no se ha ejecutado build_intent_index.py todavía).
-      - La similitud es menor que el umbral (frase muy nueva o ambigua).
-      - Ocurre cualquier error (falla silenciosa, pasa a Capa 3).
-
-    Cómo funciona la similitud:
-      Chroma devuelve distancia coseno [0, 2] (0 = idéntico).
-      Convertimos: similitud = 1 - (distancia / 2) → rango [0, 1].
-      Ejemplo: distancia 0.4 → similitud 0.80 (confiable).
-               distancia 0.7 → similitud 0.65 (debajo del umbral, renuncia).
-    """
+    """Capa 2: clasificador semántico con intent_index."""
     if not INTENT_DIR.exists():
         return None
 
@@ -275,12 +289,7 @@ def _route_by_embeddings(question: str) -> str | None:
 
 
 def _route_by_llm(question: str) -> str:
-    """Capa 3: LLM fallback para frases sin keyword ni ejemplo cercano.
-
-    Solo se activa cuando Capa 1 y Capa 2 no pudieron clasificar con confianza.
-    Timeout de 30s para sobrevivir el cold start de Ollama.
-    Fallback seguro a 'rag' ante cualquier error.
-    """
+    """Capa 3: LLM fallback para frases sin keyword ni ejemplo cercano."""
     try:
         import requests
         prompt = _CLASSIFICATION_PROMPT.format(question=question)
