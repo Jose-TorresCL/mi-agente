@@ -180,10 +180,7 @@ def route_query(question: str) -> str:
     if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
         return "tool_read_file"
 
-<<<<<<< Updated upstream
     # Memoria estructurada
-=======
->>>>>>> Stashed changes
     memory_kind = classify_memory_query(question)
     if memory_kind is not None:
         return "memory"
