@@ -1,9 +1,28 @@
+"""Router híbrido — Fase 3A
+
+Estrategia en dos capas:
+  1. _route_by_keywords()  → instantáneo, sin costo de LLM.
+     Si la pregunta tiene una keyword conocida, devuelve el carril directo.
+
+  2. _route_by_llm()       → solo cuando keywords no encontró nada útil.
+     Le pregunta al LLM (Ollama local) qué carril corresponde.
+     Paga latencia solo en frases ambiguas o nuevas.
+
+Logging diferenciado:
+  [router:kw]  → fue resuelto por keywords
+  [router:llm] → fue resuelto por LLM fallback
+"""
 from __future__ import annotations
 
 import re
+import json
 
 from app.tools import extract_file_path
 
+
+# ─────────────────────────────────────────────
+# Listas de keywords (capa 1)
+# ─────────────────────────────────────────────
 
 TOOL_LIST_KEYWORDS = [
     "listar archivos",
@@ -19,7 +38,6 @@ TOOL_LIST_KEYWORDS = [
     "que hay en el proyecto",
 ]
 
-
 TOOL_READ_KEYWORDS = [
     "leer archivo",
     "muéstrame el archivo",
@@ -34,7 +52,6 @@ TOOL_READ_KEYWORDS = [
     "mostrar documento",
 ]
 
-
 MEMORY_PROFILE_KEYWORDS = [
     "mi estilo",
     "estilo preferido",
@@ -47,7 +64,6 @@ MEMORY_PROFILE_KEYWORDS = [
     "perfil",
     "mi perfil",
 ]
-
 
 MEMORY_WORK_STATE_KEYWORDS = [
     "estado actual",
@@ -67,7 +83,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en que quedamos",
 ]
 
-
 MEMORY_TASKS_KEYWORDS = [
     "tareas",
     "pendientes",
@@ -77,7 +92,6 @@ MEMORY_TASKS_KEYWORDS = [
     "mis tareas",
     "lista de tareas",
 ]
-
 
 MEMORY_PROJECT_FACTS_KEYWORDS = [
     "fase actual",
@@ -90,7 +104,6 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "nombre del proyecto",
 ]
 
-
 TOOL_SAVE_FACT_KEYWORDS = [
     "guarda como hecho",
     "guardar hecho",
@@ -100,7 +113,6 @@ TOOL_SAVE_FACT_KEYWORDS = [
     "registra el hecho",
     "guarda esto como hecho",
 ]
-
 
 TOOL_CREATE_TASK_KEYWORDS = [
     "crea una tarea",
@@ -112,9 +124,6 @@ TOOL_CREATE_TASK_KEYWORDS = [
     "anota una tarea",
     "registra una tarea",
 ]
-
-
-# ── Nuevos carriles — Fase 2 ─────────────────────────────────────────────
 
 TOOL_COMPLETE_TASK_KEYWORDS = [
     "marca como completada",
@@ -132,10 +141,9 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
 ]
 
 _COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d{3}",
+    r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d+",
     re.IGNORECASE,
 )
-
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "actualiza el foco",
@@ -160,7 +168,6 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "cambia bloqueante",
 ]
 
-
 RAG_HINTS = [
     "según los documentos",
     "segun los documentos",
@@ -179,6 +186,49 @@ RAG_HINTS = [
     "documentacion",
 ]
 
+# Carriles válidos que el LLM puede devolver
+VALID_LANES = {
+    "tool_list_files",
+    "tool_read_file",
+    "tool_save_fact",
+    "tool_create_task",
+    "tool_complete_task",
+    "tool_update_work_state",
+    "memory",
+    "rag",
+}
+
+# Prompt de clasificación para el LLM fallback
+_CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistente local.
+Tu única tarea es identificar a qué carril pertenece la pregunta del usuario.
+
+Carriles disponibles y cuándo usarlos:
+- tool_create_task    : el usuario quiere crear, apuntar, registrar o agregar una tarea o pendiente
+- tool_complete_task  : el usuario quiere marcar, cerrar o completar una tarea existente
+- tool_update_work_state : el usuario quiere cambiar el foco, fase, siguiente paso o estado de trabajo
+- tool_save_fact      : el usuario quiere guardar un hecho, dato o información del proyecto
+- tool_list_files     : el usuario quiere ver qué archivos existen en el proyecto
+- tool_read_file      : el usuario quiere leer el contenido de un archivo específico
+- memory              : el usuario pregunta por su perfil, tareas, estado actual o hechos del proyecto
+- rag                 : cualquier otra pregunta documental o conceptual
+
+Ejemplos:
+"apunta que tengo que revisar el router" → tool_create_task
+"ponme al día de lo que hice ayer" → memory
+"cuéntame cómo funciona Chroma" → rag
+"ya terminé con la tarea del router" → tool_complete_task
+"cambia mi foco a fase 3" → tool_update_work_state
+"qué tengo pendiente" → memory
+
+Responde Únicamente con el nombre del carril, sin explicación ni texto adicional.
+
+Pregunta del usuario: "{question}"
+Carril:"""
+
+
+# ─────────────────────────────────────────────
+# Funciones internas
+# ─────────────────────────────────────────────
 
 def classify_memory_query(question: str) -> str | None:
     """Devuelve el tipo de memoria que corresponde, o None si no aplica."""
@@ -186,56 +236,115 @@ def classify_memory_query(question: str) -> str | None:
 
     if any(keyword in q for keyword in MEMORY_PROFILE_KEYWORDS):
         return "profile"
-
     if any(keyword in q for keyword in MEMORY_WORK_STATE_KEYWORDS):
         return "work_state"
-
     if any(keyword in q for keyword in MEMORY_TASKS_KEYWORDS):
         return "tasks"
-
     if any(keyword in q for keyword in MEMORY_PROJECT_FACTS_KEYWORDS):
         return "project_facts"
-
     return None
 
 
-def route_query(question: str) -> str:
-    """Clasifica la pregunta y devuelve el carril de ejecución correcto.
+def _route_by_keywords(question: str) -> str:
+    """Capa 1: clasifica por keywords. Rápido, sin costo de LLM.
 
-    Carriles disponibles:
-    - tool_list_files
-    - tool_read_file
-    - tool_save_fact
-    - tool_create_task
-    - tool_complete_task      (Fase 2)
-    - tool_update_work_state  (Fase 2)
-    - memory
-    - rag
+    Devuelve 'rag' si no encontró ninguna keyword conocida,
+    lo que indica que la capa 2 (LLM) debe tomar el relevo.
     """
     q = question.lower().strip()
-    lane = "rag"  # fallback por defecto
 
     if any(keyword in q for keyword in TOOL_SAVE_FACT_KEYWORDS):
-        lane = "tool_save_fact"
-    elif any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
-        lane = "tool_create_task"
-    elif any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
+        return "tool_save_fact"
+    if any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
+        return "tool_create_task"
+    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):
-        lane = "tool_complete_task"
-    elif any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
-        lane = "tool_update_work_state"
-    elif extract_file_path(question) is not None:
-        lane = "tool_read_file"
-    elif any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
-        lane = "tool_list_files"
-    elif any(keyword in q for keyword in TOOL_READ_KEYWORDS):
-        lane = "tool_read_file"
-    elif classify_memory_query(question) is not None:
-        lane = "memory"
-    elif any(keyword in q for keyword in RAG_HINTS):
-        lane = "rag"
+        return "tool_complete_task"
+    if any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
+        return "tool_update_work_state"
+    if extract_file_path(question) is not None:
+        return "tool_read_file"
+    if any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
+        return "tool_list_files"
+    if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
+        return "tool_read_file"
+    if classify_memory_query(question) is not None:
+        return "memory"
+    if any(keyword in q for keyword in RAG_HINTS):
+        return "rag"
 
-    # ── Item 1: Logging del router ────────────────────────────────
-    print(f"[router] '{question[:50]}' → {lane}")
+    # No encontró nada concreto → señal para que el LLM clasifique
+    return "rag"
 
-    return lane
+
+def _route_by_llm(question: str) -> str:
+    """Capa 2: usa el LLM local para clasificar frases ambiguas.
+
+    Solo se llama cuando _route_by_keywords() no encontró ninguna
+    keyword específica (devuelvó 'rag' como fallback).
+
+    Si el LLM falla, tarda demasiado o devuelve un carril inválido,
+    retorna 'rag' de forma segura (nunca lanza excepción).
+    """
+    try:
+        import requests
+        prompt = _CLASSIFICATION_PROMPT.format(question=question)
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3.2:latest",
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0,       # máxima determinismo
+                    "num_predict": 10,      # solo necesitamos el nombre del carril
+                    "stop": ["\n", " ", "."]  # corta en cuanto termina la palabra
+                },
+            },
+            timeout=15,  # si Ollama no responde en 15s, cae a rag
+        )
+        raw = response.json().get("response", "").strip().lower()
+
+        # Limpia espacios, comillas o saltos que el LLM pueda añadir
+        lane = raw.strip('"\' \n\t')
+
+        if lane in VALID_LANES:
+            return lane
+
+        # Si devuelvió algo inesperado, log y fallback seguro
+        print(f"[router:llm] respuesta inesperada del LLM: '{raw}' → rag")
+        return "rag"
+
+    except Exception as e:
+        print(f"[router:llm] error al clasificar: {e} → rag")
+        return "rag"
+
+
+# ─────────────────────────────────────────────
+# Punto de entrada público
+# ─────────────────────────────────────────────
+
+def route_query(question: str) -> str:
+    """Clasifica la pregunta en el carril de ejecución correcto.
+
+    Flujo híbrido:
+      1. Intenta clasificar por keywords (0ms, sin LLM).
+      2. Si keywords no encontró nada específico (devuelve 'rag'
+         como indicador), delega al LLM para frases ambiguas.
+    """
+    # Capa 1: keywords — rápido
+    kw_lane = _route_by_keywords(question)
+
+    # Si la keyword encontró algo concreto, lo usamos directamente.
+    # 'rag' aquí significa 'no encontré keyword' — no es el carril final todavía.
+    # Excepción: si la pregunta tiene hints de RAG explícitos, va directo.
+    has_rag_hint = any(hint in question.lower() for hint in RAG_HINTS)
+
+    if kw_lane != "rag" or has_rag_hint:
+        print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
+        return kw_lane
+
+    # Capa 2: LLM fallback — solo para frases sin keyword conocida
+    llm_lane = _route_by_llm(question)
+    print(f"[router:llm] '{question[:50]}' → {llm_lane}")
+    return llm_lane
