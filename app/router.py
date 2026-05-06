@@ -12,6 +12,8 @@ TOOL_LIST_KEYWORDS = [
     "mostrar archivos",
     "muéstrame los archivos",
     "muestrame los archivos",
+    "qué hay en el proyecto",
+    "que hay en el proyecto",
 ]
 
 TOOL_READ_KEYWORDS = [
@@ -28,31 +30,54 @@ TOOL_READ_KEYWORDS = [
     "mostrar documento",
 ]
 
-MEMORY_KEYWORDS = [
+MEMORY_PROFILE_KEYWORDS = [
     "mi estilo",
+    "estilo preferido",
     "preferencia",
     "preferido",
     "cómo prefiero",
     "como prefiero",
-    "flujo",
     "cómo trabajo",
     "como trabajo",
+    "perfil",
+    "mi perfil",
+]
+
+MEMORY_WORK_STATE_KEYWORDS = [
     "estado actual",
     "foco actual",
     "siguiente paso",
-    "fase actual",
     "en qué vamos",
     "en que vamos",
     "qué sigue",
     "que sigue",
+    "en qué estoy",
+    "en que estoy",
+    "qué estoy haciendo",
+    "que estoy haciendo",
+]
+
+MEMORY_TASKS_KEYWORDS = [
     "tareas",
     "pendientes",
-    "memoria",
+    "pendiente",
+    "qué tareas hay",
+    "que tareas hay",
+]
+
+MEMORY_PROJECT_FACTS_KEYWORDS = [
+    "fase actual",
+    "fase del proyecto",
+    "estado del proyecto",
+    "hechos del proyecto",
+    "datos del proyecto",
 ]
 
 RAG_HINTS = [
     "según los documentos",
     "segun los documentos",
+    "según la documentación",
+    "segun la documentación",
     "qué dice",
     "que dice",
     "explica",
@@ -61,13 +86,31 @@ RAG_HINTS = [
     "objetivo",
     "relación entre",
     "relacion entre",
+    "documentación",
+    "documentacion",
 ]
+
+def classify_memory_query(question: str) -> str | None:
+    q = question.lower().strip()
+
+    if any(keyword in q for keyword in MEMORY_PROFILE_KEYWORDS):
+        return "profile"
+
+    if any(keyword in q for keyword in MEMORY_WORK_STATE_KEYWORDS):
+        return "work_state"
+
+    if any(keyword in q for keyword in MEMORY_TASKS_KEYWORDS):
+        return "tasks"
+
+    if any(keyword in q for keyword in MEMORY_PROJECT_FACTS_KEYWORDS):
+        return "project_facts"
+
+    return None
 
 def route_query(question: str) -> str:
     q = question.lower().strip()
 
-    has_file_path = extract_file_path(question) is not None
-    if has_file_path:
+    if extract_file_path(question) is not None:
         return "tool_read_file"
 
     if any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
@@ -76,7 +119,7 @@ def route_query(question: str) -> str:
     if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
         return "tool_read_file"
 
-    if any(keyword in q for keyword in MEMORY_KEYWORDS):
+    if classify_memory_query(question) is not None:
         return "memory"
 
     if any(keyword in q for keyword in RAG_HINTS):
