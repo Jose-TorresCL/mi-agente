@@ -1,209 +1,141 @@
-"""Router híbrido — Fase 3A
+"""Router híbrido — Fase 3B
 
-Estrategia en dos capas:
-  1. _route_by_keywords()  → instantáneo, sin costo de LLM.
+Estrategia en tres capas:
+  1. _route_by_keywords()   → instantáneo, sin costo de modelo.
      Si la pregunta tiene una keyword conocida, devuelve el carril directo.
 
-  2. _route_by_llm()       → solo cuando keywords no encontró nada útil.
-     Le pregunta al LLM (Ollama local) qué carril corresponde.
-     Paga latencia solo en frases ambiguas o nuevas.
+  2. _route_by_embeddings() → ~50ms, consulta storage/intent_index.
+     Busca la frase más similar en el índice y devuelve su carril.
+     Solo activa si la similitud supera el umbral EMBED_THRESHOLD.
+
+  3. _route_by_llm()        → ~3-8s, solo si embeddings tiene baja confianza.
+     Último recurso para frases muy nuevas o sin ningún ejemplo cercano.
 
 Logging diferenciado:
-  [router:kw]  → fue resuelto por keywords
-  [router:llm] → fue resuelto por LLM fallback
+  [router:kw]    → resuelto por keywords (0ms)
+  [router:emb]   → resuelto por embeddings (~50ms)
+  [router:llm]   → resuelto por LLM fallback (~3-8s)
+
+Requisito previo para la Capa 2:
+  Ejecutar python build_intent_index.py una vez para crear storage/intent_index.
+  Si el índice no existe, la Capa 2 se salta silenciosamente y pasa a la Capa 3.
 """
 from __future__ import annotations
 
 import re
-import json
+from pathlib import Path
 
 from app.tools import extract_file_path
 
 
 # ─────────────────────────────────────────────
-# Listas de keywords (capa 1)
+# Configuración de embeddings (Capa 2)
+# ─────────────────────────────────────────────
+
+INTENT_DIR      = Path("storage/intent_index")
+EMBED_MODEL     = "nomic-embed-text"
+OLLAMA_URL      = "http://localhost:11434"
+
+# Umbral de similitud coseno [0.0 — 1.0].
+# Chroma devuelve distancia: 0 = idéntico, 2 = opuesto.
+# Convertimos a similitud: sim = 1 - (dist / 2).
+# Por debajo de este umbral la Capa 2 renuncia y pasa a la Capa 3.
+EMBED_THRESHOLD = 0.70
+
+# Cuántos vecinos buscar. Con 1 es suficiente — queremos el más cercano.
+EMBED_TOP_K     = 1
+
+
+# ─────────────────────────────────────────────
+# Listas de keywords (Capa 1)
 # ─────────────────────────────────────────────
 
 TOOL_LIST_KEYWORDS = [
-    "listar archivos",
-    "lista de archivos",
-    "qué archivos",
-    "que archivos",
-    "archivos del proyecto",
-    "ver archivos",
-    "mostrar archivos",
-    "muéstrame los archivos",
-    "muestrame los archivos",
-    "qué hay en el proyecto",
-    "que hay en el proyecto",
+    "listar archivos", "lista de archivos", "qué archivos", "que archivos",
+    "archivos del proyecto", "ver archivos", "mostrar archivos",
+    "muéstrame los archivos", "muestrame los archivos",
+    "qué hay en el proyecto", "que hay en el proyecto",
 ]
 
 TOOL_READ_KEYWORDS = [
-    "leer archivo",
-    "muéstrame el archivo",
-    "muestrame el archivo",
-    "abre el archivo",
-    "ver archivo",
-    "mostrar archivo",
-    "lee el archivo",
-    "leer docs",
-    "leer documentación",
-    "leer documento",
-    "mostrar documento",
+    "leer archivo", "muéstrame el archivo", "muestrame el archivo",
+    "abre el archivo", "ver archivo", "mostrar archivo", "lee el archivo",
+    "leer docs", "leer documentación", "leer documento", "mostrar documento",
 ]
 
 MEMORY_PROFILE_KEYWORDS = [
-    "mi estilo",
-    "estilo preferido",
-    "preferencia",
-    "preferido",
-    "cómo prefiero",
-    "como prefiero",
-    "cómo trabajo",
-    "como trabajo",
-    "perfil",
-    "mi perfil",
+    "mi estilo", "estilo preferido", "preferencia", "preferido",
+    "cómo prefiero", "como prefiero", "cómo trabajo", "como trabajo",
+    "perfil", "mi perfil",
 ]
 
 MEMORY_WORK_STATE_KEYWORDS = [
-    "estado actual",
-    "foco actual",
-    "siguiente paso",
-    "en qué vamos",
-    "en que vamos",
-    "qué sigue",
-    "que sigue",
-    "en qué estoy",
-    "en que estoy",
-    "qué estoy haciendo",
-    "que estoy haciendo",
-    "último paso",
-    "ultimo paso",
-    "en qué quedamos",
-    "en que quedamos",
+    "estado actual", "foco actual", "siguiente paso",
+    "en qué vamos", "en que vamos", "qué sigue", "que sigue",
+    "en qué estoy", "en que estoy", "qué estoy haciendo", "que estoy haciendo",
+    "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
-    "tareas",
-    "pendientes",
-    "pendiente",
-    "qué tareas hay",
-    "que tareas hay",
-    "mis tareas",
-    "lista de tareas",
+    "tareas", "pendientes", "pendiente",
+    "qué tareas hay", "que tareas hay", "mis tareas", "lista de tareas",
 ]
 
 MEMORY_PROJECT_FACTS_KEYWORDS = [
-    "fase actual",
-    "fase del proyecto",
-    "estado del proyecto",
-    "hechos del proyecto",
-    "datos del proyecto",
-    "en qué fase",
-    "en que fase",
-    "nombre del proyecto",
+    "fase actual", "fase del proyecto", "estado del proyecto",
+    "hechos del proyecto", "datos del proyecto",
+    "en qué fase", "en que fase", "nombre del proyecto",
 ]
 
 TOOL_SAVE_FACT_KEYWORDS = [
-    "guarda como hecho",
-    "guardar hecho",
-    "registra que",
-    "anota que",
-    "guarda el hecho",
-    "registra el hecho",
-    "guarda esto como hecho",
+    "guarda como hecho", "guardar hecho", "registra que", "anota que",
+    "guarda el hecho", "registra el hecho", "guarda esto como hecho",
 ]
 
 TOOL_CREATE_TASK_KEYWORDS = [
-    "crea una tarea",
-    "crear tarea",
-    "agrega una tarea",
-    "agregar tarea",
-    "nueva tarea",
-    "añade una tarea",
-    "anota una tarea",
-    "registra una tarea",
+    "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
+    "nueva tarea", "añade una tarea", "anota una tarea", "registra una tarea",
 ]
 
 TOOL_COMPLETE_TASK_KEYWORDS = [
-    "marca como completada",
-    "marca como completado",
-    "marcar como completada",
-    "marcar como completado",
-    "cierra la tarea",
-    "cerrar tarea",
-    "completé la tarea",
-    "complete la tarea",
-    "tarea completada",
-    "completar tarea",
-    "como completada",
-    "como completado",
+    "marca como completada", "marca como completado",
+    "marcar como completada", "marcar como completado",
+    "cierra la tarea", "cerrar tarea",
+    "completé la tarea", "complete la tarea",
+    "tarea completada", "completar tarea",
+    "como completada", "como completado",
 ]
 
-# \d+ acepta IDs de cualquier longitud: T-003, T-0506132952, etc.
 _COMPLETE_TASK_PATTERN = re.compile(
     r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d+",
     re.IGNORECASE,
 )
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
-    "actualiza el foco",
-    "actualiza foco",
-    "cambia el foco",
-    "cambia foco",
-    "actualiza work_state",
-    "actualiza el estado de trabajo",
-    "actualiza estado de trabajo",
-    "cambia next_step",
-    "cambia siguiente paso",
-    "actualiza siguiente paso",
-    "pon en siguiente paso",
-    "actualiza la fase",
-    "cambia la fase",
-    "estoy trabajando en",
-    "ahora estoy en",
-    "cambia el último paso",
-    "actualiza el último paso",
-    "nuevo bloqueo",
-    "actualiza bloqueante",
-    "cambia bloqueante",
+    "actualiza el foco", "actualiza foco", "cambia el foco", "cambia foco",
+    "actualiza work_state", "actualiza el estado de trabajo",
+    "actualiza estado de trabajo", "cambia next_step",
+    "cambia siguiente paso", "actualiza siguiente paso", "pon en siguiente paso",
+    "actualiza la fase", "cambia la fase",
+    "estoy trabajando en", "ahora estoy en",
+    "cambia el último paso", "actualiza el último paso",
+    "nuevo bloqueo", "actualiza bloqueante", "cambia bloqueante",
 ]
 
 RAG_HINTS = [
-    "según los documentos",
-    "segun los documentos",
-    "según la documentación",
-    "segun la documentación",
-    "qué dice",
-    "que dice",
-    "explica",
-    "explícame",
-    "explicame",
-    "arquitectura",
-    "objetivo",
-    "relación entre",
-    "relacion entre",
-    "documentación",
-    "documentacion",
+    "según los documentos", "segun los documentos",
+    "según la documentación", "segun la documentación",
+    "qué dice", "que dice", "explica", "explícame", "explicame",
+    "arquitectura", "objetivo", "relación entre", "relacion entre",
+    "documentación", "documentacion",
 ]
 
-# Carriles válidos que el LLM puede devolver
 VALID_LANES = {
-    "tool_list_files",
-    "tool_read_file",
-    "tool_save_fact",
-    "tool_create_task",
-    "tool_complete_task",
-    "tool_update_work_state",
-    "memory",
-    "rag",
+    "tool_list_files", "tool_read_file", "tool_save_fact",
+    "tool_create_task", "tool_complete_task", "tool_update_work_state",
+    "memory", "rag",
 }
 
-# Prompt de clasificación para el LLM fallback
-# REGLA CLAVE para el LLM:
-#   tool_list_files  → SOLO cuando el usuario quiere ver la lista de archivos del proyecto.
-#   rag              → cuando pregunta por funcionalidad, componentes, tools, fases o conceptos.
-#   memory           → cuando pregunta por su estado, tareas o hechos guardados.
 _CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistente local.
 Tu única tarea es identificar a qué carril pertenece la pregunta del usuario.
 
@@ -218,12 +150,12 @@ Carriles disponibles y cuándo usarlos:
 - rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools o arquitectura
 
 IMPORTANTE — tool_list_files vs rag:
-  "qué archivos hay en el proyecto" → tool_list_files  (quiere ver archivos)
-  "qué tools están operativas"      → rag              (pregunta conceptual sobre el sistema)
-  "cómo funciona el router"         → rag              (pregunta conceptual)
-  "qué módulos tiene el proyecto"   → rag              (pregunta conceptual)
+  "qué archivos hay en el proyecto" → tool_list_files
+  "qué tools están operativas"      → rag
+  "cómo funciona el router"         → rag
+  "qué módulos tiene el proyecto"   → rag
 
-Ejemplos completos:
+Ejemplos:
 "apunta que tengo que revisar el router"   → tool_create_task
 "ya terminé con la tarea del router"       → tool_complete_task
 "cambia mi foco a fase 3"                  → tool_update_work_state
@@ -234,7 +166,6 @@ Ejemplos completos:
 "cómo funciona Chroma"                     → rag
 "cuáles son los componentes del sistema"   → rag
 "muéstrame los archivos del proyecto"      → tool_list_files
-"apunta que mañana hay reunión"            → tool_create_task
 
 Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
@@ -247,61 +178,98 @@ Carril:"""
 # ─────────────────────────────────────────────
 
 def classify_memory_query(question: str) -> str | None:
-    """Devuelve el tipo de memoria que corresponde, o None si no aplica."""
     q = question.lower().strip()
-
-    if any(keyword in q for keyword in MEMORY_PROFILE_KEYWORDS):
-        return "profile"
-    if any(keyword in q for keyword in MEMORY_WORK_STATE_KEYWORDS):
-        return "work_state"
-    if any(keyword in q for keyword in MEMORY_TASKS_KEYWORDS):
-        return "tasks"
-    if any(keyword in q for keyword in MEMORY_PROJECT_FACTS_KEYWORDS):
-        return "project_facts"
+    if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
+    if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
+    if any(k in q for k in MEMORY_TASKS_KEYWORDS):         return "tasks"
+    if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
     return None
 
 
 def _route_by_keywords(question: str) -> str:
-    """Capa 1: clasifica por keywords. Rápido, sin costo de LLM.
-
-    Devuelve 'rag' si no encontró ninguna keyword conocida,
-    lo que indica que la capa 2 (LLM) debe tomar el relevo.
-    """
+    """Capa 1: keywords instantáneas. Devuelve 'rag' si no encuentra nada."""
     q = question.lower().strip()
 
-    if any(keyword in q for keyword in TOOL_SAVE_FACT_KEYWORDS):
-        return "tool_save_fact"
-    if any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
-        return "tool_create_task"
-    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS) \
-            or _COMPLETE_TASK_PATTERN.search(q):
-        return "tool_complete_task"
-    if any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
-        return "tool_update_work_state"
-    if extract_file_path(question) is not None:
-        return "tool_read_file"
-    if any(keyword in q for keyword in TOOL_LIST_KEYWORDS):
-        return "tool_list_files"
-    if any(keyword in q for keyword in TOOL_READ_KEYWORDS):
-        return "tool_read_file"
-    if classify_memory_query(question) is not None:
-        return "memory"
-    if any(keyword in q for keyword in RAG_HINTS):
-        return "rag"
+    if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
+    if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
+    if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
+            or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
+    if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
+    if extract_file_path(question) is not None:               return "tool_read_file"
+    if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
+    if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
+    if classify_memory_query(question) is not None:           return "memory"
+    if any(k in q for k in RAG_HINTS):                        return "rag"
+    return "rag"  # señal para que la Capa 2 tome el relevo
 
-    # No encontró nada concreto → señal para que el LLM clasifique
-    return "rag"
+
+def _route_by_embeddings(question: str) -> str | None:
+    """Capa 2: clasificador semántico con intent_index.
+
+    Busca la frase más similar en storage/intent_index usando nomic-embed-text.
+    Devuelve el carril si la similitud supera EMBED_THRESHOLD.
+    Devuelve None si:
+      - El índice no existe (no se ha ejecutado build_intent_index.py todavía).
+      - La similitud es menor que el umbral (frase muy nueva o ambigua).
+      - Ocurre cualquier error (falla silenciosa, pasa a Capa 3).
+
+    Cómo funciona la similitud:
+      Chroma devuelve distancia coseno [0, 2] (0 = idéntico).
+      Convertimos: similitud = 1 - (distancia / 2) → rango [0, 1].
+      Ejemplo: distancia 0.4 → similitud 0.80 (confiable).
+               distancia 0.7 → similitud 0.65 (debajo del umbral, renuncia).
+    """
+    if not INTENT_DIR.exists():
+        # El índice aún no fue construido — salta silenciosamente a Capa 3
+        return None
+
+    try:
+        from langchain_ollama import OllamaEmbeddings
+        from langchain_chroma import Chroma
+
+        embeddings = OllamaEmbeddings(
+            model=EMBED_MODEL,
+            base_url=OLLAMA_URL,
+        )
+
+        vectordb = Chroma(
+            persist_directory=str(INTENT_DIR),
+            embedding_function=embeddings,
+            collection_name="intent_index",
+        )
+
+        results = vectordb.similarity_search_with_score(
+            query=question,
+            k=EMBED_TOP_K,
+        )
+
+        if not results:
+            return None
+
+        doc, distance = results[0]
+        similarity = 1.0 - (distance / 2.0)  # normaliza distancia coseno a [0, 1]
+        lane = doc.metadata.get("lane", "")
+
+        print(f"[router:emb] similitud={similarity:.2f} lane_candidato={lane}")
+
+        if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
+            return lane
+
+        # Similitud baja: renuncia y deja que Capa 3 decida
+        print(f"[router:emb] similitud baja ({similarity:.2f} < {EMBED_THRESHOLD}) → pasa a LLM")
+        return None
+
+    except Exception as e:
+        print(f"[router:emb] error: {e} → pasa a LLM")
+        return None
 
 
 def _route_by_llm(question: str) -> str:
-    """Capa 2: usa el LLM local para clasificar frases ambiguas.
+    """Capa 3: LLM fallback para frases sin keyword ni ejemplo cercano.
 
-    Solo se llama cuando _route_by_keywords() no encontró ninguna
-    keyword específica. Timeout de 30s para sobrevivir el cold start
-    de Ollama (primera llamada tras inactividad).
-
-    Si el LLM falla o devuelve un carril inválido, retorna 'rag'
-    de forma segura (nunca lanza excepción).
+    Solo se activa cuando Capa 1 y Capa 2 no pudieron clasificar con confianza.
+    Timeout de 30s para sobrevivir el cold start de Ollama.
+    Fallback seguro a 'rag' ante cualquier error.
     """
     try:
         import requests
@@ -313,27 +281,24 @@ def _route_by_llm(question: str) -> str:
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "temperature": 0,       # máximo determinismo
-                    "num_predict": 10,      # solo necesitamos el nombre del carril
-                    "stop": ["\n", " ", "."]  # corta en cuanto termina la palabra
+                    "temperature": 0,
+                    "num_predict": 10,
+                    "stop": ["\n", " ", "."]
                 },
             },
-            timeout=30,  # 30s para sobrevivir cold start de Ollama
+            timeout=30,
         )
         raw = response.json().get("response", "").strip().lower()
-
-        # Limpia espacios, comillas o saltos que el LLM pueda añadir
         lane = raw.strip("\"' \n\t")
 
         if lane in VALID_LANES:
             return lane
 
-        # Si devolvió algo inesperado, log y fallback seguro
-        print(f"[router:llm] respuesta inesperada del LLM: '{raw}' → rag")
+        print(f"[router:llm] respuesta inesperada: '{raw}' → rag")
         return "rag"
 
     except Exception as e:
-        print(f"[router:llm] error al clasificar: {e} → rag")
+        print(f"[router:llm] error: {e} → rag")
         return "rag"
 
 
@@ -344,22 +309,26 @@ def _route_by_llm(question: str) -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Flujo híbrido:
-      1. Intenta clasificar por keywords (0ms, sin LLM).
-      2. Si keywords no encontró nada específico, delega al LLM
-         para frases ambiguas o con vocabulario nuevo.
+    Flujo en tres capas:
+      1. keywords   → 0ms,   sin modelo.
+      2. embeddings → ~50ms, nomic-embed-text + intent_index.
+      3. LLM        → ~3-8s, solo si las dos anteriores fallan.
     """
-    # Capa 1: keywords — rápido
+    # Capa 1: keywords — instantáneo
     kw_lane = _route_by_keywords(question)
-
-    # Si encontró algo concreto O hay hints explícitos de RAG → va directo
     has_rag_hint = any(hint in question.lower() for hint in RAG_HINTS)
 
     if kw_lane != "rag" or has_rag_hint:
         print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
         return kw_lane
 
-    # Capa 2: LLM fallback — solo para frases sin keyword conocida
+    # Capa 2: embeddings — semántico rápido
+    emb_lane = _route_by_embeddings(question)
+    if emb_lane is not None:
+        print(f"[router:emb] '{question[:50]}' → {emb_lane}")
+        return emb_lane
+
+    # Capa 3: LLM fallback — solo cuando todo lo anterior falla
     llm_lane = _route_by_llm(question)
     print(f"[router:llm] '{question[:50]}' → {llm_lane}")
     return llm_lane
