@@ -20,7 +20,8 @@ ALLOWED_DIRS = [
 ]
 
 SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db", "chroma", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-SKIP_SUFFIXES = {".pyc"}
+# Fix 3: añadimos .bak a las extensiones omitidas
+SKIP_SUFFIXES = {".pyc", ".bak"}
 VALID_PRIORITIES = {"low", "medium", "high"}
 
 # Campos permitidos para actualizar work_state (lista blanca de seguridad)
@@ -111,7 +112,7 @@ def list_project_files() -> list[str]:
 
 def extract_file_path(text: str) -> str | None:
     cleaned = text.strip()
-    markers = ["data/", "data\\", "app/", "app\\", "storage/", "storage\\"]
+    markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
     lower_text = cleaned.lower()
 
     for marker in markers:
@@ -190,22 +191,11 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
 # ─────────────────────────────────────────────
 
 def extract_task_id(text: str) -> str:
-    """Extrae un ID de tarea del texto del usuario.
-
-    Soporta dos formatos:
-    - IDs largos por timestamp: T-0506130557  (10 dígitos)
-    - IDs cortos legacy:        T-003         (3 dígitos)
-
-    Estrategia:
-    1. Busca T- seguido de 1 o más dígitos (captura ambos formatos).
-    2. Fallback: número suelto de 3 dígitos exactos → lo convierte en T-NNN.
-    """
-    # ── Fix: \d{3} → \d+ para capturar IDs de cualquier longitud ──────────
+    """Extrae un ID de tarea del texto del usuario."""
     match = re.search(r"T-(\d+)", text, re.IGNORECASE)
     if match:
         return f"T-{match.group(1)}"
 
-    # Fallback solo para IDs cortos escritos sin prefijo (ej: "003", "005")
     match = re.search(r"\b(\d{3})\b", text)
     if match:
         return f"T-{match.group(1)}"
@@ -214,11 +204,7 @@ def extract_task_id(text: str) -> str:
 
 
 def tool_complete_task(task_id: str) -> str:
-    """Marca una tarea existente como completada dado su ID (ej: 'T-002').
-
-    Actualiza 'status' a 'completed' y registra 'completed_at'.
-    No borra la tarea del archivo.
-    """
+    """Marca una tarea existente como completada dado su ID."""
     if not task_id:
         return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
 
@@ -248,23 +234,15 @@ def tool_complete_task(task_id: str) -> str:
 # ─────────────────────────────────────────────
 
 def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
-    """Extrae (field, value) de una frase como:
-    - 'actualiza el foco a fase 3 — router semántico'
-    - 'cambia next_step a probar el router'
-    - 'pon en siguiente paso: escribir tests'
-
-    Devuelve (None, None) si no puede parsear el campo.
-    """
+    """Extrae (field, value) de una frase de actualización de work_state."""
     text_lower = text.lower()
 
-    # Detectar campo por alias (ordenados de mayor a menor longitud)
     detected_field: str | None = None
     for alias in sorted(WORK_STATE_FIELD_ALIASES, key=len, reverse=True):
         if alias in text_lower:
             detected_field = WORK_STATE_FIELD_ALIASES[alias]
             break
 
-    # Si no hay alias, buscar nombre de campo directo
     if not detected_field:
         for field in ALLOWED_WORK_STATE_FIELDS:
             if field in text_lower:
@@ -274,7 +252,6 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
     if not detected_field:
         return None, None
 
-    # Extraer el valor después de separadores comunes
     patterns = [
         r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
         r"[:=]\s*(.+?)(?:\s*[.!?]|$)",
@@ -295,10 +272,7 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
 
 
 def tool_update_work_state(field: str, value: str) -> str:
-    """Actualiza un campo específico de work_state.json desde conversación.
-
-    Solo permite modificar los campos definidos en ALLOWED_WORK_STATE_FIELDS.
-    """
+    """Actualiza un campo específico de work_state.json desde conversación."""
     if field not in ALLOWED_WORK_STATE_FIELDS:
         return (
             f"❌ Campo '{field}' no permitido.\n"

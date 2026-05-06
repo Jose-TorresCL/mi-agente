@@ -52,7 +52,7 @@
   { "text": "guarda que Chroma persiste en storage/chroma",       "lane": "tool_save_fact" },
 
   // ── tool_list_files ──────────────────────────────────────────────
-  // SOLO frases donde el usuario quiere ver la lista de archivos del proyecto.
+  // SOLO frases donde el usuario quiere ver la lista de archivos (paths), NO contenido.
   { "text": "listar archivos del proyecto",                        "lane": "tool_list_files" },
   { "text": "qué archivos hay en el proyecto",                     "lane": "tool_list_files" },
   { "text": "muéstrame los archivos",                              "lane": "tool_list_files" },
@@ -60,6 +60,7 @@
   { "text": "lista de archivos del proyecto",                      "lane": "tool_list_files" },
   { "text": "qué hay disponible para leer",                        "lane": "tool_list_files" },
   { "text": "mostrar archivos del proyecto",                       "lane": "tool_list_files" },
+  { "text": "qué archivos puedes leer",                            "lane": "tool_list_files" },
 
   // ── tool_read_file ───────────────────────────────────────────────
   // Frases donde el usuario quiere leer el CONTENIDO de un archivo específico.
@@ -72,7 +73,7 @@
   { "text": "leer estado_proyecto.md",                             "lane": "tool_read_file" },
 
   // ── memory ───────────────────────────────────────────────────────
-  // Frases sobre estado actual, tareas, hechos guardados o perfil del usuario.
+  // Frases sobre estado actual, tareas EXISTENTES, hechos guardados o perfil.
   { "text": "en qué fase estamos",                                 "lane": "memory" },
   { "text": "qué tengo pendiente",                                 "lane": "memory" },
   { "text": "ponme al día de lo que tengo pendiente",              "lane": "memory" },
@@ -87,9 +88,13 @@
   { "text": "qué tareas hay abiertas",                             "lane": "memory" },
   { "text": "resumen del proyecto",                                "lane": "memory" },
   { "text": "qué decidimos sobre el router",                       "lane": "memory" },
+  { "text": "qué tareas tengo pendientes",                         "lane": "memory" },
+  { "text": "cuáles son mis tareas actuales",                      "lane": "memory" },
+  { "text": "qué hay en mi lista de tareas",                       "lane": "memory" },
 
   // ── rag ──────────────────────────────────────────────────────────
-  // Preguntas conceptuales, técnicas o documentales sobre el sistema.
+  // Preguntas conceptuales, técnicas, sugerencias o documentales sobre el sistema.
+  // Fix 1: añadir frases de "qué más podría hacer" para que NO vayan a memory/tool_list_files
   { "text": "qué tools están operativas",                          "lane": "rag" },
   { "text": "cómo funciona el router híbrido",                     "lane": "rag" },
   { "text": "cuáles son los componentes del sistema",              "lane": "rag" },
@@ -103,5 +108,15 @@
   { "text": "para qué sirve nomic-embed-text",                     "lane": "rag" },
   { "text": "cuántos carriles tiene el router",                    "lane": "rag" },
   { "text": "qué es el LLM fallback",                              "lane": "rag" },
-  { "text": "cómo se guarda la memoria entre sesiones",            "lane": "rag" }
+  { "text": "cómo se guarda la memoria entre sesiones",            "lane": "rag" },
+  { "text": "qué más podríamos implementar en el proyecto",        "lane": "rag" },
+  { "text": "hazme una lista de posibles mejoras al sistema",      "lane": "rag" },
+  { "text": "qué funcionalidades podríamos agregar",               "lane": "rag" },
+  { "text": "según los documentos qué más podría hacer",           "lane": "rag" },
+  { "text": "qué próximos pasos sugieren los documentos",          "lane": "rag" },
+  { "text": "según los archivos fuentes qué más podríamos hacer",  "lane": "rag" },
+  { "text": "qué tareas nuevas podríamos crear según el proyecto", "lane": "rag" },
+  { "text": "hazme una lista de tareas que podríamos crear",       "lane": "rag" },
+  { "text": "qué hay pendiente por implementar",                   "lane": "rag" },
+  { "text": "sugiéreme próximos pasos para el agente",             "lane": "rag" }
 ]
