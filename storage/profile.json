@@ -1,0 +1,59 @@
+{
+  "user_name": "José",
+  "user_level": "junior",
+  "preferred_language": "es",
+
+  "preferred_style": [
+    "claro",
+    "practico",
+    "didactico",
+    "sin rodeos",
+    "con ejemplos concretos"
+  ],
+
+  "preferred_workflow": [
+    "explicar primero que esta pasando",
+    "luego que parte fallo",
+    "luego como diagnosticarlo",
+    "y despues solucion paso a paso"
+  ],
+
+  "learning_style": {
+    "wants_to_understand": true,
+    "not_just_copy_commands": true,
+    "prefers_analogies": true,
+    "prefers_before_after_examples": true
+  },
+
+  "environment": {
+    "os": "Windows",
+    "shell": "PowerShell",
+    "editor": "VS Code",
+    "language": "Python",
+    "ai_stack": ["Ollama", "LangChain", "Chroma"],
+    "model": "llama3.2:latest",
+    "embedding_model": "nomic-embed-text"
+  },
+
+  "project_type": "asistente IA local",
+  "project_name": "mi-agente",
+
+  "principles": [
+    "soluciones pequeñas, seguras y progresivas",
+    "no destruir lo que ya funciona",
+    "entender antes de avanzar",
+    "commits atomicos por funcionalidad"
+  ],
+
+  "avoid": [
+    "soluciones que asumen conocimientos avanzados sin explicarlos",
+    "cambios grandes sin respaldo",
+    "mezclar demasiadas cosas en un solo paso"
+  ],
+
+  "strengths_noted": [
+    "hace preguntas precisas",
+    "detecta inconsistencias entre lo que se dice y lo que se ve",
+    "prueba antes de hacer merge"
+  ]
+}

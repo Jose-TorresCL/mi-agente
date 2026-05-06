@@ -1,0 +1,47 @@
+{
+  "project_name": "mi-agente",
+  "current_phase": "fase_2",
+  "phase_label": "Memoria estructurada y herramientas básicas",
+
+  "current_focus": "cerrar fase 2 y hacer merge del PR",
+
+  "status_summary": {
+    "architecture": "modularización completa — chat_core, router, tools, memory_store separados",
+    "rag": "funcional con filtro por doc_type, afinando grounding y recuperación",
+    "memory": "memoria por capas implementada — profile, facts, tasks, work_state",
+    "router": "6 carriles activos — tool_save_fact, tool_create_task, list, read, memory, rag",
+    "tools_escritura": "tool_save_fact y tool_create_task implementadas y probadas",
+    "handle_query": "orquestador central implementado en chat_core.py"
+  },
+
+  "what_works_today": [
+    "responder desde profile.json sin tocar RAG",
+    "responder desde work_state.json sin tocar RAG",
+    "listar tareas desde tasks.json",
+    "crear tareas con prioridad desde conversación",
+    "guardar hechos desde conversación",
+    "RAG con filtro por tipo de documento"
+  ],
+
+  "pending_this_phase": [
+    "hacer merge del PR fase2-memoria-tools-estable",
+    "agregar tool para actualizar work_state desde conversación",
+    "marcar tareas como completadas desde conversación",
+    "limpiar memory.json al inicio de cada sesión"
+  ],
+
+  "criteria_to_phase_3": [
+    "agente usa RAG y memoria con criterio correcto de forma consistente",
+    "work_state se mantiene actualizado entre sesiones sin intervención manual",
+    "tools de escritura funcionan sin errores en uso real por varias sesiones"
+  ],
+
+  "decisions_made": [
+    "tools de escritura solo con keywords explícitas, no lenguaje libre",
+    "work_state se actualiza manualmente por ahora",
+    "no tocar chat_ui.py ni indexing_core.py en esta fase",
+    "no agregar multiagente ni planner hasta fase 3"
+  ],
+
+  "last_updated": "2026-05-06"
+}
