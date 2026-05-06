@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+
 import re
 from pathlib import Path
 from datetime import datetime
+
 
 from app.memory_store import (
     save_project_fact,
@@ -12,6 +14,7 @@ from app.memory_store import (
     load_tasks,
 )
 
+
 PROJECT_ROOT = Path(".")
 ALLOWED_DIRS = [
     PROJECT_ROOT / "app",
@@ -19,10 +22,11 @@ ALLOWED_DIRS = [
     PROJECT_ROOT / "storage"
 ]
 
+
 SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db", "chroma", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-# Fix 3: añadimos .bak a las extensiones omitidas
 SKIP_SUFFIXES = {".pyc", ".bak"}
 VALID_PRIORITIES = {"low", "medium", "high"}
+
 
 # Campos permitidos para actualizar work_state (lista blanca de seguridad)
 ALLOWED_WORK_STATE_FIELDS = {
@@ -33,6 +37,7 @@ ALLOWED_WORK_STATE_FIELDS = {
     "current_blockers",
     "session_goal",
 }
+
 
 # Aliases en español para los campos de work_state
 WORK_STATE_FIELD_ALIASES = {
@@ -56,6 +61,7 @@ WORK_STATE_FIELD_ALIASES = {
     "session goal":           "session_goal",
 }
 
+
 # Prefijos de navegación que se deben eliminar del valor extraído
 _VALUE_PREFIXES = [
     "el foco a",
@@ -72,11 +78,13 @@ _VALUE_PREFIXES = [
 ]
 
 
+
 def _is_allowed(path: Path) -> bool:
     try:
         resolved = path.resolve()
     except Exception:
         return False
+
 
     for base in ALLOWED_DIRS:
         try:
@@ -89,12 +97,14 @@ def _is_allowed(path: Path) -> bool:
     return False
 
 
+
 def _should_skip(path: Path) -> bool:
     if any(part in SKIP_DIR_NAMES for part in path.parts):
         return True
     if path.suffix in SKIP_SUFFIXES:
         return True
     return False
+
 
 
 def list_project_files() -> list[str]:
@@ -110,10 +120,12 @@ def list_project_files() -> list[str]:
     return sorted(files)
 
 
+
 def extract_file_path(text: str) -> str | None:
     cleaned = text.strip()
     markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
     lower_text = cleaned.lower()
+
 
     for marker in markers:
         idx = lower_text.find(marker.lower())
@@ -130,6 +142,7 @@ def extract_file_path(text: str) -> str | None:
     return None
 
 
+
 def read_project_file(path: str, max_chars: int = 8000) -> str:
     p = Path(path)
     if not _is_allowed(p):
@@ -140,11 +153,59 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
     return text[:max_chars]
 
 
+
 # ─────────────────────────────────────────────
 # Tools de escritura seguras
 # ─────────────────────────────────────────────
 
+
+def _parse_key_value(content: str) -> tuple[str, str] | None:
+    """Detecta si el contenido tiene formato 'clave = valor' o 'clave=valor'.
+
+    Si lo tiene, devuelve (clave_normalizada, valor).
+    Si no, devuelve None — la llamada usará hecho_timestamp como antes.
+
+    Ejemplos que detecta:
+        'current_phase = fase_4'    → ('current_phase', 'fase_4')
+        'current_focus=fase 4'      → ('current_focus', 'fase 4')
+        'fase del proyecto : 4'     → ('fase_del_proyecto', '4')
+    Ejemplos que NO detecta (van a hecho_timestamp):
+        'la fase 2 ya está cerrada'
+        'completamos el router híbrido'
+    """
+    # Patrón: texto_sin_espacios opcionales espacios [=:] opcionales espacios valor
+    match = re.match(
+        r'^([\w\s]{1,40}?)\s*[=:]\s*(.+)$',
+        content.strip(),
+        re.UNICODE,
+    )
+    if not match:
+        return None
+
+    raw_key = match.group(1).strip()
+    value   = match.group(2).strip()
+
+    # La clave no debe contener espacios internos excesivos ni ser muy larga
+    # Normalizamos: minúsculas, espacios → guion bajo
+    key = re.sub(r'\s+', '_', raw_key.lower())
+
+    # Rechazar si la clave parece una frase larga (más de 5 palabras)
+    if len(key.split('_')) > 5:
+        return None
+
+    return key, value
+
+
 def tool_save_fact(question: str) -> str:
+    """Guarda un hecho en project_facts.json.
+
+    Si el contenido tiene formato 'clave = valor', guarda con esa clave
+    exacta — sobreescribiendo el valor anterior si ya existía.
+    Si es texto libre, usa hecho_timestamp como clave única.
+
+    Esto resuelve el problema de que 'en qué fase estamos' devuelva
+    el valor viejo junto al nuevo cuando se actualiza current_phase.
+    """
     prefixes = [
         "guarda como hecho que",
         "guarda como hecho:",
@@ -166,6 +227,14 @@ def tool_save_fact(question: str) -> str:
     if not content:
         return "No pude guardar el hecho: no entendí el contenido."
 
+    # Intentar detectar formato key=value para sobreescribir clave existente
+    kv = _parse_key_value(content)
+    if kv:
+        key, value = kv
+        save_project_fact(key, value)
+        return f"✓ Hecho guardado: {key} = \"{value}\""
+
+    # Texto libre — guardar con timestamp como antes
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
     return f"✓ Hecho guardado: \"{content}\""
@@ -177,18 +246,22 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
     priority = priority.strip().lower()
     notes = notes.strip()
 
+
     if not title:
         return "No pude crear la tarea: falta el título."
     if priority not in VALID_PRIORITIES:
         priority = "medium"
 
+
     task_id = add_task(title=title, priority=priority, notes=notes)
     return f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})"
+
 
 
 # ─────────────────────────────────────────────
 # Tool: completar tarea  (Fase 2)
 # ─────────────────────────────────────────────
+
 
 def extract_task_id(text: str) -> str:
     """Extrae un ID de tarea del texto del usuario."""
@@ -196,11 +269,14 @@ def extract_task_id(text: str) -> str:
     if match:
         return f"T-{match.group(1)}"
 
+
     match = re.search(r"\b(\d{3})\b", text)
     if match:
         return f"T-{match.group(1)}"
 
+
     return ""
+
 
 
 def tool_complete_task(task_id: str) -> str:
@@ -208,8 +284,10 @@ def tool_complete_task(task_id: str) -> str:
     if not task_id:
         return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
 
+
     tasks_data = load_tasks()
     tasks = tasks_data.get("tasks", [])
+
 
     found = False
     for task in tasks:
@@ -221,21 +299,26 @@ def tool_complete_task(task_id: str) -> str:
             found = True
             break
 
+
     if not found:
         available = [t.get("id") for t in tasks]
         return f"❌ No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
 
+
     update_task_status(task_id, "completed")
     return f"✅ Tarea {task_id} marcada como completada."
+
 
 
 # ─────────────────────────────────────────────
 # Tool: actualizar work_state  (Fase 2)
 # ─────────────────────────────────────────────
 
+
 def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
     """Extrae (field, value) de una frase de actualización de work_state."""
     text_lower = text.lower()
+
 
     detected_field: str | None = None
     for alias in sorted(WORK_STATE_FIELD_ALIASES, key=len, reverse=True):
@@ -243,14 +326,17 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
             detected_field = WORK_STATE_FIELD_ALIASES[alias]
             break
 
+
     if not detected_field:
         for field in ALLOWED_WORK_STATE_FIELDS:
             if field in text_lower:
                 detected_field = field
                 break
 
+
     if not detected_field:
         return None, None
+
 
     patterns = [
         r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
@@ -268,7 +354,9 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
             if value:
                 return detected_field, value
 
+
     return detected_field, None
+
 
 
 def tool_update_work_state(field: str, value: str) -> str:
@@ -280,6 +368,7 @@ def tool_update_work_state(field: str, value: str) -> str:
         )
     if not value or not value.strip():
         return "No pude actualizar: el valor está vacío."
+
 
     update_work_state(field, value.strip())
     return f"✅ work_state actualizado: {field} → '{value.strip()}'"
