@@ -1,7 +1,8 @@
 """
-Asistente local:
+Asistente local Lautaro:
 - Usa Ollama (por defecto llama3.2:latest) como LLM.
 - Recupera contexto de tus docs con Chroma (RAG).
+- Responde desde memoria estructurada cuando corresponde.
 - Guarda memoria de conversación en storage/memory.json.
 
 Ejecutar:
@@ -10,7 +11,7 @@ Ejecutar:
 Salir:
     escribir 'salir', 'exit' o 'quit'.
 
-Comando especial:
+Comandos especiales:
     !reset -> borra la memoria de conversación (storage/memory.json)
 """
 
@@ -18,20 +19,15 @@ from pathlib import Path
 
 from rich.markdown import Markdown
 
-from app.router import route_query
-from app.tools import list_project_files, read_project_file, extract_file_path
-
 from app.chat_core import (
     CHROMA_DIR,
     MEMORY_FILE,
     ensure_storage,
     load_vector_store,
     build_memory,
-    build_retriever,
-    build_chain,
-    build_structured_memory_context,
+    handle_query,
 )
-from app.chat_ui import console, print_debug_retrieval, print_sources
+from app.chat_ui import console, print_sources
 
 
 def main():
@@ -67,38 +63,12 @@ def main():
         if not user_input:
             continue
 
-        route = route_query(user_input)
-
-        if route == "tool_list_files":
-            files = list_project_files()
-            console.print("\n".join(files[:50]))
-            continue
-
-        if route == "tool_read_file":
-            file_path = extract_file_path(user_input)
-            if not file_path:
-                console.print("Escribe la ruta del archivo")
-                file_path = console.input("> ").strip()
-
-            content = read_project_file(file_path)
-            console.print(content)
-            continue
-
         console.print("[magenta]Pensando...[/magenta]")
 
-        retriever = build_retriever(vectordb, user_input)
-        debug_docs = retriever.invoke(user_input)
-        print_debug_retrieval(user_input, debug_docs)
-
-        memory_context = build_structured_memory_context()
-        chain = build_chain(retriever, memory, memory_context)
-        result = chain.invoke({"question": user_input})
-
-        answer = result["answer"]
-        docs = result.get("source_documents", [])
+        answer, sources = handle_query(user_input, vectordb, memory)
 
         console.print(Markdown(f"**Lautaro:** {answer}"))
-        print_sources(docs)
+        print_sources(sources)
 
 
 if __name__ == "__main__":
