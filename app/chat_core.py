@@ -10,6 +10,7 @@ from app.memory_store import (
     load_last_episode,
 )
 from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
+from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import route_query, classify_memory_query
 from app.tools import (
     list_project_files,
@@ -372,7 +373,7 @@ def handle_query(
             print(f"Episodio guardado ({turns} turnos).")
         return "__EXIT__", []
 
-    # ── Tools de escritura ─────────────────────────────────────────
+    # ── Tools de escritura ──────────────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
@@ -439,11 +440,10 @@ def handle_query(
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG + caché semántica (10c) ────────────────────────────────
-    # Paso 1: consultar caché antes de tocar Chroma o el LLM
+    # ── RAG + caché semántica (10c) + fidelidad (10a) ───────────────────
+    # Paso 1: caché semántica (umbral 0.88)
     cached = cache_lookup(user_input)
     if cached is not None:
-        # Hit: respuesta instantánea desde caché
         _persist_turn(user_input, cached)
         chat_history.append(HumanMessage(content=user_input))
         chat_history.append(AIMessage(content=cached))
@@ -465,7 +465,13 @@ def handle_query(
         "chat_history": chat_history_text,
     })
 
-    # Paso 3: guardar en caché para futuras consultas similares
+    # Paso 3: verificación de fidelidad (10a)
+    # Si la respuesta no está soportada por los chunks, la bloqueamos
+    if not verify_fidelity(answer, source_docs):
+        # NO guardar en caché ni en historial una respuesta sospechosa
+        return NO_EVIDENCE_MSG, source_docs
+
+    # Paso 4: guardar en caché solo si la fidelidad es ok
     cache_save(user_input, answer)
 
     _persist_turn(user_input, answer)
