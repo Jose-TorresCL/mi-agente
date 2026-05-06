@@ -327,18 +327,31 @@ def handle_query(
 
     # ── Tools de escritura seguras ──────────────────────────────────────
     if route == "tool_save_fact":
-        # Extrae key/value del input del usuario de forma simple
-        parts = user_input.split(":", 1)
-        if len(parts) == 2:
-            key_raw = parts[0].strip()
-            value_raw = parts[1].strip()
-            # Limpia prefijos comunes del key
-            for prefix in ["guarda como hecho", "guardar hecho", "registra que", "anota que",
-                           "guarda el hecho", "registra el hecho", "guarda esto como hecho"]:
-                key_raw = key_raw.lower().replace(prefix, "").strip()
-            answer = tool_save_fact(key_raw, value_raw)
-        else:
-            answer = tool_save_fact(user_input, "")
+    # Extrae el contenido eliminando el prefijo de la frase
+        prefixes = [
+            "guarda como hecho que",
+            "guarda como hecho:",
+            "guarda como hecho",
+            "guardar hecho que",
+            "registra que",
+            "anota que",
+            "guarda el hecho que",
+            "registra el hecho que",
+            "guarda esto como hecho:",
+            "guarda esto como hecho",
+        ]
+        content = user_input.strip()
+        for prefix in prefixes:
+            if content.lower().startswith(prefix):
+                content = content[len(prefix):].strip()
+                break
+
+        if not content:
+            return "No pude guardar el hecho: no entendí el contenido.", []
+
+        from datetime import datetime
+        key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        answer = tool_save_fact(content)        
         return answer, []
 
     if route == "tool_create_task":
