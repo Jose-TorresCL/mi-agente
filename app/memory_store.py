@@ -6,11 +6,12 @@ from datetime import datetime
 
 STORAGE_DIR = Path("storage")
 
-MEMORY_FILE = STORAGE_DIR / "memory.json"
-PROFILE_FILE = STORAGE_DIR / "profile.json"
-PROJECT_FACTS_FILE = STORAGE_DIR / "project_facts.json"
-TASKS_FILE = STORAGE_DIR / "tasks.json"
-WORK_STATE_FILE = STORAGE_DIR / "work_state.json"
+MEMORY_FILE         = STORAGE_DIR / "memory.json"
+PROFILE_FILE        = STORAGE_DIR / "profile.json"
+PROJECT_FACTS_FILE  = STORAGE_DIR / "project_facts.json"
+TASKS_FILE          = STORAGE_DIR / "tasks.json"
+WORK_STATE_FILE     = STORAGE_DIR / "work_state.json"
+EPISODIC_MEMORY_FILE = STORAGE_DIR / "episodic_memory.json"
 
 
 # ─────────────────────────────────────────────
@@ -28,9 +29,8 @@ def _read_json(path: Path, default):
 
 
 def _write_json(path: Path, data):
-    """Escribe JSON con backup automático del archivo anterior (item 2)."""
+    """Escribe JSON con backup automático del archivo anterior."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # ── Item 2: Backup automático ─────────────────────────────
     if path.exists():
         shutil.copy2(path, path.with_suffix(".bak"))
     with open(path, "w", encoding="utf-8") as f:
@@ -118,17 +118,10 @@ def save_tasks(data):
 
 
 def add_task(title: str, priority: str = "medium", notes: str = "") -> str:
-    """Agrega una nueva tarea y devuelve su ID.
-
-    Item 4: ID único basado en timestamp para evitar duplicados
-    al borrar tareas.
-    """
+    """Agrega una nueva tarea y devuelve su ID."""
     data = load_tasks()
     tasks = data.get("tasks", [])
-
-    # ── Item 4: ID único por timestamp ───────────────────────────
     new_id = f"T-{datetime.now().strftime('%m%d%H%M%S')}"
-
     tasks.append(
         {
             "id": new_id,
@@ -139,7 +132,6 @@ def add_task(title: str, priority: str = "medium", notes: str = "") -> str:
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
     )
-
     data["tasks"] = tasks
     _write_json(TASKS_FILE, data)
     return new_id
@@ -177,15 +169,8 @@ def save_work_state(data):
 
 
 def update_work_state(field: str, value: str) -> None:
-    """Actualiza un campo específico de work_state.json de forma dinámica.
-
-    Uso: update_work_state("current_focus", "fase 3 — router semántico")
-
-    Para current_blockers acepta un string que se añade a la lista
-    si no está ya presente.
-    """
+    """Actualiza un campo específico de work_state.json de forma dinámica."""
     data = load_work_state()
-
     if field == "current_blockers":
         blockers = data.get("current_blockers", [])
         if value.strip() and value.strip() not in blockers:
@@ -193,6 +178,47 @@ def update_work_state(field: str, value: str) -> None:
         data["current_blockers"] = blockers
     else:
         data[field] = value.strip()
-
     data["last_updated"] = datetime.now().strftime("%Y-%m-%d")
     _write_json(WORK_STATE_FILE, data)
+
+
+# ─────────────────────────────────────────────
+# Memoria episódica (SimpleMem)
+# ─────────────────────────────────────────────
+
+MAX_EPISODES = 10  # guardamos los últimos 10 episodios; el más viejo se descarta
+
+
+def save_episode(summary: str, turns: int) -> None:
+    """Guarda un resumen de sesión en episodic_memory.json.
+
+    Estructura de cada episodio:
+    {
+      "date":    "2026-05-06",
+      "time":    "16:04",
+      "turns":   12,
+      "summary": "El usuario trabajó en SimpleMem..."
+    }
+    Mantiene solo los últimos MAX_EPISODES episodios.
+    """
+    data = _read_json(EPISODIC_MEMORY_FILE, {"episodes": []})
+    episodes = data.get("episodes", [])
+
+    now = datetime.now()
+    episodes.append({
+        "date":    now.strftime("%Y-%m-%d"),
+        "time":    now.strftime("%H:%M"),
+        "turns":   turns,
+        "summary": summary.strip(),
+    })
+
+    # Recortar al máximo permitido (los más antiguos primero)
+    data["episodes"] = episodes[-MAX_EPISODES:]
+    _write_json(EPISODIC_MEMORY_FILE, data)
+
+
+def load_last_episode() -> dict | None:
+    """Devuelve el episodio más reciente o None si no hay ninguno."""
+    data = _read_json(EPISODIC_MEMORY_FILE, {"episodes": []})
+    episodes = data.get("episodes", [])
+    return episodes[-1] if episodes else None

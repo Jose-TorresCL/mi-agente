@@ -6,6 +6,8 @@ from app.memory_store import (
     load_project_facts,
     load_tasks,
     load_work_state,
+    save_episode,
+    load_last_episode,
 )
 from app.router import route_query, classify_memory_query
 from app.tools import (
@@ -136,9 +138,7 @@ def _format_work_state_answer(work_state: dict) -> str:
 # ─────────────────────────────────────────────
 
 def answer_from_memory(question: str) -> str | None:
-    """Intenta responder desde memoria estructurada sin tocar RAG.
-    Devuelve None si no aplica ninguna capa de memoria.
-    """
+    """Intenta responder desde memoria estructurada sin tocar RAG."""
     memory_kind = classify_memory_query(question)
 
     if memory_kind == "profile":
@@ -169,6 +169,68 @@ def answer_from_memory(question: str) -> str | None:
 
 
 # ─────────────────────────────────────────────
+# SimpleMem — memoria episódica
+# ─────────────────────────────────────────────
+
+def generate_session_summary(chat_history: list) -> str:
+    """Pide al LLM un resumen de 3 líneas de la sesión actual.
+
+    Se llama justo antes de cerrar el chat. Si falla (Ollama apagado,
+    historial vacío) devuelve un resumen genérico para no bloquear el cierre.
+    """
+    if not chat_history:
+        return "Sesión sin mensajes registrados."
+
+    # Formatear el historial como texto plano (máx 8 últimos turnos)
+    recent = chat_history[-(MAX_TURNS * 2):]
+    history_text = "\n".join(
+        f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
+        for m in recent
+    )
+
+    prompt = (
+        "Eres un asistente que resume sesiones de trabajo.\n"
+        "Resume la siguiente conversación en exactamente 3 líneas en español.\n"
+        "La primera línea: qué tema principal se trató.\n"
+        "La segunda línea: qué se logró o decidió.\n"
+        "La tercera línea: cuál es el siguiente paso pendiente.\n"
+        "No uses bullet points ni numeración. Solo 3 líneas.\n\n"
+        f"Conversación:\n{history_text}\n\nResumen:"
+    )
+
+    try:
+        import requests
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 120},
+            },
+            timeout=30,
+        )
+        return response.json().get("response", "Resumen no disponible.").strip()
+    except Exception:
+        # No bloquear el cierre si Ollama falla o no responde
+        return "Resumen no disponible (Ollama no respondió al cerrar)."
+
+
+def get_last_episode_context() -> str:
+    """Devuelve el último episodio como texto para inyectar al prompt.
+
+    Si no hay episodios previos, devuelve string vacío (no rompe el prompt).
+    """
+    episode = load_last_episode()
+    if not episode:
+        return ""
+    return (
+        f"\nÚltima sesión ({episode['date']} {episode['time']}, "
+        f"{episode['turns']} turnos):\n{episode['summary']}"
+    )
+
+
+# ─────────────────────────────────────────────
 # Infraestructura RAG
 # ─────────────────────────────────────────────
 
@@ -177,6 +239,11 @@ def ensure_storage():
 
 
 def build_structured_memory_context() -> str:
+    """Construye el bloque de memoria estructurada para el prompt.
+
+    A partir de SimpleMem, incluye el último episodio al final
+    para que Lautaro tenga continuidad entre sesiones.
+    """
     profile = load_profile()
     project_facts = load_project_facts()
     work_state = load_work_state()
@@ -192,11 +259,9 @@ def build_structured_memory_context() -> str:
         lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
         lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
         lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
-
         preferred_style = profile.get("preferred_style", [])
         if preferred_style:
             lines.append(f"- Estilo preferido: {', '.join(preferred_style)}")
-
         preferred_workflow = profile.get("preferred_workflow", [])
         if preferred_workflow:
             lines.append(f"- Flujo preferido: {' | '.join(preferred_workflow)}")
@@ -225,6 +290,13 @@ def build_structured_memory_context() -> str:
                 f"- {task.get('id', '')}: {task.get('title', '')} "
                 f"(prioridad: {task.get('priority', 'media')}, estado: {task.get('status', 'pending')})"
             )
+
+    # SimpleMem: inyectar último episodio si existe
+    last_episode = get_last_episode_context()
+    if last_episode:
+        lines.append("")
+        lines.append("Contexto de la sesión anterior:")
+        lines.append(last_episode)
 
     return "\n".join(lines).strip()
 
@@ -270,16 +342,13 @@ def infer_doc_types(question: str) -> list[str]:
 
 def build_retriever(vectordb, question: str):
     doc_types = infer_doc_types(question)
-
     search_kwargs = {"k": 5}
-
     if len(doc_types) == 1:
         search_kwargs["filter"] = {"doc_type": doc_types[0]}
     elif len(doc_types) > 1:
         search_kwargs["filter"] = {
             "$or": [{"doc_type": dt} for dt in doc_types]
         }
-
     retriever = vectordb.as_retriever(
         search_type="similarity",
         search_kwargs=search_kwargs,
@@ -293,15 +362,9 @@ def build_retriever(vectordb, question: str):
 # ─────────────────────────────────────────────
 
 def build_memory() -> list:
-    """Carga el historial desde disco y lo devuelve como lista de mensajes.
-
-    Retorna una lista de HumanMessage / AIMessage (últimos MAX_TURNS turnos).
-    FileChatMessageHistory sigue leyendo/escribiendo storage/memory.json,
-    pero ya no dependemos de ConversationBufferWindowMemory.
-    """
+    """Carga el historial desde disco y lo devuelve como lista de mensajes."""
     file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
     messages = file_history.messages
-    # Mantener solo los últimos MAX_TURNS turnos (cada turno = 2 mensajes)
     return list(messages[-(MAX_TURNS * 2):])
 
 
@@ -326,20 +389,13 @@ def _persist_turn(user_input: str, answer: str) -> None:
 
 
 def build_chain(retriever, memory_context: str):
-    """Construye la cadena RAG con LCEL.
-
-    Reemplaza ConversationalRetrievalChain (deprecada).
-    El historial de chat se pasa como texto al prompt — sin objetos LangChain
-    de memoria intermedia.
-    """
+    """Construye la cadena RAG con LCEL."""
     llm = ChatOllama(
         model=MODEL_NAME,
         base_url="http://localhost:11434",
         temperature=0.1,
     )
-
     qa_prompt_with_memory = QA_PROMPT.partial(memory_context=memory_context)
-
     chain = qa_prompt_with_memory | llm | StrOutputParser()
     return chain
 
@@ -360,7 +416,19 @@ def handle_query(
     """
     route = route_query(user_input)
 
-    # ── Tools de escritura seguras ──────────────────────────────────
+    # ── SimpleMem: hook de salida ──────────────────────────────────────────
+    # El router devuelve "exit" cuando el usuario escribe salir/exit/quit.
+    # Antes de cerrar, generamos el resumen y lo guardamos en episodic_memory.json.
+    if route == "exit":
+        turns = len(chat_history) // 2
+        if turns > 0:
+            print("Guardando resumen de la sesión...")
+            summary = generate_session_summary(chat_history)
+            save_episode(summary=summary, turns=turns)
+            print(f"Episodio guardado ({turns} turnos).")
+        return "__EXIT__", []
+
+    # ── Tools de escritura seguras ──────────────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que",
@@ -379,10 +447,8 @@ def handle_query(
             if content.lower().startswith(prefix):
                 content = content[len(prefix):].strip()
                 break
-
         if not content:
             return "No pude guardar el hecho: no entendí el contenido.", []
-
         answer = tool_save_fact(content)
         return answer, []
 
@@ -405,7 +471,6 @@ def handle_query(
         answer = tool_create_task(title=user_input, priority="medium")
         return answer, []
 
-    # ── Nuevos carriles — Fase 2 ──────────────────────────────────
     if route == "tool_complete_task":
         task_id = extract_task_id(user_input)
         if not task_id:
@@ -434,7 +499,6 @@ def handle_query(
         answer = tool_update_work_state(field, value)
         return answer, []
 
-    # ── Tools de lectura de archivos ──────────────────────────────
     if route == "tool_list_files":
         files = list_project_files()
         if not files:
@@ -449,17 +513,14 @@ def handle_query(
         content = read_project_file(path)
         return content, []
 
-    # ── Memoria estructurada ───────────────────────────────────
     if route == "memory":
         memory_answer = answer_from_memory(user_input)
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG (fallback documental) ──────────────────────────────
+    # ── RAG (fallback documental) ─────────────────────────────────────────
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
-
-    # Recuperar documentos manualmente para tener acceso a las fuentes
     source_docs = retriever.invoke(user_input)
     context_text = "\n\n".join(doc.page_content for doc in source_docs)
     chat_history_text = _format_chat_history(chat_history)
@@ -471,13 +532,9 @@ def handle_query(
         "chat_history": chat_history_text,
     })
 
-    # Persistir el turno en disco
     _persist_turn(user_input, answer)
-
-    # Actualizar la lista en memoria (para la sesión actual)
     chat_history.append(HumanMessage(content=user_input))
     chat_history.append(AIMessage(content=answer))
-    # Recortar si supera el límite
     while len(chat_history) > MAX_TURNS * 2:
         chat_history.pop(0)
 
