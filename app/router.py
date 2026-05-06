@@ -61,8 +61,6 @@ EMBED_TOP_K     = 1
 
 # ─────────────────────────────────────────────
 # Singleton para intent_db (Capa 2)
-# Se inicializa una sola vez al primer uso y se reutiliza en toda la sesión.
-# Evita recrear OllamaEmbeddings + Chroma en cada consulta (~50ms overhead).
 # ─────────────────────────────────────────────
 
 _intent_db = None
@@ -70,11 +68,6 @@ _intent_embeddings = None
 
 
 def _get_intent_db():
-    """Devuelve la instancia compartida de Chroma para intent_index.
-
-    Si aún no existe, la crea una sola vez. Las llamadas siguientes
-    reutilizan la misma instancia sin costo adicional.
-    """
     global _intent_db, _intent_embeddings
     if _intent_db is None:
         from langchain_ollama import OllamaEmbeddings
@@ -129,8 +122,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
 ]
 
-# Fix: eliminamos "tareas" como keyword genérica y usamos frases más específicas.
-# Las frases de sugerencia ("podríamos crear", "nuevas tareas") deben ir a RAG, no memory.
 MEMORY_TASKS_KEYWORDS = [
     "qué tareas hay", "que tareas hay",
     "mis tareas", "mis tareas pendientes",
@@ -139,6 +130,8 @@ MEMORY_TASKS_KEYWORDS = [
     "qué tengo pendiente", "que tengo pendiente",
     "qué tareas tengo", "que tareas tengo",
     "ponme al día", "ponme al dia",
+    # Fix: frases cortas que antes caían a embeddings con baja similitud
+    "tareas", "mis tareas", "ver tareas", "mostrar tareas",
 ]
 
 # Palabras que indican intención de SUGERIR/CREAR — si aparecen junto a "tareas",
@@ -248,11 +241,6 @@ Carril:"""
 # ─────────────────────────────────────────────
 
 def _has_task_suggestion_signal(q: str) -> bool:
-    """Devuelve True si la frase contiene señales de sugerencia/creación de tareas.
-
-    Cuando es True, la Capa 1 debe abstenerse de enviar a memory aunque
-    la frase contenga keywords de tareas — la intención es pedir ideas (RAG).
-    """
     return any(signal in q for signal in _TASK_SUGGESTION_SIGNALS)
 
 
@@ -260,7 +248,6 @@ def classify_memory_query(question: str) -> str | None:
     q = question.lower().strip()
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
-    # Fix: solo clasifica como "tasks" si NO hay señales de sugerencia
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) \
             and not _has_task_suggestion_signal(q):         return "tasks"
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
@@ -268,14 +255,11 @@ def classify_memory_query(question: str) -> str | None:
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: keywords instantáneas.
-
-    Devuelve el carril si reconoce la frase.
-    Devuelve None si no reconoce nada — señal explícita de 'no sé,
-    pasa a la siguiente capa'. Antes devolvía 'rag' con doble significado,
-    lo que hacía la lógica en route_query() más frágil.
-    """
     q = question.lower().strip()
+
+    # Fix: interceptar !estatus como alias de !estado (comando de chat)
+    if q in {"!estatus", "!status"}:
+        return "!estado"  # chat.py lo maneja como comando especial
 
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
@@ -287,11 +271,10 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
     if classify_memory_query(question) is not None:           return "memory"
     if any(k in q for k in RAG_HINTS):                        return "rag"
-    return None  # no reconocida — pasa a Capa 2
+    return None
 
 
 def _route_by_embeddings(question: str) -> str | None:
-    """Capa 2: clasificador semántico con intent_index (singleton)."""
     if not INTENT_DIR.exists():
         return None
 
@@ -324,7 +307,6 @@ def _route_by_embeddings(question: str) -> str | None:
 
 
 def _route_by_llm(question: str) -> str:
-    """Capa 3: LLM fallback para frases sin keyword ni ejemplo cercano."""
     try:
         import requests
         prompt = _CLASSIFICATION_PROMPT.format(question=question)
@@ -361,24 +343,12 @@ def _route_by_llm(question: str) -> str:
 # ─────────────────────────────────────────────
 
 def route_query(question: str) -> str:
-    """Clasifica la pregunta en el carril de ejecución correcto.
-
-    Flujo:
-      0. Salida   → intercepta salir/exit/quit antes de cualquier capa.
-      1. keywords → 0ms,   sin modelo.
-      2. embeddings → ~50ms, nomic-embed-text + intent_index (singleton).
-      3. LLM        → ~3-8s, solo si las dos anteriores fallan.
-
-    Actualiza SESSION_STATS con el conteo por capa para !estado.
-    """
-    # Capa 0: interceptar palabras de salida antes de cualquier capa
-    # Evita que typos como "sali" lleguen al LLM fallback y causen crash
+    """Clasifica la pregunta en el carril de ejecución correcto."""
     if question.lower().strip() in _EXIT_WORDS:
         return "exit"
 
     SESSION_STATS["total"] += 1
 
-    # Capa 1: keywords — instantáneo
     kw_lane = _route_by_keywords(question)
 
     if kw_lane is not None:
@@ -386,14 +356,12 @@ def route_query(question: str) -> str:
         print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
         return kw_lane
 
-    # Capa 2: embeddings — semántico rápido
     emb_lane = _route_by_embeddings(question)
     if emb_lane is not None:
         SESSION_STATS["emb"] += 1
         print(f"[router:emb] '{question[:50]}' → {emb_lane}")
         return emb_lane
 
-    # Capa 3: LLM fallback — solo cuando todo lo anterior falla
     SESSION_STATS["llm"] += 1
     llm_lane = _route_by_llm(question)
     print(f"[router:llm] '{question[:50]}' → {llm_lane}")
