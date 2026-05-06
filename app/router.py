@@ -200,6 +200,10 @@ VALID_LANES = {
 }
 
 # Prompt de clasificación para el LLM fallback
+# REGLA CLAVE para el LLM:
+#   tool_list_files  → SOLO cuando el usuario quiere ver la lista de archivos del proyecto.
+#   rag              → cuando pregunta por funcionalidad, componentes, tools, fases o conceptos.
+#   memory           → cuando pregunta por su estado, tareas o hechos guardados.
 _CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistente local.
 Tu única tarea es identificar a qué carril pertenece la pregunta del usuario.
 
@@ -208,18 +212,29 @@ Carriles disponibles y cuándo usarlos:
 - tool_complete_task  : el usuario quiere marcar, cerrar o completar una tarea existente
 - tool_update_work_state : el usuario quiere cambiar el foco, fase, siguiente paso o estado de trabajo
 - tool_save_fact      : el usuario quiere guardar un hecho, dato o información del proyecto
-- tool_list_files     : el usuario quiere ver qué archivos existen en el proyecto
-- tool_read_file      : el usuario quiere leer el contenido de un archivo específico
-- memory              : el usuario pregunta por su perfil, tareas, estado actual o hechos del proyecto
-- rag                 : cualquier otra pregunta documental o conceptual
+- tool_list_files     : el usuario quiere ver la LISTA DE ARCHIVOS del proyecto (solo esto)
+- tool_read_file      : el usuario quiere leer el CONTENIDO de un archivo específico
+- memory              : el usuario pregunta por su perfil, tareas, estado actual o hechos guardados
+- rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools o arquitectura
 
-Ejemplos:
-"apunta que tengo que revisar el router" → tool_create_task
-"ponme al día de lo que hice ayer" → memory
-"cuéntame cómo funciona Chroma" → rag
-"ya terminé con la tarea del router" → tool_complete_task
-"cambia mi foco a fase 3" → tool_update_work_state
-"qué tengo pendiente" → memory
+IMPORTANTE — tool_list_files vs rag:
+  "qué archivos hay en el proyecto" → tool_list_files  (quiere ver archivos)
+  "qué tools están operativas"      → rag              (pregunta conceptual sobre el sistema)
+  "cómo funciona el router"         → rag              (pregunta conceptual)
+  "qué módulos tiene el proyecto"   → rag              (pregunta conceptual)
+
+Ejemplos completos:
+"apunta que tengo que revisar el router"   → tool_create_task
+"ya terminé con la tarea del router"       → tool_complete_task
+"cambia mi foco a fase 3"                  → tool_update_work_state
+"ponme al día de lo que hice ayer"         → memory
+"qué tengo pendiente"                      → memory
+"en qué fase estamos"                      → memory
+"qué tools están operativas"               → rag
+"cómo funciona Chroma"                     → rag
+"cuáles son los componentes del sistema"   → rag
+"muéstrame los archivos del proyecto"      → tool_list_files
+"apunta que mañana hay reunión"            → tool_create_task
 
 Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
