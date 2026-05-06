@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from datetime import datetime
 
 from app.memory_store import (
     save_project_fact,
@@ -20,6 +22,38 @@ ALLOWED_DIRS = [
 SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db", "chroma", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 SKIP_SUFFIXES = {".pyc"}
 VALID_PRIORITIES = {"low", "medium", "high"}
+
+# Campos permitidos para actualizar work_state (lista blanca de seguridad)
+ALLOWED_WORK_STATE_FIELDS = {
+    "current_focus",
+    "current_phase",
+    "last_completed_step",
+    "next_step",
+    "current_blockers",
+    "session_goal",
+}
+
+# Aliases en español para los campos de work_state
+WORK_STATE_FIELD_ALIASES = {
+    "foco":             "current_focus",
+    "foco actual":      "current_focus",
+    "focus":            "current_focus",
+    "fase":             "current_phase",
+    "fase actual":      "current_phase",
+    "phase":            "current_phase",
+    "último paso":      "last_completed_step",
+    "ultimo paso":      "last_completed_step",
+    "último paso completado": "last_completed_step",
+    "siguiente paso":   "next_step",
+    "next step":        "next_step",
+    "bloqueante":       "current_blockers",
+    "bloqueo":          "current_blockers",
+    "blockers":         "current_blockers",
+    "meta sesión":      "session_goal",
+    "meta de sesión":   "session_goal",
+    "objetivo sesión":  "session_goal",
+    "session goal":     "session_goal",
+}
 
 
 def _is_allowed(path: Path) -> bool:
@@ -113,12 +147,7 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 # ─────────────────────────────────────────────
 
 def tool_save_fact(question: str) -> str:
-    """Guarda un hecho persistente desde una frase natural.
-
-    Ejemplos:
-      'guarda como hecho que fase 2 está cerrada'
-      'registra que el router tiene 6 carriles'
-    """
+    """Guarda un hecho persistente desde una frase natural."""
     prefixes = [
         "guarda como hecho que",
         "guarda como hecho:",
@@ -140,18 +169,13 @@ def tool_save_fact(question: str) -> str:
     if not content:
         return "No pude guardar el hecho: no entendí el contenido."
 
-    from datetime import datetime
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
     return f"\u2713 Hecho guardado: \"{content}\""
 
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
-    """Crea una nueva tarea en tasks.json.
-
-    Prioridades válidas: low, medium, high.
-    Si la prioridad no es válida, se usa 'medium' por defecto.
-    """
+    """Crea una nueva tarea en tasks.json."""
     title = title.strip()
     priority = priority.strip().lower()
     notes = notes.strip()
@@ -162,4 +186,120 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
     if priority not in VALID_PRIORITIES:
         priority = "medium"
 
-    task_id = add_task(title=title, priority=priority
+    task_id = add_task(title=title, priority=priority, notes=notes)
+    return f"\u2713 Tarea creada: [{task_id}] {title} (prioridad: {priority})"
+
+
+# ─────────────────────────────────────────────
+# Tool: completar tarea  (NUEVO — Fase 2)
+# ─────────────────────────────────────────────
+
+def extract_task_id(text: str) -> str:
+    """Extrae un ID de tarea tipo 'T-003' del texto del usuario."""
+    match = re.search(r"T-\d{3}", text, re.IGNORECASE)
+    if match:
+        return match.group(0).upper()
+    # Fallback: número suelto de 3 dígitos
+    match = re.search(r"\b(\d{3})\b", text)
+    if match:
+        return f"T-{match.group(1)}"
+    return ""
+
+
+def tool_complete_task(task_id: str) -> str:
+    """Marca una tarea existente como completada dado su ID (ej: 'T-002').
+
+    Actualiza el campo 'status' a 'completed' y registra la fecha de cierre
+    en 'completed_at'. No borra la tarea del archivo.
+    """
+    if not task_id:
+        return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
+
+    tasks_data = load_tasks()
+    tasks = tasks_data.get("tasks", [])
+
+    found = False
+    for task in tasks:
+        if task.get("id", "").upper() == task_id.upper():
+            if task.get("status") == "completed":
+                return f"\u2139\ufe0f  La tarea {task_id} ya estaba marcada como completada."
+            task["status"] = "completed"
+            task["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            found = True
+            break
+
+    if not found:
+        available = [t.get("id") for t in tasks]
+        return f"\u274c No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
+
+    # Persistir cambios usando update_task_status si acepta el objeto completo,
+    # o escribiendo directamente via memory_store
+    update_task_status(task_id, "completed")
+    return f"\u2705 Tarea {task_id} marcada como completada."
+
+
+# ─────────────────────────────────────────────
+# Tool: actualizar work_state  (NUEVO — Fase 2)
+# ─────────────────────────────────────────────
+
+def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
+    """Extrae (field, value) de una frase como:
+    - 'actualiza el foco a fase 3 — router semántico'
+    - 'cambia next_step a probar el router'
+    - 'pon en siguiente paso: escribir tests'
+    
+    Devuelve (None, None) si no puede parsear el campo.
+    """
+    text_lower = text.lower()
+
+    # Detectar campo por alias
+    detected_field: str | None = None
+    # Ordenar por longitud descendente para que aliases largos tengan prioridad
+    for alias in sorted(WORK_STATE_FIELD_ALIASES, key=len, reverse=True):
+        if alias in text_lower:
+            detected_field = WORK_STATE_FIELD_ALIASES[alias]
+            break
+
+    # Si no hay alias, buscar nombre de campo directo
+    if not detected_field:
+        for field in ALLOWED_WORK_STATE_FIELDS:
+            if field in text_lower:
+                detected_field = field
+                break
+
+    if not detected_field:
+        return None, None
+
+    # Extraer el valor después de separadores comunes
+    # Estrategia: buscar todo lo que va después de " a ", ":", "=", " en "
+    # usando el texto original (no lower) para preservar mayúsculas y tildes
+    patterns = [
+        r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
+        r"[:=]\s*(.+?)(?:\s*[.!?]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = match.group(1).strip().strip("\"'")
+            if value:
+                return detected_field, value
+
+    return detected_field, None
+
+
+def tool_update_work_state(field: str, value: str) -> str:
+    """Actualiza un campo específico de work_state.json desde conversación.
+
+    Solo permite modificar los campos definidos en ALLOWED_WORK_STATE_FIELDS.
+    """
+    if field not in ALLOWED_WORK_STATE_FIELDS:
+        return (
+            f"\u274c Campo '{field}' no permitido.\n"
+            f"Campos disponibles: {sorted(ALLOWED_WORK_STATE_FIELDS)}"
+        )
+
+    if not value or not value.strip():
+        return "No pude actualizar: el valor está vacío."
+
+    update_work_state(field, value.strip())
+    return f"\u2705 work_state actualizado: {field} → '{value.strip()}'"

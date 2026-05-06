@@ -112,6 +112,48 @@ TOOL_CREATE_TASK_KEYWORDS = [
 ]
 
 
+# ── Nuevos carriles — Fase 2 ─────────────────────────────────────────────
+
+TOOL_COMPLETE_TASK_KEYWORDS = [
+    "marca como completada",
+    "marca como completado",
+    "marcar como completada",
+    "marcar como completado",
+    "cierra la tarea",
+    "cerrar tarea",
+    "completé la tarea",
+    "complete la tarea",
+    "tarea completada",
+    "done T-",
+    "completar T-",
+    "completar tarea",
+]
+
+
+TOOL_UPDATE_WORK_STATE_KEYWORDS = [
+    "actualiza el foco",
+    "actualiza foco",
+    "cambia el foco",
+    "cambia foco",
+    "actualiza work_state",
+    "actualiza el estado de trabajo",
+    "actualiza estado de trabajo",
+    "cambia next_step",
+    "cambia siguiente paso",
+    "actualiza siguiente paso",
+    "pon en siguiente paso",
+    "actualiza la fase",
+    "cambia la fase",
+    "estoy trabajando en",
+    "ahora estoy en",
+    "cambia el último paso",
+    "actualiza el último paso",
+    "nuevo bloqueo",
+    "actualiza bloqueante",
+    "cambia bloqueante",
+]
+
+
 RAG_HINTS = [
     "según los documentos",
     "segun los documentos",
@@ -158,6 +200,8 @@ def route_query(question: str) -> str:
     - tool_read_file
     - tool_save_fact
     - tool_create_task
+    - tool_complete_task      (Fase 2)
+    - tool_update_work_state  (Fase 2)
     - memory
     - rag
     """
@@ -169,6 +213,13 @@ def route_query(question: str) -> str:
 
     if any(keyword in q for keyword in TOOL_CREATE_TASK_KEYWORDS):
         return "tool_create_task"
+
+    # Nuevos carriles Fase 2
+    if any(keyword in q for keyword in TOOL_COMPLETE_TASK_KEYWORDS):
+        return "tool_complete_task"
+
+    if any(keyword in q for keyword in TOOL_UPDATE_WORK_STATE_KEYWORDS):
+        return "tool_update_work_state"
 
     # Tools de lectura de archivos
     if extract_file_path(question) is not None:

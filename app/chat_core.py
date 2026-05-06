@@ -12,6 +12,10 @@ from app.tools import (
     read_project_file,
     tool_save_fact,
     tool_create_task,
+    tool_complete_task,
+    tool_update_work_state,
+    extract_task_id,
+    parse_work_state_update,
 )
 
 from langchain_chroma import Chroma
@@ -327,7 +331,6 @@ def handle_query(
 
     # ── Tools de escritura seguras ──────────────────────────────────────
     if route == "tool_save_fact":
-    # Extrae el contenido eliminando el prefijo de la frase
         prefixes = [
             "guarda como hecho que",
             "guarda como hecho:",
@@ -351,11 +354,10 @@ def handle_query(
 
         from datetime import datetime
         key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        answer = tool_save_fact(content)        
+        answer = tool_save_fact(content)
         return answer, []
 
     if route == "tool_create_task":
-        # Extrae título y prioridad opcionales del input
         text = user_input.lower()
         for prefix in ["crea una tarea:", "crea una tarea", "crear tarea:", "crear tarea",
                        "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
@@ -363,7 +365,6 @@ def handle_query(
                        "registra una tarea:", "registra una tarea"]:
             if text.startswith(prefix):
                 raw = user_input[len(prefix):].strip()
-                # Detecta prioridad al final: "título [alta]" o "título (alta)"
                 priority = "medium"
                 for p in ["alta", "high", "baja", "low", "media", "medium"]:
                     if raw.lower().endswith(p):
@@ -373,6 +374,35 @@ def handle_query(
                 answer = tool_create_task(title=raw, priority=priority)
                 return answer, []
         answer = tool_create_task(title=user_input, priority="medium")
+        return answer, []
+
+    # ── Nuevos carriles — Fase 2 ────────────────────────────────────────
+    if route == "tool_complete_task":
+        task_id = extract_task_id(user_input)
+        if not task_id:
+            return (
+                "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'",
+                [],
+            )
+        answer = tool_complete_task(task_id)
+        return answer, []
+
+    if route == "tool_update_work_state":
+        field, value = parse_work_state_update(user_input)
+        if not field:
+            return (
+                "No entendí qué campo actualizar. Prueba: "
+                "'actualiza el foco a X', 'cambia siguiente paso a Y', "
+                "'actualiza la fase a Z'",
+                [],
+            )
+        if not value:
+            return (
+                f"Entendí que quieres actualizar '{field}', pero no encontré el nuevo valor. "
+                f"Prueba: 'actualiza el foco a <descripción>'",
+                [],
+            )
+        answer = tool_update_work_state(field, value)
         return answer, []
 
     # ── Tools de lectura de archivos ────────────────────────────────────
@@ -395,8 +425,6 @@ def handle_query(
         memory_answer = answer_from_memory(user_input)
         if memory_answer is not None:
             return memory_answer, []
-        # Si classify_memory_query devolvió algo pero answer_from_memory devolvió None
-        # (archivos vacíos), caemos a RAG como respaldo.
 
     # ── RAG (fallback documental) ────────────────────────────────────────
     memory_context = build_structured_memory_context()
