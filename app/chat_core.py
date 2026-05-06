@@ -9,6 +9,7 @@ from app.memory_store import (
     save_episode,
     load_last_episode,
 )
+from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
 from app.router import route_query, classify_memory_query
 from app.tools import (
     list_project_files,
@@ -33,7 +34,7 @@ STORAGE_DIR = Path("storage")
 CHROMA_DIR = str(STORAGE_DIR / "chroma")
 MEMORY_FILE = STORAGE_DIR / "memory.json"
 MODEL_NAME = "llama3.2:latest"
-MAX_TURNS = 8   # equivale al k=8 anterior
+MAX_TURNS = 8
 
 
 QA_SYSTEM_PROMPT = """
@@ -85,15 +86,12 @@ def _format_profile_answer(profile: dict) -> str:
     lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
     lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
     lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
-
     preferred_style = profile.get("preferred_style", [])
     if preferred_style:
         lines.append(f"- Estilo preferido: {', '.join(preferred_style)}")
-
     preferred_workflow = profile.get("preferred_workflow", [])
     if preferred_workflow:
         lines.append(f"- Flujo preferido: {' | '.join(preferred_workflow)}")
-
     return "\n".join(lines)
 
 
@@ -107,10 +105,8 @@ def _format_project_facts_answer(facts: dict) -> str:
 def _format_tasks_answer(tasks_data: dict) -> str:
     tasks = tasks_data.get("tasks", [])
     pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
-
     if not pending:
         return "No hay tareas pendientes registradas."
-
     lines = ["**Tareas pendientes:**"]
     for t in pending:
         lines.append(
@@ -125,11 +121,9 @@ def _format_work_state_answer(work_state: dict) -> str:
     lines.append(f"- Foco actual: {work_state.get('current_focus', 'sin definir')}")
     lines.append(f"- Último paso completado: {work_state.get('last_completed_step', 'sin registrar')}")
     lines.append(f"- Siguiente paso: {work_state.get('next_step', 'sin definir')}")
-
     blockers = work_state.get("current_blockers", [])
     if blockers:
         lines.append(f"- Bloqueos: {', '.join(blockers)}")
-
     return "\n".join(lines)
 
 
@@ -138,33 +132,27 @@ def _format_work_state_answer(work_state: dict) -> str:
 # ─────────────────────────────────────────────
 
 def answer_from_memory(question: str) -> str | None:
-    """Intenta responder desde memoria estructurada sin tocar RAG."""
     memory_kind = classify_memory_query(question)
-
     if memory_kind == "profile":
         profile = load_profile()
         if not profile:
             return "No encontré información de perfil todavía."
         return _format_profile_answer(profile)
-
     if memory_kind == "project_facts":
         facts = load_project_facts()
         if not facts:
             return "No encontré hechos del proyecto todavía."
         return _format_project_facts_answer(facts)
-
     if memory_kind == "tasks":
         tasks = load_tasks()
         if not tasks:
             return "No encontré tareas registradas."
         return _format_tasks_answer(tasks)
-
     if memory_kind == "work_state":
         work_state = load_work_state()
         if not work_state:
             return "No encontré estado de trabajo actual."
         return _format_work_state_answer(work_state)
-
     return None
 
 
@@ -173,21 +161,13 @@ def answer_from_memory(question: str) -> str | None:
 # ─────────────────────────────────────────────
 
 def generate_session_summary(chat_history: list) -> str:
-    """Pide al LLM un resumen de 3 líneas de la sesión actual.
-
-    Se llama justo antes de cerrar el chat. Si falla (Ollama apagado,
-    historial vacío) devuelve un resumen genérico para no bloquear el cierre.
-    """
     if not chat_history:
         return "Sesión sin mensajes registrados."
-
-    # Formatear el historial como texto plano (máx 8 últimos turnos)
     recent = chat_history[-(MAX_TURNS * 2):]
     history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in recent
     )
-
     prompt = (
         "Eres un asistente que resume sesiones de trabajo.\n"
         "Resume la siguiente conversación en exactamente 3 líneas en español.\n"
@@ -197,7 +177,6 @@ def generate_session_summary(chat_history: list) -> str:
         "No uses bullet points ni numeración. Solo 3 líneas.\n\n"
         f"Conversación:\n{history_text}\n\nResumen:"
     )
-
     try:
         import requests
         response = requests.post(
@@ -212,15 +191,10 @@ def generate_session_summary(chat_history: list) -> str:
         )
         return response.json().get("response", "Resumen no disponible.").strip()
     except Exception:
-        # No bloquear el cierre si Ollama falla o no responde
         return "Resumen no disponible (Ollama no respondió al cerrar)."
 
 
 def get_last_episode_context() -> str:
-    """Devuelve el último episodio como texto para inyectar al prompt.
-
-    Si no hay episodios previos, devuelve string vacío (no rompe el prompt).
-    """
     episode = load_last_episode()
     if not episode:
         return ""
@@ -239,21 +213,13 @@ def ensure_storage():
 
 
 def build_structured_memory_context() -> str:
-    """Construye el bloque de memoria estructurada para el prompt.
-
-    A partir de SimpleMem, incluye el último episodio al final
-    para que Lautaro tenga continuidad entre sesiones.
-    """
     profile = load_profile()
     project_facts = load_project_facts()
     work_state = load_work_state()
     tasks_data = load_tasks()
-
     tasks = tasks_data.get("tasks", [])
     pending_tasks = [t for t in tasks if t.get("status") not in ("done", "completed")][:3]
-
     lines = []
-
     if profile:
         lines.append("Perfil del usuario:")
         lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
@@ -265,7 +231,6 @@ def build_structured_memory_context() -> str:
         preferred_workflow = profile.get("preferred_workflow", [])
         if preferred_workflow:
             lines.append(f"- Flujo preferido: {' | '.join(preferred_workflow)}")
-
     if project_facts:
         lines.append("")
         lines.append("Hechos persistentes del proyecto:")
@@ -274,14 +239,12 @@ def build_structured_memory_context() -> str:
         lines.append(f"- Foco actual: {project_facts.get('current_focus', 'desconocido')}")
         lines.append(f"- Estado RAG: {project_facts.get('rag_status', 'desconocido')}")
         lines.append(f"- Estado memoria: {project_facts.get('memory_status', 'desconocido')}")
-
     if work_state:
         lines.append("")
         lines.append("Estado actual de trabajo:")
         lines.append(f"- Foco actual: {work_state.get('current_focus', '')}")
         lines.append(f"- Último paso completado: {work_state.get('last_completed_step', '')}")
         lines.append(f"- Siguiente paso: {work_state.get('next_step', '')}")
-
     if pending_tasks:
         lines.append("")
         lines.append("Tareas pendientes prioritarias:")
@@ -290,14 +253,11 @@ def build_structured_memory_context() -> str:
                 f"- {task.get('id', '')}: {task.get('title', '')} "
                 f"(prioridad: {task.get('priority', 'media')}, estado: {task.get('status', 'pending')})"
             )
-
-    # SimpleMem: inyectar último episodio si existe
     last_episode = get_last_episode_context()
     if last_episode:
         lines.append("")
         lines.append("Contexto de la sesión anterior:")
         lines.append(last_episode)
-
     return "\n".join(lines).strip()
 
 
@@ -316,27 +276,23 @@ def load_vector_store():
 def infer_doc_types(question: str) -> list[str]:
     q = question.lower()
     doc_types = set()
-
     if any(word in q for word in [
         "arquitectura", "componente", "componentes", "chat.py",
         "indexacion", "índice", "indice", "vector store",
         "base documental", "documentos fuente"
     ]):
         doc_types.add("arquitectura")
-
     if any(word in q for word in [
         "memoria", "memoria híbrida", "memoria hibrida",
         "grounded", "correcta", "corto plazo", "largo plazo"
     ]):
         doc_types.add("memoria")
-
     if any(word in q for word in [
         "estado", "próximos pasos", "proximos pasos",
         "objetivo actual", "objetivo de esta etapa",
         "estado del proyecto"
     ]):
         doc_types.add("estado")
-
     return list(doc_types)
 
 
@@ -357,19 +313,16 @@ def build_retriever(vectordb, question: str):
 
 
 # ─────────────────────────────────────────────
-# Historial de conversación — reemplaza
-# ConversationBufferWindowMemory (deprecada)
+# Historial de conversación
 # ─────────────────────────────────────────────
 
 def build_memory() -> list:
-    """Carga el historial desde disco y lo devuelve como lista de mensajes."""
     file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
     messages = file_history.messages
     return list(messages[-(MAX_TURNS * 2):])
 
 
 def _format_chat_history(messages: list) -> str:
-    """Convierte la lista de mensajes en texto plano para el prompt."""
     if not messages:
         return "(sin historial previo)"
     lines = []
@@ -382,14 +335,12 @@ def _format_chat_history(messages: list) -> str:
 
 
 def _persist_turn(user_input: str, answer: str) -> None:
-    """Guarda el turno actual en storage/memory.json para sesiones futuras."""
     file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
     file_history.add_user_message(user_input)
     file_history.add_ai_message(answer)
 
 
 def build_chain(retriever, memory_context: str):
-    """Construye la cadena RAG con LCEL."""
     llm = ChatOllama(
         model=MODEL_NAME,
         base_url="http://localhost:11434",
@@ -409,16 +360,9 @@ def handle_query(
     vectordb: Any,
     chat_history: list,
 ) -> tuple[str, list]:
-    """Orquesta el flujo completo de una consulta del usuario.
-
-    Retorna (respuesta, lista_de_fuentes).
-    La lista de fuentes está vacía cuando la respuesta viene de memoria o tools.
-    """
     route = route_query(user_input)
 
-    # ── SimpleMem: hook de salida ──────────────────────────────────────────
-    # El router devuelve "exit" cuando el usuario escribe salir/exit/quit.
-    # Antes de cerrar, generamos el resumen y lo guardamos en episodic_memory.json.
+    # ── SimpleMem: hook de salida ─────────────────────────────────────────
     if route == "exit":
         turns = len(chat_history) // 2
         if turns > 0:
@@ -428,19 +372,13 @@ def handle_query(
             print(f"Episodio guardado ({turns} turnos).")
         return "__EXIT__", []
 
-    # ── Tools de escritura seguras ──────────────────────────────────────────
+    # ── Tools de escritura ─────────────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
-            "guarda como hecho que",
-            "guarda como hecho:",
-            "guarda como hecho",
-            "guardar hecho que",
-            "registra que",
-            "anota que",
-            "guarda el hecho que",
-            "registra el hecho que",
-            "guarda esto como hecho:",
-            "guarda esto como hecho",
+            "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
+            "guardar hecho que", "registra que", "anota que",
+            "guarda el hecho que", "registra el hecho que",
+            "guarda esto como hecho:", "guarda esto como hecho",
         ]
         content = user_input.strip()
         for prefix in prefixes:
@@ -449,8 +387,7 @@ def handle_query(
                 break
         if not content:
             return "No pude guardar el hecho: no entendí el contenido.", []
-        answer = tool_save_fact(content)
-        return answer, []
+        return tool_save_fact(content), []
 
     if route == "tool_create_task":
         text = user_input.lower()
@@ -466,38 +403,23 @@ def handle_query(
                         raw = raw[:-len(p)].strip().rstrip(",;")
                         priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
                         break
-                answer = tool_create_task(title=raw, priority=priority)
-                return answer, []
-        answer = tool_create_task(title=user_input, priority="medium")
-        return answer, []
+                return tool_create_task(title=raw, priority=priority), []
+        return tool_create_task(title=user_input, priority="medium"), []
 
     if route == "tool_complete_task":
         task_id = extract_task_id(user_input)
         if not task_id:
-            return (
-                "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'",
-                [],
-            )
-        answer = tool_complete_task(task_id)
-        return answer, []
+            return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'", []
+        return tool_complete_task(task_id), []
 
     if route == "tool_update_work_state":
         field, value = parse_work_state_update(user_input)
         if not field:
-            return (
-                "No entendí qué campo actualizar. Prueba: "
-                "'actualiza el foco a X', 'cambia siguiente paso a Y', "
-                "'actualiza la fase a Z'",
-                [],
-            )
+            return ("No entendí qué campo actualizar. Prueba: "
+                    "'actualiza el foco a X', 'cambia siguiente paso a Y'", [])
         if not value:
-            return (
-                f"Entendí que quieres actualizar '{field}', pero no encontré el nuevo valor. "
-                f"Prueba: 'actualiza el foco a <descripción>'",
-                [],
-            )
-        answer = tool_update_work_state(field, value)
-        return answer, []
+            return (f"Entendí que quieres actualizar '{field}', pero no encontré el nuevo valor.", [])
+        return tool_update_work_state(field, value), []
 
     if route == "tool_list_files":
         files = list_project_files()
@@ -510,15 +432,26 @@ def handle_query(
         path = extract_file_path(user_input)
         if not path:
             return "No pude identificar qué archivo querías leer.", []
-        content = read_project_file(path)
-        return content, []
+        return read_project_file(path), []
 
     if route == "memory":
         memory_answer = answer_from_memory(user_input)
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG (fallback documental) ─────────────────────────────────────────
+    # ── RAG + caché semántica (10c) ────────────────────────────────
+    # Paso 1: consultar caché antes de tocar Chroma o el LLM
+    cached = cache_lookup(user_input)
+    if cached is not None:
+        # Hit: respuesta instantánea desde caché
+        _persist_turn(user_input, cached)
+        chat_history.append(HumanMessage(content=user_input))
+        chat_history.append(AIMessage(content=cached))
+        while len(chat_history) > MAX_TURNS * 2:
+            chat_history.pop(0)
+        return cached, []
+
+    # Paso 2: flujo RAG normal
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
     source_docs = retriever.invoke(user_input)
@@ -531,6 +464,9 @@ def handle_query(
         "context": context_text,
         "chat_history": chat_history_text,
     })
+
+    # Paso 3: guardar en caché para futuras consultas similares
+    cache_save(user_input, answer)
 
     _persist_turn(user_input, answer)
     chat_history.append(HumanMessage(content=user_input))
