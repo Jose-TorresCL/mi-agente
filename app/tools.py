@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.memory_store import save_project_fact, add_task
+from app.memory_store import (
+    save_project_fact,
+    add_task,
+    update_task_status,
+    update_work_state,
+    load_tasks,
+)
 
 PROJECT_ROOT = Path(".")
 ALLOWED_DIRS = [
@@ -106,22 +112,38 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 # Tools de escritura seguras
 # ─────────────────────────────────────────────
 
-def tool_save_fact(key: str, value: str) -> str:
-    """Guarda un hecho persistente en project_facts.json.
+def tool_save_fact(question: str) -> str:
+    """Guarda un hecho persistente desde una frase natural.
 
-    Uso esperado: key = nombre del hecho, value = valor del hecho.
-    Ejemplo: key='fase_actual', value='Fase 2 - Estabilización'
+    Ejemplos:
+      'guarda como hecho que fase 2 está cerrada'
+      'registra que el router tiene 6 carriles'
     """
-    key = key.strip()
-    value = value.strip()
+    prefixes = [
+        "guarda como hecho que",
+        "guarda como hecho:",
+        "guarda como hecho",
+        "guardar hecho que",
+        "registra que",
+        "anota que",
+        "guarda el hecho que",
+        "registra el hecho que",
+        "guarda esto como hecho:",
+        "guarda esto como hecho",
+    ]
+    content = question.strip()
+    for prefix in prefixes:
+        if content.lower().startswith(prefix):
+            content = content[len(prefix):].strip()
+            break
 
-    if not key:
-        return "No pude guardar el hecho: falta la clave (key)."
-    if not value:
-        return "No pude guardar el hecho: falta el valor."
+    if not content:
+        return "No pude guardar el hecho: no entendí el contenido."
 
-    save_project_fact(key, value)
-    return f"Hecho guardado correctamente → {key}: {value}"
+    from datetime import datetime
+    key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_project_fact(key, content)
+    return f"\u2713 Hecho guardado: \"{content}\""
 
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
@@ -140,5 +162,4 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
     if priority not in VALID_PRIORITIES:
         priority = "medium"
 
-    task_id = add_task(title=title, priority=priority, notes=notes)
-    return f"Tarea creada correctamente → {task_id}: {title} [prioridad: {priority}]"
+    task_id = add_task(title=title, priority=priority
