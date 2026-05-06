@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.memory_store import (
-    save_project_fact,
-    add_task,
-    update_task_status,
-    update_work_state,
-    load_tasks,
-)
+from app.memory_store import save_project_fact, add_task
 
 PROJECT_ROOT = Path(".")
 ALLOWED_DIRS = [
@@ -113,23 +107,22 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 # ─────────────────────────────────────────────
 
 def tool_save_fact(question: str) -> str:
-    """Guarda un hecho persistente desde una frase natural.
-
-    Ejemplos:
+    """
+    Acepta frases como:
       'guarda como hecho que fase 2 está cerrada'
       'registra que el router tiene 6 carriles'
+      'anota que work_state ya está conectado'
     """
+    # Limpiar prefijos comunes para extraer solo el contenido
     prefixes = [
         "guarda como hecho que",
-        "guarda como hecho:",
-        "guarda como hecho",
         "guardar hecho que",
         "registra que",
         "anota que",
         "guarda el hecho que",
         "registra el hecho que",
         "guarda esto como hecho:",
-        "guarda esto como hecho",
+        "guarda como hecho:",
     ]
     content = question.strip()
     for prefix in prefixes:
@@ -140,10 +133,11 @@ def tool_save_fact(question: str) -> str:
     if not content:
         return "No pude guardar el hecho: no entendí el contenido."
 
+    # Clave automática con timestamp para no sobreescribir
     from datetime import datetime
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
-    return f"\u2713 Hecho guardado: \"{content}\""
+    return f"✓ Hecho guardado: \"{content}\""
 
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
@@ -162,4 +156,5 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
     if priority not in VALID_PRIORITIES:
         priority = "medium"
 
-    task_id = add_task(title=title, priority=priority
+    task_id = add_task(title=title, priority=priority, notes=notes)
+    return f"Tarea creada correctamente → {task_id}: {title} [prioridad: {priority}]"

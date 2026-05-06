@@ -374,7 +374,7 @@ def handle_query(
                 return answer, []
         answer = tool_create_task(title=user_input, priority="medium")
         return answer, []
-
+    
     # ── Tools de lectura de archivos ────────────────────────────────────
     if route == "tool_list_files":
         files = list_project_files()
