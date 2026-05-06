@@ -73,7 +73,6 @@ def cmd_estado():
         console.print(f"    [blue]Capa 2 embeddings:[/blue]  {SESSION_STATS['emb']:>3} consultas  ({emb_pct}%)  ~50ms")
         console.print(f"    [red]Capa 3 LLM       :[/red]   {SESSION_STATS['llm']:>3} consultas  ({llm_pct}%)  ~3-8s")
 
-        # Alerta si el LLM se usa demasiado — señal de que faltan ejemplos
         if llm_pct >= 30:
             console.print(
                 "\n  [bold red]⚠ El LLM se usa mucho (≥30%).[/bold red] "
@@ -96,7 +95,8 @@ def main():
         )
 
     vectordb = load_vector_store()
-    memory = build_memory()
+    # chat_history es ahora una lista simple de HumanMessage / AIMessage
+    chat_history = build_memory()
 
     console.print("[bold green]Lautaro está iniciado[/bold green]")
     console.print("Escribe tu pregunta. 'salir', 'exit' o 'quit' para terminar.")
@@ -115,8 +115,8 @@ def main():
         if user_input.lower() == "!reset":
             if MEMORY_FILE.exists():
                 MEMORY_FILE.unlink()
+            chat_history.clear()
             console.print("[red]Memoria de conversación borrada.[/red]")
-            memory = build_memory()
             continue
 
         if user_input.lower() == "!estado":
@@ -128,7 +128,7 @@ def main():
 
         console.print("[magenta]Pensando...[/magenta]")
 
-        answer, sources = handle_query(user_input, vectordb, memory)
+        answer, sources = handle_query(user_input, vectordb, chat_history)
 
         console.print(Markdown(f"**Lautaro:** {answer}"))
         print_sources(sources)
