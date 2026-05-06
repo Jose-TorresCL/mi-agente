@@ -144,12 +144,6 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 # ─────────────────────────────────────────────
 
 def tool_save_fact(question: str) -> str:
-    """
-    Acepta frases como:
-      'guarda como hecho que fase 2 está cerrada'
-      'registra que el router tiene 6 carriles'
-      'anota que work_state ya está conectado'
-    """
     prefixes = [
         "guarda como hecho que",
         "guarda como hecho:",
@@ -196,14 +190,26 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
 # ─────────────────────────────────────────────
 
 def extract_task_id(text: str) -> str:
-    """Extrae un ID de tarea tipo 'T-003' del texto del usuario."""
-    match = re.search(r"T-\d{3}", text, re.IGNORECASE)
+    """Extrae un ID de tarea del texto del usuario.
+
+    Soporta dos formatos:
+    - IDs largos por timestamp: T-0506130557  (10 dígitos)
+    - IDs cortos legacy:        T-003         (3 dígitos)
+
+    Estrategia:
+    1. Busca T- seguido de 1 o más dígitos (captura ambos formatos).
+    2. Fallback: número suelto de 3 dígitos exactos → lo convierte en T-NNN.
+    """
+    # ── Fix: \d{3} → \d+ para capturar IDs de cualquier longitud ──────────
+    match = re.search(r"T-(\d+)", text, re.IGNORECASE)
     if match:
-        return match.group(0).upper()
-    # Fallback: número suelto de 3 dígitos
+        return f"T-{match.group(1)}"
+
+    # Fallback solo para IDs cortos escritos sin prefijo (ej: "003", "005")
     match = re.search(r"\b(\d{3})\b", text)
     if match:
         return f"T-{match.group(1)}"
+
     return ""
 
 
@@ -269,7 +275,6 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
         return None, None
 
     # Extraer el valor después de separadores comunes
-    # Usar texto original para preservar mayúsculas, tildes y guiones
     patterns = [
         r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
         r"[:=]\s*(.+?)(?:\s*[.!?]|$)",
@@ -278,8 +283,6 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             value = match.group(1).strip().strip("\"'")
-            # Eliminar prefijos de navegación residuales
-            # ej: "el foco a fase 3" → extrajo "el foco a fase 3", debe quedar "fase 3"
             value_lower = value.lower()
             for prefix in sorted(_VALUE_PREFIXES, key=len, reverse=True):
                 if value_lower.startswith(prefix):
