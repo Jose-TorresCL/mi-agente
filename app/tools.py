@@ -35,25 +35,40 @@ ALLOWED_WORK_STATE_FIELDS = {
 
 # Aliases en español para los campos de work_state
 WORK_STATE_FIELD_ALIASES = {
-    "foco":             "current_focus",
-    "foco actual":      "current_focus",
-    "focus":            "current_focus",
-    "fase":             "current_phase",
-    "fase actual":      "current_phase",
-    "phase":            "current_phase",
-    "último paso":      "last_completed_step",
-    "ultimo paso":      "last_completed_step",
+    "foco":                   "current_focus",
+    "foco actual":            "current_focus",
+    "focus":                  "current_focus",
+    "fase":                   "current_phase",
+    "fase actual":            "current_phase",
+    "phase":                  "current_phase",
+    "último paso":            "last_completed_step",
+    "ultimo paso":            "last_completed_step",
     "último paso completado": "last_completed_step",
-    "siguiente paso":   "next_step",
-    "next step":        "next_step",
-    "bloqueante":       "current_blockers",
-    "bloqueo":          "current_blockers",
-    "blockers":         "current_blockers",
-    "meta sesión":      "session_goal",
-    "meta de sesión":   "session_goal",
-    "objetivo sesión":  "session_goal",
-    "session goal":     "session_goal",
+    "siguiente paso":         "next_step",
+    "next step":              "next_step",
+    "bloqueante":             "current_blockers",
+    "bloqueo":                "current_blockers",
+    "blockers":               "current_blockers",
+    "meta sesión":            "session_goal",
+    "meta de sesión":         "session_goal",
+    "objetivo sesión":        "session_goal",
+    "session goal":           "session_goal",
 }
+
+# Prefijos de navegación que se deben eliminar del valor extraído
+_VALUE_PREFIXES = [
+    "el foco a",
+    "foco a",
+    "la fase a",
+    "fase a",
+    "siguiente paso a",
+    "el siguiente paso a",
+    "último paso a",
+    "el último paso a",
+    "bloqueante a",
+    "bloqueo a",
+    "work_state a",
+]
 
 
 def _is_allowed(path: Path) -> bool:
@@ -83,50 +98,34 @@ def _should_skip(path: Path) -> bool:
 
 def list_project_files() -> list[str]:
     files = []
-
     for base in ALLOWED_DIRS:
         if not base.exists():
             continue
-
         for p in base.rglob("*"):
             if _should_skip(p):
                 continue
             if p.is_file():
                 files.append(str(p.relative_to(PROJECT_ROOT)))
-
     return sorted(files)
 
 
 def extract_file_path(text: str) -> str | None:
     cleaned = text.strip()
-
-    markers = [
-        "data/",
-        "data\\",
-        "app/",
-        "app\\",
-        "storage/",
-        "storage\\",
-    ]
-
+    markers = ["data/", "data\\", "app/", "app\\", "storage/", "storage\\"]
     lower_text = cleaned.lower()
 
     for marker in markers:
         idx = lower_text.find(marker.lower())
         if idx == -1:
             continue
-
         candidate = cleaned[idx:].strip()
         candidate = candidate.strip('"').strip("'").strip("`")
         candidate = candidate.rstrip("?.!,;:")
-
         for stop in [" y ", " luego ", " después ", " despues "]:
             stop_idx = candidate.lower().find(stop)
             if stop_idx != -1:
                 candidate = candidate[:stop_idx].strip()
-
         return candidate
-
     return None
 
 
@@ -134,10 +133,8 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
     p = Path(path)
     if not _is_allowed(p):
         return "Ruta no permitida. Usa solo archivos dentro de app/, data/docs/ o storage/."
-
     if not p.exists() or not p.is_file():
         return "Archivo no encontrado."
-
     text = p.read_text(encoding="utf-8", errors="ignore")
     return text[:max_chars]
 
@@ -147,7 +144,12 @@ def read_project_file(path: str, max_chars: int = 8000) -> str:
 # ─────────────────────────────────────────────
 
 def tool_save_fact(question: str) -> str:
-    """Guarda un hecho persistente desde una frase natural."""
+    """
+    Acepta frases como:
+      'guarda como hecho que fase 2 está cerrada'
+      'registra que el router tiene 6 carriles'
+      'anota que work_state ya está conectado'
+    """
     prefixes = [
         "guarda como hecho que",
         "guarda como hecho:",
@@ -171,7 +173,7 @@ def tool_save_fact(question: str) -> str:
 
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
-    return f"\u2713 Hecho guardado: \"{content}\""
+    return f"✓ Hecho guardado: \"{content}\""
 
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
@@ -182,16 +184,15 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
 
     if not title:
         return "No pude crear la tarea: falta el título."
-
     if priority not in VALID_PRIORITIES:
         priority = "medium"
 
     task_id = add_task(title=title, priority=priority, notes=notes)
-    return f"\u2713 Tarea creada: [{task_id}] {title} (prioridad: {priority})"
+    return f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})"
 
 
 # ─────────────────────────────────────────────
-# Tool: completar tarea  (NUEVO — Fase 2)
+# Tool: completar tarea  (Fase 2)
 # ─────────────────────────────────────────────
 
 def extract_task_id(text: str) -> str:
@@ -209,8 +210,8 @@ def extract_task_id(text: str) -> str:
 def tool_complete_task(task_id: str) -> str:
     """Marca una tarea existente como completada dado su ID (ej: 'T-002').
 
-    Actualiza el campo 'status' a 'completed' y registra la fecha de cierre
-    en 'completed_at'. No borra la tarea del archivo.
+    Actualiza 'status' a 'completed' y registra 'completed_at'.
+    No borra la tarea del archivo.
     """
     if not task_id:
         return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
@@ -222,7 +223,7 @@ def tool_complete_task(task_id: str) -> str:
     for task in tasks:
         if task.get("id", "").upper() == task_id.upper():
             if task.get("status") == "completed":
-                return f"\u2139\ufe0f  La tarea {task_id} ya estaba marcada como completada."
+                return f"ℹ️  La tarea {task_id} ya estaba marcada como completada."
             task["status"] = "completed"
             task["completed_at"] = datetime.now().isoformat(timespec="seconds")
             found = True
@@ -230,16 +231,14 @@ def tool_complete_task(task_id: str) -> str:
 
     if not found:
         available = [t.get("id") for t in tasks]
-        return f"\u274c No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
+        return f"❌ No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
 
-    # Persistir cambios usando update_task_status si acepta el objeto completo,
-    # o escribiendo directamente via memory_store
     update_task_status(task_id, "completed")
-    return f"\u2705 Tarea {task_id} marcada como completada."
+    return f"✅ Tarea {task_id} marcada como completada."
 
 
 # ─────────────────────────────────────────────
-# Tool: actualizar work_state  (NUEVO — Fase 2)
+# Tool: actualizar work_state  (Fase 2)
 # ─────────────────────────────────────────────
 
 def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
@@ -247,14 +246,13 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
     - 'actualiza el foco a fase 3 — router semántico'
     - 'cambia next_step a probar el router'
     - 'pon en siguiente paso: escribir tests'
-    
+
     Devuelve (None, None) si no puede parsear el campo.
     """
     text_lower = text.lower()
 
-    # Detectar campo por alias
+    # Detectar campo por alias (ordenados de mayor a menor longitud)
     detected_field: str | None = None
-    # Ordenar por longitud descendente para que aliases largos tengan prioridad
     for alias in sorted(WORK_STATE_FIELD_ALIASES, key=len, reverse=True):
         if alias in text_lower:
             detected_field = WORK_STATE_FIELD_ALIASES[alias]
@@ -271,8 +269,7 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
         return None, None
 
     # Extraer el valor después de separadores comunes
-    # Estrategia: buscar todo lo que va después de " a ", ":", "=", " en "
-    # usando el texto original (no lower) para preservar mayúsculas y tildes
+    # Usar texto original para preservar mayúsculas, tildes y guiones
     patterns = [
         r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
         r"[:=]\s*(.+?)(?:\s*[.!?]|$)",
@@ -281,6 +278,13 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             value = match.group(1).strip().strip("\"'")
+            # Eliminar prefijos de navegación residuales
+            # ej: "el foco a fase 3" → extrajo "el foco a fase 3", debe quedar "fase 3"
+            value_lower = value.lower()
+            for prefix in sorted(_VALUE_PREFIXES, key=len, reverse=True):
+                if value_lower.startswith(prefix):
+                    value = value[len(prefix):].strip()
+                    break
             if value:
                 return detected_field, value
 
@@ -294,12 +298,11 @@ def tool_update_work_state(field: str, value: str) -> str:
     """
     if field not in ALLOWED_WORK_STATE_FIELDS:
         return (
-            f"\u274c Campo '{field}' no permitido.\n"
+            f"❌ Campo '{field}' no permitido.\n"
             f"Campos disponibles: {sorted(ALLOWED_WORK_STATE_FIELDS)}"
         )
-
     if not value or not value.strip():
         return "No pude actualizar: el valor está vacío."
 
     update_work_state(field, value.strip())
-    return f"\u2705 work_state actualizado: {field} → '{value.strip()}'"
+    return f"✅ work_state actualizado: {field} → '{value.strip()}'"
