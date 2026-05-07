@@ -254,25 +254,15 @@ def _parse_key_value(content: str) -> tuple[str, str] | None:
     return key, value
 
 
-def tool_save_fact(question: str) -> str:
-    """Guarda un hecho en project_facts.json."""
-    prefixes = [
-        "guarda como hecho que",
-        "guarda como hecho:",
-        "guarda como hecho",
-        "guardar hecho que",
-        "registra que",
-        "anota que",
-        "guarda el hecho que",
-        "registra el hecho que",
-        "guarda esto como hecho:",
-        "guarda esto como hecho",
-    ]
-    content = question.strip()
-    for prefix in prefixes:
-        if content.lower().startswith(prefix):
-            content = content[len(prefix):].strip()
-            break
+def tool_save_fact(content: str) -> str:
+    """Guarda un hecho en project_facts.json.
+
+    IMPORTANTE: esta función recibe el contenido YA limpio (sin prefijos).
+    Los prefijos ('anota que', 'registra que', etc.) se extraen en chat_core.py
+    antes de llamar a esta función. No extraer prefijos aquí para evitar
+    doble extracción que trunca el texto guardado.
+    """
+    content = content.strip()
 
     if not content:
         return "No pude guardar el hecho: no entendí el contenido."
@@ -423,7 +413,7 @@ def tool_update_work_state(texto: str) -> str:
     texto_lower = texto.lower()
     cambios = []
 
-    # ── current_focus ──────────────────────────────────────
+    # ── current_focus ────────────────────────────────────
     patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enf[oó]cate en)\s+(.+)"]
     for pat in patrones_foco:
         m = re.search(pat, texto_lower)
@@ -434,8 +424,6 @@ def tool_update_work_state(texto: str) -> str:
             break
 
     # ── last_completed ─────────────────────────────────────
-    # Acepta verbos con y sin tilde, y absorbe "de"/"con" opcionales
-    # antes del valor real para evitar capturar "de limpiar" en vez de "limpiar X".
     patrones_completado = [
         r"(?:complet[eé]|termin[eé]|acab[eé]|ya hice|ya termin[eé]|logramos|listo)\s+(?:de\s+|con\s+)?(.+)"
     ]
