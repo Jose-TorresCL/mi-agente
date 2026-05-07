@@ -17,6 +17,7 @@ Comandos especiales:
                y estadísticas del router en la sesión actual
 """
 
+from datetime import datetime
 from pathlib import Path
 
 from rich.markdown import Markdown
@@ -61,6 +62,42 @@ def mostrar_contexto_inicial():
         console.print("   [dim]Sin tareas pendientes.[/dim]")
 
     console.print("")
+
+
+def resumen_sesion_al_salir(chat_history):
+    """Muestra un resumen de la sesión y lo guarda en workstate al salir."""
+    from app.memory_store import load_work_state, load_tasks, save_work_state
+
+    ws = load_work_state()
+    tasks_data = load_tasks()
+    pending = [
+        t for t in tasks_data.get("tasks", [])
+        if t.get("status") not in ("completed", "done")
+    ]
+
+    n_mensajes = len([m for m in chat_history if hasattr(m, "type") and m.type == "human"])
+    foco   = ws.get("current_focus", "sin foco")
+    next_s = ws.get("next_step", "sin siguiente paso")
+    fecha  = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    console.print("\n[bold green]── Resumen de sesión ─────────────────────────[/bold green]")
+    console.print(f"   [cyan]Foco trabajado:[/cyan]  {foco}")
+    console.print(f"   [cyan]Siguiente paso:[/cyan]  {next_s}")
+    console.print(f"   [cyan]Consultas:[/cyan]       {n_mensajes} en esta sesión")
+
+    if pending:
+        console.print(f"   [yellow]Tareas aún abiertas ({len(pending)}):[/yellow]")
+        for t in pending:
+            console.print(f"     · {t.get('title', t.get('id', '?'))} [{t.get('priority','—')}]")
+    else:
+        console.print("   [green]✅ Sin tareas pendientes.[/green]")
+
+    console.print(f"   [dim]Sesión cerrada: {fecha}[/dim]")
+    console.print("[bold green]──────────────────────────────────────────────[/bold green]\n")
+
+    # Guardar fecha de última sesión en workstate
+    ws["last_session"] = fecha
+    save_work_state(ws)
 
 
 def cmd_estado():
@@ -126,7 +163,6 @@ def main():
         )
 
     vectordb = load_vector_store()
-    # chat_history es ahora una lista simple de HumanMessage / AIMessage
     chat_history = build_memory()
 
     console.print("[bold green]Lautaro está iniciado[/bold green]")
@@ -142,6 +178,7 @@ def main():
         user_input = console.input("[bold cyan]Tú:[/bold cyan] ").strip()
 
         if user_input.lower() in {"salir", "exit", "quit"}:
+            resumen_sesion_al_salir(chat_history)
             console.print("[yellow]Hasta luego 👋[/yellow]")
             break
 
