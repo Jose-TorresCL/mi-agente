@@ -84,6 +84,7 @@ QA_PROMPT = ChatPromptTemplate.from_template(QA_SYSTEM_PROMPT)
 # ─────────────────────────────────────────────
 
 def _format_profile_answer(profile: dict) -> str:
+    """Formatea el perfil completo — solo para respuestas del carril memory."""
     lines = ["**Perfil del usuario:**"]
     lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
     lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
@@ -215,6 +216,14 @@ def ensure_storage():
 
 
 def build_structured_memory_context() -> str:
+    """Construye el contexto de memoria para el prompt RAG.
+
+    fix #6: preferred_workflow y preferred_style se omiten aquí.
+    Esos campos solo deben usarse cuando el usuario pregunta por su
+    perfil (carril memory -> _format_profile_answer).
+    Si se inyectan en el contexto RAG, el LLM los repite al inicio
+    de cada respuesta documental (bug 'Flujo preferido...').
+    """
     profile = load_profile()
     project_facts = load_project_facts()
     work_state = load_work_state()
@@ -227,12 +236,8 @@ def build_structured_memory_context() -> str:
         lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
         lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
         lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
-        preferred_style = profile.get("preferred_style", [])
-        if preferred_style:
-            lines.append(f"- Estilo preferido: {', '.join(preferred_style)}")
-        preferred_workflow = profile.get("preferred_workflow", [])
-        if preferred_workflow:
-            lines.append(f"- Flujo preferido: {' | '.join(preferred_workflow)}")
+        # fix #6: preferred_style y preferred_workflow NO se inyectan en RAG
+        # Solo se exponen en _format_profile_answer (carril memory)
     if project_facts:
         lines.append("")
         lines.append("Hechos persistentes del proyecto:")
@@ -364,7 +369,7 @@ def handle_query(
 ) -> tuple[str, list]:
     route = route_query(user_input)
 
-    # ── SimpleMem: hook de salida ────────────────────────────────────────
+    # ── SimpleMem: hook de salida ────────────────────────────────────
     if route == "exit":
         turns = len(chat_history) // 2
         if turns > 0:
@@ -374,7 +379,7 @@ def handle_query(
             print(f"Episodio guardado ({turns} turnos).")
         return "__EXIT__", []
 
-    # ── Tools de escritura ────────────────────────────────
+    # ── Tools de escritura ────────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
@@ -437,8 +442,7 @@ def handle_query(
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG + caché semántica (10c) + fidelidad (10a) ─────────────────────
-    # Paso 1: caché semántica (umbral 0.88)
+    # ── RAG + caché semántica + fidelidad ──────────────────────────
     cached = cache_lookup(user_input)
     if cached is not None:
         _persist_turn(user_input, cached)
@@ -448,7 +452,6 @@ def handle_query(
             chat_history.pop(0)
         return cached, []
 
-    # Paso 2: flujo RAG normal
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
     source_docs = retriever.invoke(user_input)
@@ -462,13 +465,9 @@ def handle_query(
         "chat_history": chat_history_text,
     })
 
-    # Paso 3: verificación de fidelidad (10a)
-    # Si la respuesta no está soportada por los chunks, la bloqueamos
     if not verify_fidelity(answer, source_docs):
-        # NO guardar en caché ni en historial una respuesta sospechosa
         return NO_EVIDENCE_MSG, source_docs
 
-    # Paso 4: guardar en caché solo si la fidelidad es ok
     cache_save(user_input, answer)
 
     _persist_turn(user_input, answer)
