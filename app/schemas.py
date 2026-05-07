@@ -14,9 +14,9 @@ Cómo usarlo:
 
     from app.schemas import WorkState, TaskItem
 
-  Para validar en runtime (opcional):
-    from app.schemas import validate_work_state
-    warnings = validate_work_state(data)
+  Para validar al arrancar (detecta corrupción de archivos):
+    from app.schemas import validate_storage
+    validate_storage()   # imprime advertencias si hay claves desconocidas
 
 Archivos JSON y sus schemas:
   storage/work_state.json      →  WorkState
@@ -33,6 +33,8 @@ Nota sobre TypedDict y total=False:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -42,25 +44,21 @@ from typing import TypedDict
 
 class WorkStateRequired(TypedDict, total=True):
     """Campos obligatorios de work_state.json."""
-    current_focus: str          # qué está haciendo el usuario ahora
-    next_step: str              # cuál es el siguiente paso registrado
-    last_completed: str         # último paso completado con fecha
+    current_focus: str
+    next_step: str
+    last_completed: str
 
 
 class WorkState(WorkStateRequired, total=False):
-    """Schema completo de storage/work_state.json.
-
-    Campos opcionales (pueden estar ausentes en archivos antiguos):
-    """
-    current_phase: str          # fase del proyecto (ej: 'fase_4')
+    """Schema completo de storage/work_state.json."""
+    current_phase: str
     last_completed_step: str    # alias legacy — usar last_completed en código nuevo
-    current_blockers: list[str] # lista de bloqueantes activos
-    session_goal: str           # objetivo de la sesión actual
-    notes: list[str]            # notas libres
-    last_updated: str           # timestamp de última escritura (YYYY-MM-DD HH:MM)
+    current_blockers: list[str]
+    session_goal: str
+    notes: list[str]
+    last_updated: str
 
 
-# Conjunto de claves permitidas — usado por validate_work_state()
 _WORK_STATE_KNOWN_KEYS = {
     "current_focus", "next_step", "last_completed",
     "current_phase", "last_completed_step",
@@ -82,7 +80,9 @@ def validate_work_state(data: dict) -> list[str]:
     warnings: list[str] = []
     unknown = set(data.keys()) - _WORK_STATE_KNOWN_KEYS
     if unknown:
-        warnings.append(f"[schemas:warn] claves desconocidas en work_state: {sorted(unknown)}")
+        warnings.append(
+            f"[schemas:warn] claves desconocidas en work_state: {sorted(unknown)}"
+        )
     return warnings
 
 
@@ -91,18 +91,18 @@ def validate_work_state(data: dict) -> list[str]:
 # ─────────────────────────────────────────────
 
 class TaskItemRequired(TypedDict, total=True):
-    """Campos obligatorios de cada tarea en tasks.json."""
-    id: str          # formato T-MMDDHHMISS  (ej: T-0506132952)
-    title: str       # descripción de la tarea
-    status: str      # 'pending' | 'completed'
-    priority: str    # 'low' | 'medium' | 'high'
-    created_at: str  # ISO 8601 (ej: 2026-05-06T13:29:52)
+    """Campos obligatorios de cada tarea."""
+    id: str
+    title: str
+    status: str
+    priority: str
+    created_at: str
 
 
 class TaskItem(TaskItemRequired, total=False):
-    """Schema completo de un item de tarea."""
-    notes: str          # notas adicionales
-    completed_at: str   # ISO 8601 — solo presente cuando status='completed'
+    """Schema completo de un item de tarea en tasks.json."""
+    notes: str
+    completed_at: str
 
 
 class TasksFile(TypedDict):
@@ -110,32 +110,31 @@ class TasksFile(TypedDict):
     tasks: list[TaskItem]
 
 
+_TASK_KNOWN_KEYS = {"id", "title", "status", "priority", "created_at", "notes", "completed_at"}
+
+
 # ─────────────────────────────────────────────
 # storage/profile.json
 # ─────────────────────────────────────────────
 
 class ProfileData(TypedDict, total=False):
-    """Schema de storage/profile.json.
-
-    Todo optional porque el archivo puede crecer con claves nuevas
-    a medida que el usuario interactúa con Lautaro.
-    """
-    name: str               # nombre del usuario (ej: 'José')
-    level: str              # nivel técnico (ej: 'junior')
-    project: str            # nombre del proyecto principal
-    preferred_style: str    # estilo de respuesta preferido
-    preferred_flow: str     # flujo de explicación preferido
+    """Schema de storage/profile.json (todo opcional — crece con el uso)."""
+    name: str
+    level: str
+    project: str
+    preferred_style: str
+    preferred_flow: str
 
 
 # ─────────────────────────────────────────────
-# storage/memory.json  (memoria de conversación corta)
+# storage/memory.json
 # ─────────────────────────────────────────────
 
 class Message(TypedDict):
     """Schema de cada mensaje en storage/memory.json."""
-    role: str        # 'user' | 'assistant'
-    content: str     # texto del mensaje
-    timestamp: str   # ISO 8601 (ej: 2026-05-07T14:03:22)
+    role: str
+    content: str
+    timestamp: str
 
 
 class MemoryFile(TypedDict):
@@ -149,10 +148,10 @@ class MemoryFile(TypedDict):
 
 class EpisodeItem(TypedDict):
     """Schema de cada episodio en storage/episodic_memory.json."""
-    date: str        # YYYY-MM-DD
-    time: str        # HH:MM
-    turns: int       # número de turnos en la sesión
-    summary: str     # resumen generado por el LLM al cerrar la sesión
+    date: str
+    time: str
+    turns: int
+    summary: str
 
 
 class EpisodicMemory(TypedDict):
@@ -166,6 +165,121 @@ class EpisodicMemory(TypedDict):
 # project_facts.json tiene claves libres (el usuario inventa el nombre del hecho).
 # Por eso su tipo es simplemente:  dict[str, str]
 # No hay TypedDict para él — eso es correcto y no es un bug.
-
-# Alias para documentar la intención en firmas de funciones:
 ProjectFacts = dict  # dict[str, str] en runtime
+
+
+# ─────────────────────────────────────────────
+# validate_storage() — test de arranque
+# ─────────────────────────────────────────────
+
+_STORAGE_DIR = Path("storage")
+
+
+def _load_json_safe(path: Path) -> dict | list | None:
+    """Lee un JSON sin lanzar excepciones.
+
+    Returns:
+        El objeto parseado, o None si el archivo no existe o tiene error.
+
+    Never raises.
+    """
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def validate_storage() -> list[str]:
+    """Lee los archivos JSON de storage/ y detecta claves desconocidas.
+
+    Verifica:
+      - storage/work_state.json  contra WorkState
+      - storage/tasks.json       contra TaskItem (por cada tarea)
+      - storage/memory.json      contra Message (por cada mensaje)
+      - storage/episodic_memory.json  contra EpisodeItem
+      - storage/profile.json     (solo avisa si no es dict)
+
+    Returns:
+        Lista de strings con advertencias. Lista vacía = todo limpio.
+        También imprime cada advertencia en consola.
+
+    Never raises.
+
+    Uso rápido:
+        python -c "from app.schemas import validate_storage; validate_storage()"
+    """
+    warnings: list[str] = []
+
+    # ─ work_state.json ──────────────────────────────────────
+    ws = _load_json_safe(_STORAGE_DIR / "work_state.json")
+    if ws is None:
+        warnings.append("[storage] work_state.json no existe aún (normal en primera ejecución)")
+    elif isinstance(ws, dict):
+        warnings.extend(validate_work_state(ws))
+    else:
+        warnings.append("[storage:error] work_state.json no es un objeto JSON válido")
+
+    # ─ tasks.json ──────────────────────────────────────────
+    tasks_file = _load_json_safe(_STORAGE_DIR / "tasks.json")
+    if tasks_file is None:
+        warnings.append("[storage] tasks.json no existe aún (normal en primera ejecución)")
+    elif isinstance(tasks_file, dict):
+        for i, task in enumerate(tasks_file.get("tasks", [])):
+            if isinstance(task, dict):
+                unknown = set(task.keys()) - _TASK_KNOWN_KEYS
+                if unknown:
+                    warnings.append(
+                        f"[storage:warn] task[{i}] claves desconocidas: {sorted(unknown)}"
+                    )
+    else:
+        warnings.append("[storage:error] tasks.json no es un objeto JSON válido")
+
+    # ─ memory.json ─────────────────────────────────────────
+    memory_file = _load_json_safe(_STORAGE_DIR / "memory.json")
+    _MSG_KNOWN_KEYS = {"role", "content", "timestamp"}
+    if memory_file is None:
+        warnings.append("[storage] memory.json no existe aún (normal en primera ejecución)")
+    elif isinstance(memory_file, dict):
+        for i, msg in enumerate(memory_file.get("messages", [])):
+            if isinstance(msg, dict):
+                unknown = set(msg.keys()) - _MSG_KNOWN_KEYS
+                if unknown:
+                    warnings.append(
+                        f"[storage:warn] message[{i}] claves desconocidas: {sorted(unknown)}"
+                    )
+    else:
+        warnings.append("[storage:error] memory.json no es un objeto JSON válido")
+
+    # ─ episodic_memory.json ───────────────────────────────
+    _EP_KNOWN_KEYS = {"date", "time", "turns", "summary"}
+    ep_file = _load_json_safe(_STORAGE_DIR / "episodic_memory.json")
+    if ep_file is None:
+        warnings.append("[storage] episodic_memory.json no existe aún (normal en primera ejecución)")
+    elif isinstance(ep_file, dict):
+        for i, ep in enumerate(ep_file.get("episodes", [])):
+            if isinstance(ep, dict):
+                unknown = set(ep.keys()) - _EP_KNOWN_KEYS
+                if unknown:
+                    warnings.append(
+                        f"[storage:warn] episode[{i}] claves desconocidas: {sorted(unknown)}"
+                    )
+    else:
+        warnings.append("[storage:error] episodic_memory.json no es un objeto JSON válido")
+
+    # ─ profile.json ─────────────────────────────────────────
+    profile = _load_json_safe(_STORAGE_DIR / "profile.json")
+    if profile is None:
+        warnings.append("[storage] profile.json no existe aún (normal en primera ejecución)")
+    elif not isinstance(profile, dict):
+        warnings.append("[storage:error] profile.json no es un objeto JSON válido")
+
+    # ─ Reporte final ────────────────────────────────────────
+    if warnings:
+        for w in warnings:
+            print(w)
+    else:
+        print("[storage] ✅ Todos los archivos JSON son válidos.")
+
+    return warnings
