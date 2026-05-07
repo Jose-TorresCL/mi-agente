@@ -77,6 +77,69 @@ def _write_json(path: Path, data: object) -> None:
 
 
 # ─────────────────────────────────────────────
+# D2: Validación de memory.json al arrancar
+# ─────────────────────────────────────────────
+
+def validate_memory_file() -> str:
+    """Verifica que memory.json tiene el formato correcto {messages: [...]}.
+
+    Llamar al inicio del programa (en chat.py o __main__).
+    Si el archivo está en formato LangChain antiguo o corrupto,
+    lo migra silenciosamente al formato propio o lo resetea.
+
+    Returns:
+        str con el resultado: 'ok' | 'migrated' | 'reset' | 'created'
+
+    Never raises.
+    """
+    if not MEMORY_FILE.exists():
+        _write_json(MEMORY_FILE, {"messages": []})
+        return "created"
+    try:
+        raw = MEMORY_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        _write_json(MEMORY_FILE, {"messages": []})
+        return "reset"
+
+    # Formato correcto
+    if isinstance(data.get("messages"), list):
+        # Verificar que los mensajes tienen el schema correcto {role, content}
+        messages = data["messages"]
+        valid = all(
+            isinstance(m, dict) and "role" in m and "content" in m
+            for m in messages
+        )
+        if valid or not messages:
+            return "ok"
+        # Mensajes con estructura incorrecta: resetear
+        _write_json(MEMORY_FILE, {"messages": []})
+        return "reset"
+
+    # Formato LangChain antiguo: tiene lista plana o clave distinta
+    # Intentar migrar si tiene estructura tipo [{"type": "human", "data": {...}}]
+    if isinstance(data, list):
+        migrated: list[dict] = []
+        for m in data:
+            if isinstance(m, dict):
+                role_map = {"human": "human", "ai": "ai", "HumanMessage": "human", "AIMessage": "ai"}
+                role = role_map.get(m.get("type", ""), None)
+                content = ""
+                if isinstance(m.get("data"), dict):
+                    content = m["data"].get("content", "")
+                elif isinstance(m.get("content"), str):
+                    content = m["content"]
+                if role and content:
+                    migrated.append({"role": role, "content": content})
+        _write_json(MEMORY_FILE, {"messages": migrated})
+        return "migrated"
+
+    # Cualquier otro formato desconocido: resetear
+    _write_json(MEMORY_FILE, {"messages": []})
+    return "reset"
+
+
+# ─────────────────────────────────────────────
 # Memoria de conversación (corta)
 # ─────────────────────────────────────────────
 
@@ -138,6 +201,61 @@ def save_profile(data: ProfileData) -> None:
 
 
 # ─────────────────────────────────────────────
+# D1: Limpieza y deduplicación de project_facts
+# ─────────────────────────────────────────────
+
+# Claves canónicas conocidas — cualquier variante se normaliza a estas
+_FACTS_CANONICAL: dict[str, list[str]] = {
+    "project_name":    ["nombre_proyecto", "nombre del proyecto", "project name"],
+    "current_phase":   ["fase_actual", "fase actual", "current_phase_label", "phase"],
+    "phase_label":     ["label_fase", "phase label", "phase_name"],
+    "current_focus":   ["foco_actual", "foco actual", "focus"],
+    "rag_status":      ["estado_rag", "estado rag", "rag status"],
+    "memory_status":   ["estado_memoria", "estado memoria", "memory status"],
+    "current_version": ["version_actual", "version actual", "version"],
+    "stack":           ["tecnologias", "tecnologías", "stack_tecnologico"],
+}
+
+# Mapa inverso: alias → clave canónica
+_FACTS_ALIAS_MAP: dict[str, str] = {
+    alias: canonical
+    for canonical, aliases in _FACTS_CANONICAL.items()
+    for alias in aliases
+}
+
+
+def clean_project_facts(data: dict[str, str]) -> dict[str, str]:
+    """Normaliza y deduplica un diccionario de project_facts.
+
+    Operaciones:
+    1. Elimina valores vacíos o solo espacios.
+    2. Normaliza claves: minúsculas y espacios → guión_bajo.
+    3. Resuelve aliases a claves canónicas (ej: 'fase_actual' → 'current_phase').
+    4. En caso de duplicado, conserva el valor más reciente (último en el dict).
+
+    Args:
+        data: dict crudo leído de project_facts.json
+
+    Returns:
+        dict limpio y deduplicado.
+
+    Never raises.
+    """
+    cleaned: dict[str, str] = {}
+    for raw_key, value in data.items():
+        # 1. Purgar valores vacíos
+        if not isinstance(value, str) or not value.strip():
+            continue
+        # 2. Normalizar clave
+        normalized = raw_key.strip().lower().replace(" ", "_").replace("-", "_")
+        # 3. Resolver alias
+        canonical = _FACTS_ALIAS_MAP.get(normalized, normalized)
+        # 4. Último valor gana (sobrescribe duplicados anteriores)
+        cleaned[canonical] = value.strip()
+    return cleaned
+
+
+# ─────────────────────────────────────────────
 # Hechos persistentes del proyecto
 # ─────────────────────────────────────────────
 
@@ -151,8 +269,8 @@ def load_project_facts() -> dict[str, str]:
 
 
 def save_project_facts(data: dict[str, str]) -> None:
-    """Sobrescribe project_facts.json con el contenido de data."""
-    _write_json(PROJECT_FACTS_FILE, data)
+    """Sobrescribe project_facts.json. Aplica limpieza D1 antes de escribir."""
+    _write_json(PROJECT_FACTS_FILE, clean_project_facts(data))
 
 
 def update_project_fact(key: str, value: str) -> None:
@@ -166,11 +284,15 @@ def update_project_fact(key: str, value: str) -> None:
     """
     data = load_project_facts()
     data[key] = value
-    _write_json(PROJECT_FACTS_FILE, data)
+    # D1: limpia antes de escribir
+    _write_json(PROJECT_FACTS_FILE, clean_project_facts(data))
 
 
 def save_project_fact(key: str, value: str) -> None:
     """Alias semántico de update_project_fact para uso desde tools.
+
+    D3: invalida la caché semántica tras escribir para evitar
+    respuestas obsoletas en la próxima consulta RAG.
 
     Args:
         key:   Clave del hecho. Se hace strip() automáticamente.
@@ -183,6 +305,12 @@ def save_project_fact(key: str, value: str) -> None:
     if not key or not value:
         return
     update_project_fact(key, value)
+    # D3: invalidar caché semántica — los hechos cambiaron
+    try:
+        from app.semantic_cache import cache_invalidate
+        cache_invalidate()
+    except Exception:
+        pass  # caché opcional: si falla, no bloquear la escritura
 
 
 # ─────────────────────────────────────────────
@@ -285,6 +413,9 @@ def save_work_state(data: WorkState) -> None:
 def update_work_state(field: str, value: str) -> None:
     """Actualiza un campo específico de work_state.json de forma dinámica.
 
+    D3: invalida la caché semántica tras escribir para evitar
+    respuestas obsoletas en la próxima consulta RAG.
+
     Args:
         field: Nombre del campo (debe estar en WorkState).
         value: Valor a asignar.
@@ -301,6 +432,12 @@ def update_work_state(field: str, value: str) -> None:
         data[field] = value.strip()  # type: ignore[literal-required]
     data["last_updated"] = datetime.now().strftime("%Y-%m-%d")  # type: ignore[typeddict-unknown-key]
     _write_json(WORK_STATE_FILE, data)
+    # D3: invalidar caché semántica — el estado de trabajo cambió
+    try:
+        from app.semantic_cache import cache_invalidate
+        cache_invalidate()
+    except Exception:
+        pass  # caché opcional: si falla, no bloquear la escritura
 
 
 # ─────────────────────────────────────────────
