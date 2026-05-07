@@ -32,9 +32,23 @@ from app.chat_core import (
 )
 from app.chat_ui import console, print_sources
 
+DIAS_ALERTA_TAREA = 3  # avisa si una tarea lleva más de estos días sin moverse
+
+
+def _dias_desde(fecha_str: str) -> int | None:
+    """Devuelve cuántos días han pasado desde fecha_str (ISO 8601). None si no parsea."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return (datetime.now() - datetime.strptime(fecha_str[:19], fmt)).days
+        except ValueError:
+            continue
+    return None
+
 
 def mostrar_contexto_inicial():
-    """Muestra automáticamente el estado del proyecto al arrancar."""
+    """Muestra automáticamente el estado del proyecto al arrancar.
+    Incluye aviso si hay tareas que llevan más de DIAS_ALERTA_TAREA días sin cerrar.
+    """
     from app.memory_store import load_work_state, load_tasks
 
     ws = load_work_state()
@@ -60,6 +74,22 @@ def mostrar_contexto_inicial():
         )
     else:
         console.print("   [dim]Sin tareas pendientes.[/dim]")
+
+    # ── Alerta de tareas viejas ─────────────────────────────────
+    viejas = []
+    for t in pending:
+        fecha = t.get("created_at") or t.get("updated_at") or t.get("date")
+        if fecha:
+            dias = _dias_desde(fecha)
+            if dias is not None and dias >= DIAS_ALERTA_TAREA:
+                viejas.append((t, dias))
+
+    if viejas:
+        console.print(f"\n   [bold red]⏰ Tareas sin moverse hace ás de {DIAS_ALERTA_TAREA} días:[/bold red]")
+        for t, dias in viejas:
+            titulo = t.get("title", t.get("id", "?"))
+            console.print(f"     ⚠ [red]{titulo}[/red] — {dias} días abierta")
+        console.print("   [dim]Considera cerrarla o actualizar su estado.[/dim]")
 
     console.print("")
 
@@ -95,7 +125,6 @@ def resumen_sesion_al_salir(chat_history):
     console.print(f"   [dim]Sesión cerrada: {fecha}[/dim]")
     console.print("[bold green]──────────────────────────────────────────────[/bold green]\n")
 
-    # Guardar fecha de última sesión en workstate
     ws["last_session"] = fecha
     save_work_state(ws)
 
@@ -130,7 +159,6 @@ def cmd_estado():
     else:
         console.print("    Sin tareas pendientes.")
 
-    # ── Estadísticas del router ──────────────────────────────────
     total = SESSION_STATS["total"]
     if total > 0:
         kw_pct  = SESSION_STATS["kw"]  * 100 // total
