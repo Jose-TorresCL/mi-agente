@@ -413,14 +413,9 @@ def handle_query(
             return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'", []
         return tool_complete_task(task_id), []
 
-    if route == "tool_update_work_state":
-        field, value = parse_work_state_update(user_input)
-        if not field:
-            return ("No entendí qué campo actualizar. Prueba: "
-                    "'actualiza el foco a X', 'cambia siguiente paso a Y'", [])
-        if not value:
-            return (f"Entendí que quieres actualizar '{field}', pero no encontré el nuevo valor.", [])
-        return tool_update_work_state(field, value), []
+       if route == "tool_update_work_state":
+        # La tool ahora es autosuficiente
+        return tool_update_work_state(user_input), []
 
     if route == "tool_list_files":
         files = list_project_files()

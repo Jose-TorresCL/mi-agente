@@ -359,16 +359,57 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
 
 
 
-def tool_update_work_state(field: str, value: str) -> str:
-    """Actualiza un campo específico de work_state.json desde conversación."""
-    if field not in ALLOWED_WORK_STATE_FIELDS:
-        return (
-            f"❌ Campo '{field}' no permitido.\n"
-            f"Campos disponibles: {sorted(ALLOWED_WORK_STATE_FIELDS)}"
-        )
-    if not value or not value.strip():
-        return "No pude actualizar: el valor está vacío."
+def tool_update_work_state(texto: str) -> str:
+    """
+    Actualiza work_state.json desde conversación.
+    Detecta qué campo cambiar según el texto recibido.
+    """
+    import re
+    from datetime import datetime
+    import json
+    from pathlib import Path
 
+    path = Path("storage/work_state.json")
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-    update_work_state(field, value.strip())
-    return f"✅ work_state actualizado: {field} → '{value.strip()}'"
+    texto_lower = texto.lower()
+    cambios = []
+
+    # ── current_focus ──────────────────────────────────────
+    patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enfócate en)\s+(.+)"]
+    for pat in patrones_foco:
+        m = re.search(pat, texto_lower)
+        if m:
+            valor = m.group(1).strip().rstrip(".,")
+            state["current_focus"] = valor
+            cambios.append(f"current_focus → '{valor}'")
+            break
+
+    # ── last_completed ─────────────────────────────────────
+    patrones_completado = [r"(?:completé|terminé|acabé|listo[:\s]+|ya hice)\s+(.+)"]
+    for pat in patrones_completado:
+        m = re.search(pat, texto_lower)
+        if m:
+            valor = m.group(1).strip().rstrip(".,")
+            fecha = datetime.now().strftime("%d/%m/%Y")
+            state["last_completed"] = f"{valor} — {fecha}"
+            cambios.append(f"last_completed → '{valor}'")
+            break
+
+    # ── next_step ──────────────────────────────────────────
+    patrones_siguiente = [r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|próximo paso[:\s]+)\s+(.+)"]
+    for pat in patrones_siguiente:
+        m = re.search(pat, texto_lower)
+        if m:
+            valor = m.group(1).strip().rstrip(".,")
+            state["next_step"] = valor
+            cambios.append(f"next_step → '{valor}'")
+            break
+
+    if not cambios:
+        return "⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'."
+
+    state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)

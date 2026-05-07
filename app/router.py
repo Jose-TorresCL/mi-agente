@@ -82,7 +82,7 @@ def _get_intent_db():
             embedding_function=_intent_embeddings,
             collection_name="intent_index",
         )
-    return _intent_db
+    return _intent_db   
 
 
 # ─────────────────────────────────────────────
@@ -181,7 +181,10 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "actualiza la fase", "cambia la fase",
     "estoy trabajando en", "ahora estoy en",
     "cambia el último paso", "actualiza el último paso",
-    "nuevo bloqueo", "actualiza bloqueante", "cambia bloqueante",
+    "nuevo bloqueo", "actualiza bloqueante", "cambia bloqueante","tool_update_work_state"
+    "actualiza el foco", "foco a", "enfócate en",
+    "completé", "terminé", "acabé", "ya hice", "listo:",
+    "siguiente paso es", "el siguiente paso", "sigue:", "próximo paso",
 ]
 
 RAG_HINTS = [
