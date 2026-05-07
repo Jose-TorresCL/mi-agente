@@ -16,16 +16,31 @@ from app.memory_store import (
 
 
 PROJECT_ROOT = Path(".")
+
+# Directorios permitidos para leer/listar archivos.
+# PROJECT_ROOT incluye archivos .py de la raíz (chat.py, build_intent_index.py, etc.).
+# SKIP_DIR_NAMES y SKIP_SUFFIXES se encargan de filtrar .venv, __pycache__, etc.
 ALLOWED_DIRS = [
     PROJECT_ROOT / "app",
     PROJECT_ROOT / "data" / "docs",
-    PROJECT_ROOT / "storage"
+    PROJECT_ROOT / "storage",
+    PROJECT_ROOT,   # raíz: permite leer chat.py, requirements.txt, etc.
 ]
 
 
-SKIP_DIR_NAMES = {"__pycache__", ".git", ".venv", "chroma_db", "chroma", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-SKIP_SUFFIXES = {".pyc", ".bak"}
+SKIP_DIR_NAMES = {
+    "__pycache__", ".git", ".venv", "chroma_db", "chroma",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules", ".idea", ".vscode",
+}
+SKIP_SUFFIXES = {".pyc", ".bak", ".log"}
 VALID_PRIORITIES = {"low", "medium", "high"}
+
+# Extensiones permitidas para listar/leer desde la raíz.
+# Evita exponer archivos binarios o sensibles.
+ROOT_ALLOWED_SUFFIXES = {
+    ".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
+}
 
 
 # Campos permitidos para actualizar work_state (lista blanca de seguridad)
@@ -81,20 +96,41 @@ _VALUE_PREFIXES = [
 
 
 def _is_allowed(path: Path) -> bool:
+    """Verifica si la ruta está dentro de los directorios permitidos.
+    Para archivos en la raíz del proyecto, aplica filtro de extensiones.
+    """
     try:
         resolved = path.resolve()
     except Exception:
         return False
 
+    root_resolved = PROJECT_ROOT.resolve()
 
     for base in ALLOWED_DIRS:
         try:
-            if resolved.is_relative_to(base.resolve()):
-                return True
+            base_resolved = base.resolve()
+            is_relative = resolved.is_relative_to(base_resolved)
         except AttributeError:
             base_resolved = base.resolve()
-            if str(resolved).startswith(str(base_resolved)):
-                return True
+            is_relative = str(resolved).startswith(str(base_resolved))
+
+        if is_relative:
+            # Si el archivo está directamente en la raíz (no en subcarpeta permitida),
+            # aplicar filtro de extensiones para evitar exponer archivos binarios.
+            if base_resolved == root_resolved:
+                # Verificar que no esté en una subcarpeta excluida
+                try:
+                    rel = resolved.relative_to(root_resolved)
+                except ValueError:
+                    continue
+                # Solo archivos directamente en la raíz o en subcarpetas no excluidas
+                parts = rel.parts
+                if len(parts) > 1 and parts[0] in SKIP_DIR_NAMES:
+                    continue
+                # Filtro de extensión para archivos de la raíz
+                if resolved.suffix not in ROOT_ALLOWED_SUFFIXES:
+                    continue
+            return True
     return False
 
 
@@ -109,25 +145,44 @@ def _should_skip(path: Path) -> bool:
 
 
 def list_project_files() -> list[str]:
+    """Lista archivos del proyecto. Para la raíz solo muestra extensiones permitidas."""
+    seen = set()
     files = []
+    root_resolved = PROJECT_ROOT.resolve()
+
     for base in ALLOWED_DIRS:
         if not base.exists():
             continue
         for p in base.rglob("*"):
             if _should_skip(p):
                 continue
-            if p.is_file():
-                files.append(str(p.relative_to(PROJECT_ROOT)))
+            if not p.is_file():
+                continue
+            # Para archivos en la raíz aplicar filtro de extensión
+            try:
+                base_resolved = base.resolve()
+                if base_resolved == root_resolved:
+                    if p.suffix not in ROOT_ALLOWED_SUFFIXES:
+                        continue
+            except Exception:
+                pass
+            rel = str(p.relative_to(PROJECT_ROOT))
+            if rel not in seen:
+                seen.add(rel)
+                files.append(rel)
     return sorted(files)
 
 
 
 def extract_file_path(text: str) -> str | None:
+    """Extrae una ruta de archivo del texto del usuario.
+    Detecta rutas con prefijo de carpeta conocida O nombres de archivo .py solos.
+    """
     cleaned = text.strip()
-    markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
     lower_text = cleaned.lower()
 
-
+    # Primero: detectar rutas con prefijo de carpeta
+    markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
     for marker in markers:
         idx = lower_text.find(marker.lower())
         if idx == -1:
@@ -140,6 +195,20 @@ def extract_file_path(text: str) -> str | None:
             if stop_idx != -1:
                 candidate = candidate[:stop_idx].strip()
         return candidate
+
+    # Segundo: detectar nombre de archivo .py solo (sin ruta)
+    # Ejemplo: "lee router.py" o "muéstrame chat.py"
+    match = re.search(r'\b([\w_.-]+\.(?:py|md|txt|toml|yaml|yml|json))\b', cleaned, re.IGNORECASE)
+    if match:
+        filename = match.group(1)
+        # Buscar el archivo en las carpetas conocidas
+        for base in [PROJECT_ROOT / "app", PROJECT_ROOT, PROJECT_ROOT / "data" / "docs"]:
+            candidate = base / filename
+            if candidate.exists():
+                return str(candidate.relative_to(PROJECT_ROOT))
+        # Si no existe, devolver solo el nombre para que read_project_file genere error claro
+        return filename
+
     return None
 
 
@@ -147,9 +216,9 @@ def extract_file_path(text: str) -> str | None:
 def read_project_file(path: str, max_chars: int = 8000) -> str:
     p = Path(path)
     if not _is_allowed(p):
-        return "Ruta no permitida. Usa solo archivos dentro de app/, data/docs/ o storage/."
+        return f"Ruta no permitida: '{path}'. Usa archivos dentro de app/, data/docs/, storage/ o la raíz del proyecto (.py, .md, .txt, .toml, .json)."
     if not p.exists() or not p.is_file():
-        return "Archivo no encontrado."
+        return f"Archivo no encontrado: '{path}'."
     text = p.read_text(encoding="utf-8", errors="ignore")
     return text[:max_chars]
 
@@ -355,7 +424,7 @@ def tool_update_work_state(texto: str) -> str:
     cambios = []
 
     # ── current_focus ──────────────────────────────────────
-    patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enfócate en)\s+(.+)"]
+    patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enf[oó]cate en)\s+(.+)"]
     for pat in patrones_foco:
         m = re.search(pat, texto_lower)
         if m:
@@ -364,8 +433,12 @@ def tool_update_work_state(texto: str) -> str:
             cambios.append(f"current_focus → '{valor}'")
             break
 
-    # ── last_completed (clave única, no last_completed_step) ───────────────
-    patrones_completado = [r"(?:completé|terminé|acabé|listo[:\s]+|ya hice)\s+(.+)"]
+    # ── last_completed ─────────────────────────────────────
+    # Acepta verbos con y sin tilde, y absorbe "de"/"con" opcionales
+    # antes del valor real para evitar capturar "de limpiar" en vez de "limpiar X".
+    patrones_completado = [
+        r"(?:complet[eé]|termin[eé]|acab[eé]|ya hice|ya termin[eé]|logramos|listo)\s+(?:de\s+|con\s+)?(.+)"
+    ]
     for pat in patrones_completado:
         m = re.search(pat, texto_lower)
         if m:
@@ -376,7 +449,9 @@ def tool_update_work_state(texto: str) -> str:
             break
 
     # ── next_step ──────────────────────────────────────────
-    patrones_siguiente = [r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|próximo paso[:\s]+)\s+(.+)"]
+    patrones_siguiente = [
+        r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|pr[oó]ximo paso[:\s]+)\s+(.+)"
+    ]
     for pat in patrones_siguiente:
         m = re.search(pat, texto_lower)
         if m:
