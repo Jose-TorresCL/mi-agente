@@ -32,6 +32,37 @@ from app.chat_core import (
 from app.chat_ui import console, print_sources
 
 
+def mostrar_contexto_inicial():
+    """Muestra automáticamente el estado del proyecto al arrancar."""
+    from app.memory_store import load_work_state, load_tasks
+
+    ws = load_work_state()
+    tasks_data = load_tasks()
+    pending = [
+        t for t in tasks_data.get("tasks", [])
+        if t.get("status") not in ("completed", "done")
+    ]
+
+    foco   = ws.get("current_focus", "sin foco definido")
+    next_s = ws.get("next_step", "sin siguiente paso")
+    last_s = ws.get("last_completed_step", "—")
+
+    console.print("\n[bold yellow]📌 Retomando donde lo dejaste:[/bold yellow]")
+    console.print(f"   [cyan]Foco:[/cyan]      {foco}")
+    console.print(f"   [cyan]Siguiente:[/cyan] {next_s}")
+    console.print(f"   [dim]Último:    {last_s}[/dim]")
+
+    if pending:
+        console.print(
+            f"   [yellow]Tareas pendientes ({len(pending)}):[/yellow] "
+            + ", ".join(t.get("title", t.get("id", "?")) for t in pending)
+        )
+    else:
+        console.print("   [dim]Sin tareas pendientes.[/dim]")
+
+    console.print("")
+
+
 def cmd_estado():
     """Imprime un resumen completo del estado actual del proyecto."""
     from app.memory_store import load_work_state, load_tasks
@@ -104,6 +135,8 @@ def main():
         "Comandos: [yellow]!reset[/yellow] (borra memoria) "
         "[yellow]!estado[/yellow] (resumen del proyecto + stats del router)\n"
     )
+
+    mostrar_contexto_inicial()
 
     while True:
         user_input = console.input("[bold cyan]Tú:[/bold cyan] ").strip()
