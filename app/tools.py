@@ -32,6 +32,7 @@ VALID_PRIORITIES = {"low", "medium", "high"}
 ALLOWED_WORK_STATE_FIELDS = {
     "current_focus",
     "current_phase",
+    "last_completed",
     "last_completed_step",
     "next_step",
     "current_blockers",
@@ -47,9 +48,9 @@ WORK_STATE_FIELD_ALIASES = {
     "fase":                   "current_phase",
     "fase actual":            "current_phase",
     "phase":                  "current_phase",
-    "último paso":            "last_completed_step",
-    "ultimo paso":            "last_completed_step",
-    "último paso completado": "last_completed_step",
+    "último paso":            "last_completed",
+    "ultimo paso":            "last_completed",
+    "último paso completado": "last_completed",
     "siguiente paso":         "next_step",
     "next step":              "next_step",
     "bloqueante":             "current_blockers",
@@ -164,16 +165,7 @@ def _parse_key_value(content: str) -> tuple[str, str] | None:
 
     Si lo tiene, devuelve (clave_normalizada, valor).
     Si no, devuelve None — la llamada usará hecho_timestamp como antes.
-
-    Ejemplos que detecta:
-        'current_phase = fase_4'    → ('current_phase', 'fase_4')
-        'current_focus=fase 4'      → ('current_focus', 'fase 4')
-        'fase del proyecto : 4'     → ('fase_del_proyecto', '4')
-    Ejemplos que NO detecta (van a hecho_timestamp):
-        'la fase 2 ya está cerrada'
-        'completamos el router híbrido'
     """
-    # Patrón: texto_sin_espacios opcionales espacios [=:] opcionales espacios valor
     match = re.match(
         r'^([\w\s]{1,40}?)\s*[=:]\s*(.+)$',
         content.strip(),
@@ -185,11 +177,8 @@ def _parse_key_value(content: str) -> tuple[str, str] | None:
     raw_key = match.group(1).strip()
     value   = match.group(2).strip()
 
-    # La clave no debe contener espacios internos excesivos ni ser muy larga
-    # Normalizamos: minúsculas, espacios → guion bajo
     key = re.sub(r'\s+', '_', raw_key.lower())
 
-    # Rechazar si la clave parece una frase larga (más de 5 palabras)
     if len(key.split('_')) > 5:
         return None
 
@@ -197,15 +186,7 @@ def _parse_key_value(content: str) -> tuple[str, str] | None:
 
 
 def tool_save_fact(question: str) -> str:
-    """Guarda un hecho en project_facts.json.
-
-    Si el contenido tiene formato 'clave = valor', guarda con esa clave
-    exacta — sobreescribiendo el valor anterior si ya existía.
-    Si es texto libre, usa hecho_timestamp como clave única.
-
-    Esto resuelve el problema de que 'en qué fase estamos' devuelva
-    el valor viejo junto al nuevo cuando se actualiza current_phase.
-    """
+    """Guarda un hecho en project_facts.json."""
     prefixes = [
         "guarda como hecho que",
         "guarda como hecho:",
@@ -227,14 +208,12 @@ def tool_save_fact(question: str) -> str:
     if not content:
         return "No pude guardar el hecho: no entendí el contenido."
 
-    # Intentar detectar formato key=value para sobreescribir clave existente
     kv = _parse_key_value(content)
     if kv:
         key, value = kv
         save_project_fact(key, value)
         return f"✓ Hecho guardado: {key} = \"{value}\""
 
-    # Texto libre — guardar con timestamp como antes
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
     return f"✓ Hecho guardado: \"{content}\""
@@ -385,15 +364,15 @@ def tool_update_work_state(texto: str) -> str:
             cambios.append(f"current_focus → '{valor}'")
             break
 
-    # ── last_completed ─────────────────────────────────────
+    # ── last_completed (clave única, no last_completed_step) ───────────────
     patrones_completado = [r"(?:completé|terminé|acabé|listo[:\s]+|ya hice)\s+(.+)"]
     for pat in patrones_completado:
         m = re.search(pat, texto_lower)
         if m:
             valor = m.group(1).strip().rstrip(".,")
             fecha = datetime.now().strftime("%d/%m/%Y")
-            state["last_completed_step"] = f"{valor} — {fecha}"            
-            cambios.append(f"last_completed_step → '{valor}'")
+            state["last_completed"] = f"{valor} — {fecha}"
+            cambios.append(f"last_completed → '{valor}'")
             break
 
     # ── next_step ──────────────────────────────────────────

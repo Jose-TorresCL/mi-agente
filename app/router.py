@@ -89,7 +89,16 @@ def _get_intent_db():
 # Palabras de salida — interceptadas antes de cualquier capa
 # ─────────────────────────────────────────────
 
-_EXIT_WORDS = {"salir","hasta luego", "by" ,"salo", "sali", "salie", "sal" "exit", "quit", "bye", "chao", "adios", "adiós"}
+_EXIT_WORDS = {"salir", "hasta luego", "by", "salo", "sali", "salie", "sal", "exit", "quit", "bye", "chao", "adios", "adiós"}
+
+
+# ─────────────────────────────────────────────
+# Carriles de escritura — NUNCA deben recibir preguntas
+# ─────────────────────────────────────────────
+
+# Si la frase empieza con ¿ o ? es una pregunta documental.
+# Las tools de escritura no deben procesar preguntas.
+_WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "tool_update_work_state"}
 
 
 # ─────────────────────────────────────────────
@@ -259,6 +268,14 @@ def classify_memory_query(question: str) -> str | None:
     return None
 
 
+def _is_question(text: str) -> bool:
+    """Devuelve True si la frase es claramente una pregunta.
+    Las preguntas NO deben ir a carriles de escritura.
+    """
+    stripped = text.strip()
+    return stripped.startswith(("¿", "?")) or stripped.endswith("?")
+
+
 def _route_by_keywords(question: str) -> str | None:
     q = question.lower().strip()
 
@@ -298,6 +315,11 @@ def _route_by_embeddings(question: str) -> str | None:
         lane = doc.metadata.get("lane", "")
 
         print(f"[router:emb] similitud={similarity:.2f} lane_candidato={lane}")
+
+        # Prefiltro: si es una pregunta, no puede ir a carriles de escritura
+        if _is_question(question) and lane in _WRITE_LANES:
+            print(f"[router:emb] pregunta detectada — bloqueando carril de escritura '{lane}' → pasa a LLM")
+            return None
 
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
