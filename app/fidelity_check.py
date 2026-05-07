@@ -19,20 +19,24 @@ Por qué embeddings y no otro LLM:
 
 Limitaciones conocidas:
   - Respuestas muy cortas ("Sí", "No") tendrán similitud baja aunque sean correctas.
-    Por eso SHORT_ANSWER_BYPASS: si la respuesta tiene menos de 20 palabras,
+    Por eso SHORT_ANSWER_BYPASS: si la respuesta tiene menos de 7 palabras,
     se considera fiel automáticamente (evitar falsos negativos).
   - Si Ollama está caído, la función retorna True (fiel) para no bloquear.
 
 Umbral recomendado:
   0.55 — conservador, solo bloquea respuestas claramente desconectadas del contexto.
   Bajar a 0.45 para ser más permisivo. No subir de 0.65 (demasiados falsos negativos).
+
+Cambios (fix 5b/5c):
+  - SHORT_ANSWER_WORDS: 20 → 7  (solo bypass para "Sí", "No", respuestas de 1-2 palabras)
+  - Sin chunks: ahora bloquea (False) en lugar de pasar (True)
 """
 from __future__ import annotations
 
 import math
 
 FIDELITY_THRESHOLD  = 0.55   # similitud mínima respuesta↔chunk
-SHORT_ANSWER_WORDS  = 20     # respuestas cortas se consideran fieles sin verificar
+SHORT_ANSWER_WORDS  = 7      # fix 5b: era 20 — solo bypass para respuestas de 1-2 palabras
 NO_EVIDENCE_MSG     = "No tengo suficiente evidencia en el contexto recuperado."
 
 # Reutiliza el cliente singleton de semantic_cache — no crea uno nuevo
@@ -59,12 +63,12 @@ def verify_fidelity(answer: str, source_docs: list) -> bool:
         True  → respuesta fiel, mostrar al usuario.
         False → respuesta sospechosa, reemplazar por NO_EVIDENCE_MSG.
     """
-    # Caso 1: sin chunks — el retriever no encontró nada relevante
+    # Caso 1: sin chunks — fix 5c: bloqueamos, no hay evidencia posible
     if not source_docs:
-        print("[fidelity:skip] sin chunks, se pasa la verificación")
-        return True
+        print("[fidelity:block] sin chunks recuperados — bloqueando respuesta")
+        return False
 
-    # Caso 2: respuesta muy corta — bypass para evitar falsos negativos
+    # Caso 2: respuesta muy corta — bypass solo para "Sí", "No", etc.
     word_count = len(answer.split())
     if word_count < SHORT_ANSWER_WORDS:
         print(f"[fidelity:skip] respuesta corta ({word_count} palabras), se pasa")
