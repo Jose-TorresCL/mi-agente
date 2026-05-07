@@ -178,11 +178,13 @@ TOOL_CREATE_TASK_KEYWORDS = [
     "nueva tarea", "añade una tarea", "anota una tarea", "registra una tarea",
 ]
 
+# fix: removidos "completé la tarea" / "complete la tarea" sin ID.
+# Esas frases deben caer en tool_update_work_state via keyword "completé".
+# Solo _COMPLETE_TASK_PATTERN (con T-\d+) maneja el caso de tarea con ID.
 TOOL_COMPLETE_TASK_KEYWORDS = [
     "marca como completada", "marca como completado",
     "marcar como completada", "marcar como completado",
     "cierra la tarea", "cerrar tarea",
-    "completé la tarea", "complete la tarea",
     "tarea completada", "completar tarea",
     "como completada", "como completado",
 ]
@@ -201,19 +203,15 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
-# Hints RAG — preguntas sobre cómo funciona algo.
-# IMPORTANTE: estos hints tienen PRIORIDAD sobre extract_file_path.
-# Si la pregunta contiene uno de estos verbos interrogativos, va a RAG
-# aunque mencione un nombre de archivo .py.
-# Ej: "¿qué hace router.py?" → rag  (NO tool_read_file)
-#     "lee router.py"          → tool_read_file  (sin hint RAG al inicio)
+# fix: removidos "documentación" / "documentacion" — demasiado genéricos.
+# Bloqueaban "leer documentación" → tool_read_file al evaluarse en paso 2
+# antes que TOOL_READ_KEYWORDS en paso 3.
 RAG_HINTS = [
     # Frases documentales clásicas
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
     "según los archivos", "segun los archivos",
     "qué dice", "que dice",
-    "documentación", "documentacion",
     # Preguntas de funcionamiento y componentes
     "qué hace", "que hace",
     "cómo funciona", "como funciona",
