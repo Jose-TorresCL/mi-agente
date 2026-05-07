@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+import json
 
 from app.memory_store import (
     load_profile,
@@ -27,7 +28,6 @@ from app.logger import get_logger
 
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -42,8 +42,18 @@ MODEL_NAME = "llama3.2:latest"
 MAX_TURNS = 8
 
 
+# B2: Chain-of-thought interno — el modelo identifica el tipo de pregunta
+# antes de formular la respuesta. El bloque <pensamiento> nunca llega al usuario.
 QA_SYSTEM_PROMPT = """
 Eres Lautaro, asistente local del proyecto.
+
+Proceso interno (no lo muestres al usuario):
+<pensamiento>
+1. Identifica el tipo de pregunta: perfil | estado | documental | técnica | mixta
+2. Localiza la información en: memoria estructurada primero, luego contexto recuperado
+3. Verifica que cada dato esté explícito — no infieras ni completes con conocimiento propio
+4. Define el formato de respuesta antes de escribirla
+</pensamiento>
 
 Reglas principales:
 1. Responde SIEMPRE en español claro y breve.
@@ -123,9 +133,10 @@ def _format_tasks_answer(tasks_data: dict) -> str:
 
 
 def _format_work_state_answer(work_state: dict) -> str:
+    # A2: clave corregida last_completed_step → last_completed (nombre real en schemas.py)
     lines = ["**Estado actual de trabajo:**"]
     lines.append(f"- Foco actual: {work_state.get('current_focus', 'sin definir')}")
-    lines.append(f"- Último paso completado: {work_state.get('last_completed_step', 'sin registrar')}")
+    lines.append(f"- Último paso completado: {work_state.get('last_completed', 'sin registrar')}")
     lines.append(f"- Siguiente paso: {work_state.get('next_step', 'sin definir')}")
     blockers = work_state.get("current_blockers", [])
     if blockers:
@@ -252,7 +263,8 @@ def build_structured_memory_context() -> str:
         lines.append("")
         lines.append("Estado actual de trabajo:")
         lines.append(f"- Foco actual: {work_state.get('current_focus', '')}")
-        lines.append(f"- Último paso completado: {work_state.get('last_completed_step', '')}")
+        # A2: clave corregida last_completed_step → last_completed
+        lines.append(f"- Último paso completado: {work_state.get('last_completed', '')}")
         lines.append(f"- Siguiente paso: {work_state.get('next_step', '')}")
     if pending_tasks:
         lines.append("")
@@ -322,13 +334,28 @@ def build_retriever(vectordb, question: str):
 
 
 # ─────────────────────────────────────────────
-# Historial de conversación
+# A1: Historial de conversación — lector/escritor JSON propio
+# Reemplaza FileChatMessageHistory para no contaminar memory.json
+# con el formato interno de LangChain (incompatible con schemas.py)
 # ─────────────────────────────────────────────
 
 def build_memory() -> list:
-    file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
-    messages = file_history.messages
-    return list(messages[-(MAX_TURNS * 2):])
+    """Lee el historial desde memory.json en formato propio {messages: [...]}."""
+    if not MEMORY_FILE.exists():
+        return []
+    try:
+        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        raw_messages = data.get("messages", [])
+        messages = []
+        for m in raw_messages[-(MAX_TURNS * 2):]:
+            if m.get("role") == "human":
+                messages.append(HumanMessage(content=m["content"]))
+            elif m.get("role") == "ai":
+                messages.append(AIMessage(content=m["content"]))
+        return messages
+    except Exception as exc:
+        log.warning("No se pudo leer memory.json: %s", exc)
+        return []
 
 
 def _format_chat_history(messages: list) -> str:
@@ -344,17 +371,53 @@ def _format_chat_history(messages: list) -> str:
 
 
 def _persist_turn(user_input: str, answer: str) -> None:
-    file_history = FileChatMessageHistory(file_path=str(MEMORY_FILE))
-    file_history.add_user_message(user_input)
-    file_history.add_ai_message(answer)
+    """Persiste un turno en memory.json usando formato propio {messages: [...]}."""
+    if MEMORY_FILE.exists():
+        try:
+            data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+            # Migración silenciosa: si viene del formato LangChain antiguo, resetear
+            if not isinstance(data.get("messages"), list):
+                data = {"messages": []}
+        except Exception:
+            data = {"messages": []}
+    else:
+        MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {"messages": []}
+
+    data["messages"].append({"role": "human", "content": user_input})
+    data["messages"].append({"role": "ai", "content": answer})
+
+    # Mantener solo los últimos MAX_TURNS * 2 mensajes
+    if len(data["messages"]) > MAX_TURNS * 2:
+        data["messages"] = data["messages"][-(MAX_TURNS * 2):]
+
+    MEMORY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# ─────────────────────────────────────────────
+# B1: LLM singleton — evita crear ChatOllama en cada consulta RAG
+# ─────────────────────────────────────────────
+
+_llm_instance: ChatOllama | None = None
+
+
+def _get_llm() -> ChatOllama:
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = ChatOllama(
+            model=MODEL_NAME,
+            base_url="http://localhost:11434",
+            temperature=0.1,
+        )
+        log.debug("LLM singleton inicializado: %s", MODEL_NAME)
+    return _llm_instance
 
 
 def build_chain(retriever, memory_context: str):
-    llm = ChatOllama(
-        model=MODEL_NAME,
-        base_url="http://localhost:11434",
-        temperature=0.1,
-    )
+    llm = _get_llm()  # B1: reutiliza la instancia existente
     qa_prompt_with_memory = QA_PROMPT.partial(memory_context=memory_context)
     chain = qa_prompt_with_memory | llm | StrOutputParser()
     return chain
