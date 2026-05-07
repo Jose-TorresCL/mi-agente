@@ -23,6 +23,7 @@ from app.tools import (
     extract_task_id,
     parse_work_state_update,
 )
+from app.logger import get_logger
 
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,6 +32,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+
+log = get_logger(__name__)
 
 STORAGE_DIR = Path("storage")
 CHROMA_DIR = str(STORAGE_DIR / "chroma")
@@ -136,6 +139,7 @@ def _format_work_state_answer(work_state: dict) -> str:
 
 def answer_from_memory(question: str) -> str | None:
     memory_kind = classify_memory_query(question)
+    log.debug("Carril memory clasificado como: %s", memory_kind)
     if memory_kind == "profile":
         profile = load_profile()
         if not profile:
@@ -193,7 +197,8 @@ def generate_session_summary(chat_history: list) -> str:
             timeout=30,
         )
         return response.json().get("response", "Resumen no disponible.").strip()
-    except Exception:
+    except Exception as exc:
+        log.warning("No se pudo generar resumen de sesión: %s", exc)
         return "Resumen no disponible (Ollama no respondió al cerrar)."
 
 
@@ -221,8 +226,6 @@ def build_structured_memory_context() -> str:
     fix #6: preferred_workflow y preferred_style se omiten aquí.
     Esos campos solo deben usarse cuando el usuario pregunta por su
     perfil (carril memory -> _format_profile_answer).
-    Si se inyectan en el contexto RAG, el LLM los repite al inicio
-    de cada respuesta documental (bug 'Flujo preferido...').
     """
     profile = load_profile()
     project_facts = load_project_facts()
@@ -237,7 +240,6 @@ def build_structured_memory_context() -> str:
         lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
         lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
         # fix #6: preferred_style y preferred_workflow NO se inyectan en RAG
-        # Solo se exponen en _format_profile_answer (carril memory)
     if project_facts:
         lines.append("")
         lines.append("Hechos persistentes del proyecto:")
@@ -368,18 +370,19 @@ def handle_query(
     chat_history: list,
 ) -> tuple[str, list]:
     route = route_query(user_input)
+    log.debug("Ruta asignada: '%s' para consulta: %s", route, user_input[:60])
 
-    # ── SimpleMem: hook de salida ────────────────────────────────────
+    # ── SimpleMem: hook de salida ────────────────────────────────────────
     if route == "exit":
         turns = len(chat_history) // 2
         if turns > 0:
-            print("Guardando resumen de la sesión...")
+            log.info("Guardando resumen episódico (%d turnos)", turns)
             summary = generate_session_summary(chat_history)
             save_episode(summary=summary, turns=turns)
-            print(f"Episodio guardado ({turns} turnos).")
+            log.info("Episodio guardado correctamente")
         return "__EXIT__", []
 
-    # ── Tools de escritura ────────────────────────────────────
+    # ── Tools de escritura ────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
@@ -394,7 +397,9 @@ def handle_query(
                 break
         if not content:
             return "No pude guardar el hecho: no entendí el contenido.", []
-        return tool_save_fact(content), []
+        result = tool_save_fact(content)
+        log.info("Hecho guardado: %s", content[:80])
+        return result, []
 
     if route == "tool_create_task":
         text = user_input.lower()
@@ -410,18 +415,25 @@ def handle_query(
                         raw = raw[:-len(p)].strip().rstrip(",;")
                         priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
                         break
-                return tool_create_task(title=raw, priority=priority), []
-        return tool_create_task(title=user_input, priority="medium"), []
+                result = tool_create_task(title=raw, priority=priority)
+                log.info("Tarea creada: %s (prioridad: %s)", raw[:60], priority)
+                return result, []
+        result = tool_create_task(title=user_input, priority="medium")
+        log.info("Tarea creada (sin prefix): %s", user_input[:60])
+        return result, []
 
     if route == "tool_complete_task":
         task_id = extract_task_id(user_input)
         if not task_id:
             return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'", []
-        return tool_complete_task(task_id), []
+        result = tool_complete_task(task_id)
+        log.info("Tarea completada: %s", task_id)
+        return result, []
 
     if route == "tool_update_work_state":
         update_msg = tool_update_work_state(user_input)
         suggestion = suggest_next_step()
+        log.info("Work state actualizado")
         return update_msg + suggestion, []
 
     if route == "tool_list_files":
@@ -442,9 +454,10 @@ def handle_query(
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG + caché semántica + fidelidad ──────────────────────────
+    # ── RAG + caché semántica + fidelidad ─────────────────────────────────
     cached = cache_lookup(user_input)
     if cached is not None:
+        log.debug("Respuesta servida desde caché semántica")
         _persist_turn(user_input, cached)
         chat_history.append(HumanMessage(content=user_input))
         chat_history.append(AIMessage(content=cached))
@@ -455,6 +468,7 @@ def handle_query(
     memory_context = build_structured_memory_context()
     retriever = build_retriever(vectordb, user_input)
     source_docs = retriever.invoke(user_input)
+    log.debug("RAG: recuperados %d documentos", len(source_docs))
     context_text = "\n\n".join(doc.page_content for doc in source_docs)
     chat_history_text = _format_chat_history(chat_history)
 
@@ -466,10 +480,10 @@ def handle_query(
     })
 
     if not verify_fidelity(answer, source_docs):
+        log.warning("Respuesta bloqueada por fidelidad insuficiente para: %s", user_input[:60])
         return NO_EVIDENCE_MSG, source_docs
 
     cache_save(user_input, answer)
-
     _persist_turn(user_input, answer)
     chat_history.append(HumanMessage(content=user_input))
     chat_history.append(AIMessage(content=answer))

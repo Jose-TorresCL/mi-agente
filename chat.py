@@ -31,6 +31,9 @@ from app.chat_core import (
     handle_query,
 )
 from app.chat_ui import console, print_sources
+from app.logger import get_logger
+
+log = get_logger(__name__)
 
 DIAS_ALERTA_TAREA = 3  # avisa si una tarea lleva más de estos días sin moverse
 
@@ -85,7 +88,7 @@ def mostrar_contexto_inicial():
                 viejas.append((t, dias))
 
     if viejas:
-        console.print(f"\n   [bold red]⏰ Tareas sin moverse hace ás de {DIAS_ALERTA_TAREA} días:[/bold red]")
+        console.print(f"\n   [bold red]⏰ Tareas sin moverse hace más de {DIAS_ALERTA_TAREA} días:[/bold red]")
         for t, dias in viejas:
             titulo = t.get("title", t.get("id", "?"))
             console.print(f"     ⚠ [red]{titulo}[/red] — {dias} días abierta")
@@ -183,15 +186,20 @@ def cmd_estado():
 
 def main():
     ensure_storage()
+    log.info("Lautaro iniciando...")
 
     if not Path(CHROMA_DIR).exists():
+        log.error("Vector store no encontrado en %s", CHROMA_DIR)
         raise FileNotFoundError(
             f"No encuentro el vector store en {CHROMA_DIR}. "
             "Primero ejecuta 'python indexacion.py'."
         )
 
     vectordb = load_vector_store()
+    log.info("Vector store cargado correctamente")
+
     chat_history = build_memory()
+    log.info("Historial de conversación cargado (%d mensajes)", len(chat_history))
 
     console.print("[bold green]Lautaro está iniciado[/bold green]")
     console.print("Escribe tu pregunta. 'salir', 'exit' o 'quit' para terminar.")
@@ -206,6 +214,7 @@ def main():
         user_input = console.input("[bold cyan]Tú:[/bold cyan] ").strip()
 
         if user_input.lower() in {"salir", "exit", "quit"}:
+            log.info("Sesión cerrada por el usuario")
             resumen_sesion_al_salir(chat_history)
             console.print("[yellow]Hasta luego 👋[/yellow]")
             break
@@ -214,6 +223,7 @@ def main():
             if MEMORY_FILE.exists():
                 MEMORY_FILE.unlink()
             chat_history.clear()
+            log.info("Memoria de conversación reiniciada por el usuario")
             console.print("[red]Memoria de conversación borrada.[/red]")
             continue
 
@@ -224,9 +234,16 @@ def main():
         if not user_input:
             continue
 
+        log.debug("Consulta recibida: %s", user_input)
         console.print("[magenta]Pensando...[/magenta]")
 
-        answer, sources = handle_query(user_input, vectordb, chat_history)
+        try:
+            answer, sources = handle_query(user_input, vectordb, chat_history)
+            log.debug("Respuesta generada (%d chars)", len(answer))
+        except Exception as exc:
+            log.error("Error procesando consulta: %s", exc, exc_info=True)
+            console.print("[red]Error interno. Revisa storage/logs/lautaro.log para detalles.[/red]")
+            continue
 
         console.print(Markdown(f"**Lautaro:** {answer}"))
         print_sources(sources)
