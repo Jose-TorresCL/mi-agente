@@ -174,17 +174,14 @@ _COMPLETE_TASK_PATTERN = re.compile(
 )
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
-    "actualiza el foco", "actualiza foco", "cambia el foco", "cambia foco",
-    "actualiza work_state", "actualiza el estado de trabajo",
-    "actualiza estado de trabajo", "cambia next_step",
-    "cambia siguiente paso", "actualiza siguiente paso", "pon en siguiente paso",
-    "actualiza la fase", "cambia la fase",
-    "estoy trabajando en", "ahora estoy en",
-    "cambia el último paso", "actualiza el último paso",
-    "nuevo bloqueo", "actualiza bloqueante", "cambia bloqueante","tool_update_work_state"
-    "actualiza el foco", "foco a", "enfócate en",
+    # Foco
+    "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
+    # Completado
     "completé", "terminé", "acabé", "ya hice", "listo:",
-    "siguiente paso es", "el siguiente paso", "sigue:", "próximo paso",
+    # Siguiente paso
+    "el siguiente paso es", "sigue:", "próximo paso",
+    # Bloqueos y estado general
+    "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo"
 ]
 
 RAG_HINTS = [
