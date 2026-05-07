@@ -90,7 +90,6 @@ def _get_intent_db():
 
 # ─────────────────────────────────────────────
 # Palabras de salida — interceptadas antes de cualquier capa
-# fix nivel1: agrega variantes naturales de despedida en español
 # ─────────────────────────────────────────────
 
 _EXIT_WORDS = {
@@ -109,8 +108,6 @@ _EXIT_WORDS = {
 # Carriles de escritura — NUNCA deben recibir preguntas
 # ─────────────────────────────────────────────
 
-# Si la frase empieza con ¿ o ? es una pregunta documental.
-# Las tools de escritura no deben procesar preguntas.
 _WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "tool_update_work_state"}
 
 
@@ -178,13 +175,15 @@ TOOL_CREATE_TASK_KEYWORDS = [
     "nueva tarea", "añade una tarea", "anota una tarea", "registra una tarea",
 ]
 
-# fix: removidos "completé la tarea" / "complete la tarea" sin ID.
-# Esas frases deben caer en tool_update_work_state via keyword "completé".
-# Solo _COMPLETE_TASK_PATTERN (con T-\d+) maneja el caso de tarea con ID.
+# Regla tiempo verbal:
+#   "complete la tarea" (imperativo, sin tilde) → tool_complete_task
+#   "completé la tarea" (pasado, con tilde)    → tool_update_work_state (via keyword "completé")
+# _COMPLETE_TASK_PATTERN cubre el caso con ID explícito: "completa T-3"
 TOOL_COMPLETE_TASK_KEYWORDS = [
     "marca como completada", "marca como completado",
     "marcar como completada", "marcar como completado",
     "cierra la tarea", "cerrar tarea",
+    "complete la tarea",
     "tarea completada", "completar tarea",
     "como completada", "como completado",
 ]
@@ -194,25 +193,27 @@ _COMPLETE_TASK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Regla tiempo verbal:
+#   "completé" (pasado, con tilde)  → tool_update_work_state  ✓
+#   "termine" / "acabe" (sin tilde)  → tool_update_work_state  ✓
+#   "complete" suelta REMOVIDA — era demasiado genérica y capturaba imperativos
+#   como "complete la tarea del logger" que deben ir a tool_complete_task.
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
     "completé", "terminé", "acabé", "ya hice", "listo:",
-    # variantes sin tilde — fix typos frecuentes
-    "termine", "complete", "acabe",
+    # variantes sin tilde — solo pasado, no imperativo
+    "termine", "acabe",
     "el siguiente paso es", "sigue:", "próximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
-# fix: removidos "documentación" / "documentacion" — demasiado genéricos.
-# Bloqueaban "leer documentación" → tool_read_file al evaluarse en paso 2
-# antes que TOOL_READ_KEYWORDS en paso 3.
+# RAG_HINTS: sin "documentación/documentacion" — demasiado genéricos.
+# Bloqueaban "leer documentación" → tool_read_file.
 RAG_HINTS = [
-    # Frases documentales clásicas
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
     "según los archivos", "segun los archivos",
     "qué dice", "que dice",
-    # Preguntas de funcionamiento y componentes
     "qué hace", "que hace",
     "cómo funciona", "como funciona",
     "cómo está", "como esta",
@@ -244,8 +245,8 @@ Carriles disponibles y cuándo usarlos:
 - rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools, arquitectura o SUGERENCIAS
 
 IMPORTANTE — memory vs rag para tareas:
-  "qué tareas tengo pendientes"                  → memory   (consulta tareas existentes)
-  "hazme una lista de tareas que podríamos crear" → rag     (pide sugerencias nuevas)
+  "qué tareas tengo pendientes"                  → memory
+  "hazme una lista de tareas que podríamos crear" → rag
   "qué más podríamos implementar"                 → rag
   "según los documentos qué falta por hacer"      → rag
 
@@ -258,10 +259,8 @@ Ejemplos:
 "en qué fase estamos"                      → memory
 "qué tools están operativas"               → rag
 "cómo funciona Chroma"                     → rag
-"cuáles son los componentes del sistema"   → rag
 "muéstrame los archivos del proyecto"      → tool_list_files
 "¿qué hace el router híbrido?"             → rag
-"para qué sirve fidelity_check"            → rag
 
 Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
@@ -278,17 +277,6 @@ def _has_task_suggestion_signal(q: str) -> bool:
 
 
 def classify_memory_query(question: str) -> str | None:
-    """Clasifica una consulta de memoria en su subtipo.
-
-    Args:
-        question: Frase del usuario en lenguaje natural.
-
-    Returns:
-        str con el subtipo ('profile', 'work_state', 'tasks', 'project_facts')
-        o None si no corresponde a ningún subtipo de memoria.
-
-    Never raises.
-    """
     q = question.lower().strip()
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
@@ -299,9 +287,6 @@ def classify_memory_query(question: str) -> str | None:
 
 
 def _is_question(text: str) -> bool:
-    """Devuelve True si la frase es claramente una pregunta.
-    Las preguntas NO deben ir a carriles de escritura.
-    """
     stripped = text.strip()
     return stripped.startswith(("¿", "?")) or stripped.endswith("?")
 
@@ -309,21 +294,15 @@ def _is_question(text: str) -> bool:
 def _route_by_keywords(question: str) -> str | None:
     """Capa 1: clasificación instantánea por keywords.
 
-    Orden de prioridad (no reordenar sin entender las implicaciones):
-      1. Tools de escritura
-      2. RAG_HINTS — ANTES que extract_file_path para que
-         '¿qué hace router.py?' vaya a rag y no a tool_read_file
+    Orden de prioridad:
+      1. Tools de escritura (save, create, complete, update)
+         IMPORTANTE: complete_task se evalúa ANTES que update_work_state
+         para que "complete la tarea" (imperativo) no sea capturado por
+         "completé" en update_work_state.
+      2. RAG_HINTS — antes de extract_file_path
       3. extract_file_path — leer archivo literal
       4. TOOL_LIST/READ keywords
       5. memory
-
-    Args:
-        question: Frase original del usuario (con mayúsculas y tildes).
-
-    Returns:
-        str con el nombre del carril, o None si ninguna keyword aplica.
-
-    Never raises.
     """
     q = question.lower().strip()
 
@@ -357,11 +336,7 @@ def _route_by_embeddings(question: str) -> str | None:
 
     try:
         vectordb = _get_intent_db()
-
-        results = vectordb.similarity_search_with_score(
-            query=question,
-            k=EMBED_TOP_K,
-        )
+        results = vectordb.similarity_search_with_score(query=question, k=EMBED_TOP_K)
 
         if not results:
             return None
@@ -372,9 +347,8 @@ def _route_by_embeddings(question: str) -> str | None:
 
         log.debug("[router:emb] similitud=%.2f lane_candidato=%s", similarity, lane)
 
-        # Prefiltro: si es una pregunta, no puede ir a carriles de escritura
         if _is_question(question) and lane in _WRITE_LANES:
-            log.debug("[router:emb] pregunta detectada — bloqueando carril de escritura '%s' → pasa a LLM", lane)
+            log.debug("[router:emb] pregunta detectada — bloqueando '%s' → pasa a LLM", lane)
             return None
 
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
@@ -398,11 +372,7 @@ def _route_by_llm(question: str) -> str:
                 "model": "llama3.2:latest",
                 "prompt": prompt,
                 "stream": False,
-                "options": {
-                    "temperature": 0,
-                    "num_predict": 10,
-                    "stop": ["\n", " ", "."]
-                },
+                "options": {"temperature": 0, "num_predict": 10, "stop": ["\n", " ", "."]},
             },
             timeout=30,
         )
@@ -427,14 +397,8 @@ def _route_by_llm(question: str) -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Args:
-        question: Frase del usuario en lenguaje natural.
-
-    Returns:
-        str con el nombre del carril ('rag', 'memory', 'tool_*', 'exit').
-        Nunca retorna None ni lanza excepciones — fallback a 'rag'.
-
-    Never raises.
+    Returns str con el carril ('rag', 'memory', 'tool_*', 'exit').
+    Nunca retorna None ni lanza excepciones — fallback a 'rag'.
     """
     if question.lower().strip() in _EXIT_WORDS:
         return "exit"
@@ -442,7 +406,6 @@ def route_query(question: str) -> str:
     SESSION_STATS["total"] += 1
 
     kw_lane = _route_by_keywords(question)
-
     if kw_lane is not None:
         SESSION_STATS["kw"] += 1
         log.info("[router:kw]  '%s' → %s", question[:50], kw_lane)
