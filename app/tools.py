@@ -392,8 +392,8 @@ def tool_update_work_state(texto: str) -> str:
         if m:
             valor = m.group(1).strip().rstrip(".,")
             fecha = datetime.now().strftime("%d/%m/%Y")
-            state["last_completed"] = f"{valor} — {fecha}"
-            cambios.append(f"last_completed → '{valor}'")
+            state["last_completed_step"] = f"{valor} — {fecha}"            
+            cambios.append(f"last_completed_step → '{valor}'")
             break
 
     # ── next_step ──────────────────────────────────────────

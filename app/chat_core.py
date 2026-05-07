@@ -413,7 +413,7 @@ def handle_query(
             return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'", []
         return tool_complete_task(task_id), []
 
-       if route == "tool_update_work_state":
+    if route == "tool_update_work_state":
         # La tool ahora es autosuficiente
         return tool_update_work_state(user_input), []
 
