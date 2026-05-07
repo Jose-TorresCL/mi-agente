@@ -85,7 +85,7 @@ def _get_intent_db():
             embedding_function=_intent_embeddings,
             collection_name="intent_index",
         )
-    return _intent_db   
+    return _intent_db
 
 
 # ─────────────────────────────────────────────
@@ -191,6 +191,12 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
+# Hints RAG — preguntas sobre cómo funciona algo.
+# IMPORTANTE: estos hints tienen PRIORIDAD sobre extract_file_path.
+# Si la pregunta contiene uno de estos verbos interrogativos, va a RAG
+# aunque mencione un nombre de archivo .py.
+# Ej: "¿qué hace router.py?" → rag  (NO tool_read_file)
+#     "lee router.py"          → tool_read_file  (sin hint RAG al inicio)
 RAG_HINTS = [
     # Frases documentales clásicas
     "según los documentos", "segun los documentos",
@@ -198,7 +204,7 @@ RAG_HINTS = [
     "según los archivos", "segun los archivos",
     "qué dice", "que dice",
     "documentación", "documentacion",
-    # Preguntas de funcionamiento y componentes — fix router:emb
+    # Preguntas de funcionamiento y componentes
     "qué hace", "que hace",
     "cómo funciona", "como funciona",
     "cómo está", "como esta",
@@ -282,21 +288,39 @@ def _is_question(text: str) -> bool:
 
 
 def _route_by_keywords(question: str) -> str | None:
+    """Capa 1: clasificación instantánea por keywords.
+
+    Orden de prioridad (no reordenar sin entender las implicaciones):
+      1. Tools de escritura
+      2. RAG_HINTS — ANTES que extract_file_path para que
+         '¿qué hace router.py?' vaya a rag y no a tool_read_file
+      3. extract_file_path — leer archivo literal
+      4. TOOL_LIST/READ keywords
+      5. memory
+    """
     q = question.lower().strip()
 
     if q in {"!estatus", "!status"}:
         return "!estado"
 
+    # 1. Tools de escritura
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
+
+    # 2. RAG hints — ANTES de extract_file_path
+    if any(k in q for k in RAG_HINTS):                        return "rag"
+
+    # 3. Leer archivo literal
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
+
+    # 4. Memoria estructurada
     if classify_memory_query(question) is not None:           return "memory"
-    if any(k in q for k in RAG_HINTS):                        return "rag"
+
     return None
 
 
