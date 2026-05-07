@@ -392,3 +392,50 @@ def tool_update_work_state(texto: str) -> str:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
+
+
+# ─────────────────────────────────────────────
+# Sugerencia automática post-actualización
+# ─────────────────────────────────────────────
+
+def suggest_next_step() -> str:
+    """
+    Lee work_state.json y tasks.json y devuelve
+    una sugerencia breve del siguiente paso lógico.
+    Se llama desde chat_core.py después de tool_update_work_state.
+    """
+    import json
+
+    ws_path = Path("storage/work_state.json")
+    state = json.loads(ws_path.read_text(encoding="utf-8")) if ws_path.exists() else {}
+
+    next_step     = state.get("next_step", "")
+    current_focus = state.get("current_focus", "")
+    last_done     = state.get("last_completed", "")
+
+    tasks_data = load_tasks()
+    pending = [
+        t for t in tasks_data.get("tasks", [])
+        if t.get("status") not in ("done", "completed")
+    ]
+
+    lines = ["", "─── Sugerencia post-actualización ───"]
+
+    if next_step:
+        lines.append(f"  ➡️  Siguiente paso registrado: {next_step}")
+    elif pending:
+        t = pending[0]
+        lines.append(
+            f"  ➡️  Tarea pendiente: [{t['id']}] {t['title']} "
+            f"({t.get('priority', 'medium')})"
+        )
+    else:
+        lines.append("  ➡️  No hay pasos ni tareas pendientes registradas.")
+
+    if current_focus:
+        lines.append(f"  🎯  Foco actual: {current_focus}")
+
+    if last_done:
+        lines.append(f"  ✅  Último completado: {last_done}")
+
+    return "\n".join(lines)
