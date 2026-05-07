@@ -13,13 +13,8 @@ from app.memory_store import (
 from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import route_query, classify_memory_query
+from app.tool_registry import TOOLS, dispatch_tool  # B4: despacho centralizado
 from app.tools import (
-    list_project_files,
-    read_project_file,
-    tool_save_fact,
-    tool_create_task,
-    tool_complete_task,
-    tool_update_work_state,
     suggest_next_step,
     extract_task_id,
     parse_work_state_update,
@@ -335,8 +330,6 @@ def build_retriever(vectordb, question: str):
 
 # ─────────────────────────────────────────────
 # A1: Historial de conversación — lector/escritor JSON propio
-# Reemplaza FileChatMessageHistory para no contaminar memory.json
-# con el formato interno de LangChain (incompatible con schemas.py)
 # ─────────────────────────────────────────────
 
 def build_memory() -> list:
@@ -375,7 +368,6 @@ def _persist_turn(user_input: str, answer: str) -> None:
     if MEMORY_FILE.exists():
         try:
             data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-            # Migración silenciosa: si viene del formato LangChain antiguo, resetear
             if not isinstance(data.get("messages"), list):
                 data = {"messages": []}
         except Exception:
@@ -387,7 +379,6 @@ def _persist_turn(user_input: str, answer: str) -> None:
     data["messages"].append({"role": "human", "content": user_input})
     data["messages"].append({"role": "ai", "content": answer})
 
-    # Mantener solo los últimos MAX_TURNS * 2 mensajes
     if len(data["messages"]) > MAX_TURNS * 2:
         data["messages"] = data["messages"][-(MAX_TURNS * 2):]
 
@@ -398,7 +389,7 @@ def _persist_turn(user_input: str, answer: str) -> None:
 
 
 # ─────────────────────────────────────────────
-# B1: LLM singleton — evita crear ChatOllama en cada consulta RAG
+# B1: LLM singleton
 # ─────────────────────────────────────────────
 
 _llm_instance: ChatOllama | None = None
@@ -417,7 +408,7 @@ def _get_llm() -> ChatOllama:
 
 
 def build_chain(retriever, memory_context: str):
-    llm = _get_llm()  # B1: reutiliza la instancia existente
+    llm = _get_llm()
     qa_prompt_with_memory = QA_PROMPT.partial(memory_context=memory_context)
     chain = qa_prompt_with_memory | llm | StrOutputParser()
     return chain
@@ -445,73 +436,13 @@ def handle_query(
             log.info("Episodio guardado correctamente")
         return "__EXIT__", []
 
-    # ── Tools de escritura ────────────────────────────────
-    if route == "tool_save_fact":
-        prefixes = [
-            "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
-            "guardar hecho que", "registra que", "anota que",
-            "guarda el hecho que", "registra el hecho que",
-            "guarda esto como hecho:", "guarda esto como hecho",
-        ]
-        content = user_input.strip()
-        for prefix in prefixes:
-            if content.lower().startswith(prefix):
-                content = content[len(prefix):].strip()
-                break
-        if not content:
-            return "No pude guardar el hecho: no entendí el contenido.", []
-        result = tool_save_fact(content)
-        log.info("Hecho guardado: %s", content[:80])
+    # ── B4: despacho centralizado via tool_registry ───────────────────────
+    if route in TOOLS:
+        result = dispatch_tool(route, user_input)
+        log.info("Tool despachada: %s", route)
         return result, []
 
-    if route == "tool_create_task":
-        text = user_input.lower()
-        for prefix in ["crea una tarea:", "crea una tarea", "crear tarea:", "crear tarea",
-                       "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
-                       "áñade una tarea:", "áñade una tarea", "anota una tarea:", "anota una tarea",
-                       "registra una tarea:", "registra una tarea"]:
-            if text.startswith(prefix):
-                raw = user_input[len(prefix):].strip()
-                priority = "medium"
-                for p in ["alta", "high", "baja", "low", "media", "medium"]:
-                    if raw.lower().endswith(p):
-                        raw = raw[:-len(p)].strip().rstrip(",;")
-                        priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
-                        break
-                result = tool_create_task(title=raw, priority=priority)
-                log.info("Tarea creada: %s (prioridad: %s)", raw[:60], priority)
-                return result, []
-        result = tool_create_task(title=user_input, priority="medium")
-        log.info("Tarea creada (sin prefix): %s", user_input[:60])
-        return result, []
-
-    if route == "tool_complete_task":
-        task_id = extract_task_id(user_input)
-        if not task_id:
-            return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'", []
-        result = tool_complete_task(task_id)
-        log.info("Tarea completada: %s", task_id)
-        return result, []
-
-    if route == "tool_update_work_state":
-        update_msg = tool_update_work_state(user_input)
-        suggestion = suggest_next_step()
-        log.info("Work state actualizado")
-        return update_msg + suggestion, []
-
-    if route == "tool_list_files":
-        files = list_project_files()
-        if not files:
-            return "No encontré archivos en las carpetas permitidas.", []
-        return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files), []
-
-    if route == "tool_read_file":
-        from app.tools import extract_file_path
-        path = extract_file_path(user_input)
-        if not path:
-            return "No pude identificar qué archivo querías leer.", []
-        return read_project_file(path), []
-
+    # ── Carril memory ─────────────────────────────────────────────────────
     if route == "memory":
         memory_answer = answer_from_memory(user_input)
         if memory_answer is not None:
@@ -542,8 +473,12 @@ def handle_query(
         "chat_history": chat_history_text,
     })
 
-    if not verify_fidelity(answer, source_docs):
-        log.warning("Respuesta bloqueada por fidelidad insuficiente para: %s", user_input[:60])
+    is_faithful, score = verify_fidelity(answer, source_docs)
+    if not is_faithful:
+        log.warning(
+            "Respuesta bloqueada por fidelidad insuficiente (score=%.3f) para: %s",
+            score, user_input[:60],
+        )
         return NO_EVIDENCE_MSG, source_docs
 
     cache_save(user_input, answer)

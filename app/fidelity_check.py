@@ -31,17 +31,28 @@ Cambios (fix 5b/5c):
   - SHORT_ANSWER_WORDS: 20 → 7  (solo bypass para "Sí", "No", respuestas de 1-2 palabras)
   - Sin chunks: ahora bloquea (False, 0.0) en lugar de pasar (True)
 
+Cambios (B3):
+  - log_fidelity_failure(): registra cada bloqueo en storage/logs/fidelity_failures.jsonl
+    Campos: timestamp, question (120 chars), score, threshold.
+    Never raises — fallo de escritura no bloquea la respuesta.
+
 Contrato de retorno (nivel 1):
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones — cualquier fallo interno retorna (True, 1.0).
 """
 from __future__ import annotations
 
+import json
 import math
+from datetime import datetime
+from pathlib import Path
 
 FIDELITY_THRESHOLD  = 0.55   # similitud mínima respuesta↔chunk
 SHORT_ANSWER_WORDS  = 7      # fix 5b: era 20 — solo bypass para respuestas de 1-2 palabras
 NO_EVIDENCE_MSG     = "No tengo suficiente evidencia en el contexto recuperado."
+
+LOGS_DIR            = Path("storage") / "logs"
+FAILURES_LOG        = LOGS_DIR / "fidelity_failures.jsonl"
 
 # Reutiliza el cliente singleton de semantic_cache — no crea uno nuevo
 from app.semantic_cache import get_embedding
@@ -62,6 +73,29 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def log_fidelity_failure(question: str, score: float) -> None:
+    """Registra un bloqueo de fidelidad en storage/logs/fidelity_failures.jsonl.
+
+    Args:
+        question: Texto de la consulta del usuario (se trunca a 120 chars).
+        score:    Similitud máxima encontrada (float en [0.0, 1.0]).
+
+    Never raises: cualquier fallo de escritura se descarta silenciosamente.
+    """
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "question":  question[:120],
+            "score":     round(score, 4),
+            "threshold": FIDELITY_THRESHOLD,
+        }
+        with FAILURES_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # Never raises — el log es opcional, no bloquea al usuario
+
+
 def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
     """Verifica si la respuesta está soportada por los chunks recuperados.
 
@@ -80,6 +114,7 @@ def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
     # Caso 1: sin chunks — fix 5c: bloqueamos, no hay evidencia posible
     if not source_docs:
         print("[fidelity:block] sin chunks recuperados — bloqueando respuesta")
+        log_fidelity_failure(answer, 0.0)
         return False, 0.0
 
     # Caso 2: respuesta muy corta — bypass solo para "Sí", "No", etc.
@@ -119,4 +154,5 @@ def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
         return True, max_sim
 
     print(f"[fidelity:low] max_similitud={max_sim:.3f} < umbral={FIDELITY_THRESHOLD} — bloqueando respuesta")
+    log_fidelity_failure(answer, max_sim)  # B3: registrar el fallo
     return False, max_sim
