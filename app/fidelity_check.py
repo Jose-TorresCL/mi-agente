@@ -21,7 +21,7 @@ Limitaciones conocidas:
   - Respuestas muy cortas ("Sí", "No") tendrán similitud baja aunque sean correctas.
     Por eso SHORT_ANSWER_BYPASS: si la respuesta tiene menos de 7 palabras,
     se considera fiel automáticamente (evitar falsos negativos).
-  - Si Ollama está caído, la función retorna True (fiel) para no bloquear.
+  - Si Ollama está caído, la función retorna (True, 1.0) para no bloquear.
 
 Umbral recomendado:
   0.55 — conservador, solo bloquea respuestas claramente desconectadas del contexto.
@@ -29,7 +29,11 @@ Umbral recomendado:
 
 Cambios (fix 5b/5c):
   - SHORT_ANSWER_WORDS: 20 → 7  (solo bypass para "Sí", "No", respuestas de 1-2 palabras)
-  - Sin chunks: ahora bloquea (False) en lugar de pasar (True)
+  - Sin chunks: ahora bloquea (False, 0.0) en lugar de pasar (True)
+
+Contrato de retorno (nivel 1):
+  verify_fidelity SIEMPRE retorna tuple[bool, float].
+  NUNCA lanza excepciones — cualquier fallo interno retorna (True, 1.0).
 """
 from __future__ import annotations
 
@@ -44,6 +48,12 @@ from app.semantic_cache import get_embedding
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
+    """Calcula similitud coseno entre dos vectores.
+
+    Returns:
+        float en [0.0, 1.0]. Retorna 0.0 si algún vector es cero.
+    Never raises.
+    """
     dot    = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -52,40 +62,52 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def verify_fidelity(answer: str, source_docs: list) -> bool:
-    """Devuelve True si la respuesta está soportada por los chunks.
+def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
+    """Verifica si la respuesta está soportada por los chunks recuperados.
 
     Args:
         answer:      Texto generado por el LLM.
         source_docs: Lista de Document devuelta por el retriever.
 
     Returns:
-        True  → respuesta fiel, mostrar al usuario.
-        False → respuesta sospechosa, reemplazar por NO_EVIDENCE_MSG.
+        tuple[bool, float]:
+          - bool  True  → respuesta fiel, mostrar al usuario.
+                  False → respuesta sospechosa, reemplazar por NO_EVIDENCE_MSG.
+          - float similitud máxima encontrada (0.0 si no aplica o sin chunks).
+
+    Never raises: cualquier fallo interno retorna (True, 1.0) para no bloquear.
     """
     # Caso 1: sin chunks — fix 5c: bloqueamos, no hay evidencia posible
     if not source_docs:
         print("[fidelity:block] sin chunks recuperados — bloqueando respuesta")
-        return False
+        return False, 0.0
 
     # Caso 2: respuesta muy corta — bypass solo para "Sí", "No", etc.
     word_count = len(answer.split())
     if word_count < SHORT_ANSWER_WORDS:
         print(f"[fidelity:skip] respuesta corta ({word_count} palabras), se pasa")
-        return True
+        return True, 1.0
 
     # Caso 3: verificación real por similitud de embeddings
-    ans_embedding = get_embedding(answer)
+    try:
+        ans_embedding = get_embedding(answer)
+    except Exception:
+        print("[fidelity:skip] error al obtener embedding de respuesta, se pasa")
+        return True, 1.0
+
     if ans_embedding is None:
         print("[fidelity:skip] Ollama no disponible, se pasa")
-        return True
+        return True, 1.0
 
     max_sim = 0.0
     for doc in source_docs:
         chunk_text = doc.page_content if hasattr(doc, "page_content") else str(doc)
         if not chunk_text.strip():
             continue
-        chunk_emb = get_embedding(chunk_text)
+        try:
+            chunk_emb = get_embedding(chunk_text)
+        except Exception:
+            continue
         if chunk_emb is None:
             continue
         sim = _cosine(ans_embedding, chunk_emb)
@@ -94,7 +116,7 @@ def verify_fidelity(answer: str, source_docs: list) -> bool:
 
     if max_sim >= FIDELITY_THRESHOLD:
         print(f"[fidelity:ok]  max_similitud={max_sim:.3f} (umbral={FIDELITY_THRESHOLD})")
-        return True
+        return True, max_sim
 
     print(f"[fidelity:low] max_similitud={max_sim:.3f} < umbral={FIDELITY_THRESHOLD} — bloqueando respuesta")
-    return False
+    return False, max_sim

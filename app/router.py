@@ -90,9 +90,19 @@ def _get_intent_db():
 
 # ─────────────────────────────────────────────
 # Palabras de salida — interceptadas antes de cualquier capa
+# fix nivel1: agrega variantes naturales de despedida en español
 # ─────────────────────────────────────────────
 
-_EXIT_WORDS = {"salir", "hasta luego", "by", "salo", "sali", "salie", "sal", "exit", "quit", "bye", "chao", "adios", "adiós"}
+_EXIT_WORDS = {
+    "salir", "exit", "quit", "bye",
+    "sal", "salo", "sali", "salie",
+    "chao", "chau",
+    "adios", "adiós",
+    "hasta luego", "hasta pronto",
+    "nos vemos",
+    "me voy", "cierro",
+    "by",
+}
 
 
 # ─────────────────────────────────────────────
@@ -270,6 +280,17 @@ def _has_task_suggestion_signal(q: str) -> bool:
 
 
 def classify_memory_query(question: str) -> str | None:
+    """Clasifica una consulta de memoria en su subtipo.
+
+    Args:
+        question: Frase del usuario en lenguaje natural.
+
+    Returns:
+        str con el subtipo ('profile', 'work_state', 'tasks', 'project_facts')
+        o None si no corresponde a ningún subtipo de memoria.
+
+    Never raises.
+    """
     q = question.lower().strip()
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
@@ -297,6 +318,14 @@ def _route_by_keywords(question: str) -> str | None:
       3. extract_file_path — leer archivo literal
       4. TOOL_LIST/READ keywords
       5. memory
+
+    Args:
+        question: Frase original del usuario (con mayúsculas y tildes).
+
+    Returns:
+        str con el nombre del carril, o None si ninguna keyword aplica.
+
+    Never raises.
     """
     q = question.lower().strip()
 
@@ -398,7 +427,17 @@ def _route_by_llm(question: str) -> str:
 # ─────────────────────────────────────────────
 
 def route_query(question: str) -> str:
-    """Clasifica la pregunta en el carril de ejecución correcto."""
+    """Clasifica la pregunta en el carril de ejecución correcto.
+
+    Args:
+        question: Frase del usuario en lenguaje natural.
+
+    Returns:
+        str con el nombre del carril ('rag', 'memory', 'tool_*', 'exit').
+        Nunca retorna None ni lanza excepciones — fallback a 'rag'.
+
+    Never raises.
+    """
     if question.lower().strip() in _EXIT_WORDS:
         return "exit"
 
