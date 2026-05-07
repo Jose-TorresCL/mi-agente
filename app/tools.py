@@ -397,62 +397,116 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
 
 
 
-def tool_update_work_state(texto: str) -> str:
+def tool_update_work_state(
+    texto: str = "",
+    *,
+    current_focus: str | None = None,
+    next_step: str | None = None,
+    last_completed_step: str | None = None,
+) -> str:
+    """Actualiza work_state.json desde conversación libre o desde kwargs directos.
+
+    Hay dos modos de uso:
+
+    Modo A — texto libre (comportamiento original, usado por chat_core.py):
+        tool_update_work_state("actualiza el foco a fase 4")
+
+    Modo B — kwargs directos (usado por memory_extractor, futuro):
+        tool_update_work_state(next_step="escribir tests de consolidación")
+        tool_update_work_state(current_focus="fase 4", next_step="refactorizar router")
+
+    En Modo B los kwargs tienen prioridad sobre el texto libre.
+    Si se pasan ambos, primero se aplican los kwargs y luego se parsea el texto.
+
+    Args:
+        texto:               Frase libre del usuario (por defecto "").
+        current_focus:       Valor directo para current_focus.
+        next_step:           Valor directo para next_step.
+        last_completed_step: Valor directo para last_completed (se añade fecha automáticamente).
+
+    Returns:
+        str con confirmación de los campos actualizados,
+        o mensaje de advertencia si no se detectó ningún cambio.
+
+    Never raises: errores de lectura/escritura se capturan internamente.
     """
-    Actualiza work_state.json desde conversación.
-    Detecta qué campo cambiar según el texto recibido.
-    """
-    import re
-    from datetime import datetime
     import json
-    from pathlib import Path
 
     path = Path("storage/work_state.json")
-    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    try:
+        state: dict = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        state = {}
 
-    texto_lower = texto.lower()
-    cambios = []
+    cambios: list[str] = []
 
-    # ── current_focus ────────────────────────────────────
-    patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enf[oó]cate en)\s+(.+)"]
-    for pat in patrones_foco:
-        m = re.search(pat, texto_lower)
-        if m:
-            valor = m.group(1).strip().rstrip(".,")
-            state["current_focus"] = valor
-            cambios.append(f"current_focus → '{valor}'")
-            break
+    # ── Modo B: kwargs directos ────────────────────────────────
+    if current_focus is not None:
+        val = current_focus.strip()
+        state["current_focus"] = val
+        cambios.append(f"current_focus → '{val}'")
 
-    # ── last_completed ─────────────────────────────────────
-    patrones_completado = [
-        r"(?:complet[eé]|termin[eé]|acab[eé]|ya hice|ya termin[eé]|logramos|listo)\s+(?:de\s+|con\s+)?(.+)"
-    ]
-    for pat in patrones_completado:
-        m = re.search(pat, texto_lower)
-        if m:
-            valor = m.group(1).strip().rstrip(".,")
-            fecha = datetime.now().strftime("%d/%m/%Y")
-            state["last_completed"] = f"{valor} — {fecha}"
-            cambios.append(f"last_completed → '{valor}'")
-            break
+    if next_step is not None:
+        val = next_step.strip()
+        state["next_step"] = val
+        cambios.append(f"next_step → '{val}'")
 
-    # ── next_step ──────────────────────────────────────────
-    patrones_siguiente = [
-        r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|pr[oó]ximo paso[:\s]+)\s+(.+)"
-    ]
-    for pat in patrones_siguiente:
-        m = re.search(pat, texto_lower)
-        if m:
-            valor = m.group(1).strip().rstrip(".,")
-            state["next_step"] = valor
-            cambios.append(f"next_step → '{valor}'")
-            break
+    if last_completed_step is not None:
+        val = last_completed_step.strip()
+        fecha = datetime.now().strftime("%d/%m/%Y")
+        state["last_completed"] = f"{val} — {fecha}"
+        cambios.append(f"last_completed → '{val}'")
+
+    # ── Modo A: texto libre (solo si no hubo kwargs o hay texto adicional) ─
+    if texto:
+        texto_lower = texto.lower()
+
+        # current_focus
+        if current_focus is None:
+            patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enf[oó]cate en)\s+(.+)"]
+            for pat in patrones_foco:
+                m = re.search(pat, texto_lower)
+                if m:
+                    valor = m.group(1).strip().rstrip(".,")
+                    state["current_focus"] = valor
+                    cambios.append(f"current_focus → '{valor}'")
+                    break
+
+        # last_completed
+        if last_completed_step is None:
+            patrones_completado = [
+                r"(?:complet[eé]|termin[eé]|acab[eé]|ya hice|ya termin[eé]|logramos|listo)\s+(?:de\s+|con\s+)?(.+)"
+            ]
+            for pat in patrones_completado:
+                m = re.search(pat, texto_lower)
+                if m:
+                    valor = m.group(1).strip().rstrip(".,")
+                    fecha = datetime.now().strftime("%d/%m/%Y")
+                    state["last_completed"] = f"{valor} — {fecha}"
+                    cambios.append(f"last_completed → '{valor}'")
+                    break
+
+        # next_step
+        if next_step is None:
+            patrones_siguiente = [
+                r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|pr[oó]ximo paso[:\s]+)\s+(.+)"
+            ]
+            for pat in patrones_siguiente:
+                m = re.search(pat, texto_lower)
+                if m:
+                    valor = m.group(1).strip().rstrip(".,")
+                    state["next_step"] = valor
+                    cambios.append(f"next_step → '{valor}'")
+                    break
 
     if not cambios:
         return "⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'."
 
     state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        return f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}"
 
     return "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
 
