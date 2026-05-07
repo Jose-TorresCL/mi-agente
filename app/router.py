@@ -130,12 +130,9 @@ MEMORY_TASKS_KEYWORDS = [
     "qué tengo pendiente", "que tengo pendiente",
     "qué tareas tengo", "que tareas tengo",
     "ponme al día", "ponme al dia",
-    # Fix: frases cortas que antes caían a embeddings con baja similitud
     "tareas", "mis tareas", "ver tareas", "mostrar tareas",
 ]
 
-# Palabras que indican intención de SUGERIR/CREAR — si aparecen junto a "tareas",
-# la Capa 1 debe abstenerse y dejar pasar a embeddings (RAG).
 _TASK_SUGGESTION_SIGNALS = [
     "podríamos", "podriamos", "podrías", "podrias",
     "nuevas", "nuevo", "crear", "agregar", "sugerir",
@@ -174,23 +171,29 @@ _COMPLETE_TASK_PATTERN = re.compile(
 )
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
-    # Foco
     "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
-    # Completado
     "completé", "terminé", "acabé", "ya hice", "listo:",
-    # Siguiente paso
     "el siguiente paso es", "sigue:", "próximo paso",
-    # Bloqueos y estado general
-    "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo"
+    "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
 RAG_HINTS = [
+    # Frases documentales clásicas
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
     "según los archivos", "segun los archivos",
-    "qué dice", "que dice", "explica", "explícame", "explicame",
-    "arquitectura", "objetivo", "relación entre", "relacion entre",
+    "qué dice", "que dice",
     "documentación", "documentacion",
+    # Preguntas de funcionamiento y componentes — fix router:emb
+    "qué hace", "que hace",
+    "cómo funciona", "como funciona",
+    "cómo está", "como esta",
+    "para qué sirve", "para que sirve",
+    "explica", "explícame", "explicame",
+    "arquitectura", "objetivo",
+    "relación entre", "relacion entre",
+    "componentes", "diferencia entre",
+    "qué es", "que es",
 ]
 
 VALID_LANES = {
@@ -229,6 +232,8 @@ Ejemplos:
 "cómo funciona Chroma"                     → rag
 "cuáles son los componentes del sistema"   → rag
 "muéstrame los archivos del proyecto"      → tool_list_files
+"¿qué hace el router híbrido?"             → rag
+"para qué sirve fidelity_check"            → rag
 
 Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
@@ -257,9 +262,8 @@ def classify_memory_query(question: str) -> str | None:
 def _route_by_keywords(question: str) -> str | None:
     q = question.lower().strip()
 
-    # Fix: interceptar !estatus como alias de !estado (comando de chat)
     if q in {"!estatus", "!status"}:
-        return "!estado"  # chat.py lo maneja como comando especial
+        return "!estado"
 
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
