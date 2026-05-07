@@ -89,7 +89,7 @@ def _get_intent_db():
 # Palabras de salida — interceptadas antes de cualquier capa
 # ─────────────────────────────────────────────
 
-_EXIT_WORDS = {"salir", "by","salo", "sali", "salie", "sal" "exit", "quit", "bye", "chao", "adios", "adiós"}
+_EXIT_WORDS = {"salir","hasta luego", "by" ,"salo", "sali", "salie", "sal" "exit", "quit", "bye", "chao", "adios", "adiós"}
 
 
 # ─────────────────────────────────────────────

@@ -26,7 +26,7 @@ from datetime import datetime
 
 
 CACHE_FILE          = Path("storage/semantic_cache.json")
-SIMILARITY_THRESHOLD = 0.92
+SIMILARITY_THRESHOLD = 0.86
 MAX_CACHE_SIZE      = 200
 EMBED_MODEL         = "nomic-embed-text"
 OLLAMA_URL          = "http://localhost:11434"
