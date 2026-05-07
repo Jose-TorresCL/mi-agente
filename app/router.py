@@ -28,6 +28,9 @@ import re
 from pathlib import Path
 
 from app.tools import extract_file_path
+from app.logger import get_logger
+
+log = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────
@@ -82,7 +85,7 @@ def _get_intent_db():
             embedding_function=_intent_embeddings,
             collection_name="intent_index",
         )
-    return _intent_db
+    return _intent_db   
 
 
 # ─────────────────────────────────────────────
@@ -182,16 +185,12 @@ _COMPLETE_TASK_PATTERN = re.compile(
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
     "completé", "terminé", "acabé", "ya hice", "listo:",
+    # variantes sin tilde — fix typos frecuentes
+    "termine", "complete", "acabe",
     "el siguiente paso es", "sigue:", "próximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
-# Hints RAG — preguntas sobre cómo funciona algo.
-# IMPORTANTE: estos hints tienen PRIORIDAD sobre extract_file_path.
-# Si la pregunta contiene uno de estos verbos interrogativos, va a RAG
-# aunque mencione un nombre de archivo .py.
-# Ej: "¿qué hace router.py?" → rag  (NO tool_read_file)
-#     "lee router.py"          → tool_read_file  (sin hint RAG al inicio)
 RAG_HINTS = [
     # Frases documentales clásicas
     "según los documentos", "segun los documentos",
@@ -199,7 +198,7 @@ RAG_HINTS = [
     "según los archivos", "segun los archivos",
     "qué dice", "que dice",
     "documentación", "documentacion",
-    # Preguntas de funcionamiento y componentes
+    # Preguntas de funcionamiento y componentes — fix router:emb
     "qué hace", "que hace",
     "cómo funciona", "como funciona",
     "cómo está", "como esta",
@@ -283,42 +282,21 @@ def _is_question(text: str) -> bool:
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: clasificación instantánea por keywords.
-
-    Orden de prioridad (IMPORTANTE — no reordenar sin entender las implicaciones):
-      1. Tools de escritura (save_fact, create_task, complete_task, update_work_state)
-      2. RAG_HINTS — preguntas con verbo interrogativo (qué hace, cómo funciona...)
-         PRECEDE a extract_file_path para que '¿qué hace router.py?' vaya a rag,
-         no a tool_read_file.
-      3. extract_file_path — leer archivo literal ("lee router.py", "abre chat.py")
-      4. TOOL_LIST_KEYWORDS / TOOL_READ_KEYWORDS — comandos explícitos de archivo
-      5. memory — consulta de memoria estructurada
-      6. RAG genérico — (en la práctica RAG_HINTS ya cubre este caso)
-    """
     q = question.lower().strip()
 
     if q in {"!estatus", "!status"}:
         return "!estado"
 
-    # 1. Tools de escritura
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
-
-    # 2. RAG hints — ANTES de extract_file_path
-    #    "¿qué hace router.py?" debe ir a rag, no a tool_read_file
-    if any(k in q for k in RAG_HINTS):                        return "rag"
-
-    # 3. Leer archivo literal (sin verbo interrogativo)
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
-
-    # 4. Memoria estructurada
     if classify_memory_query(question) is not None:           return "memory"
-
+    if any(k in q for k in RAG_HINTS):                        return "rag"
     return None
 
 
@@ -341,21 +319,21 @@ def _route_by_embeddings(question: str) -> str | None:
         similarity = 1.0 - (distance / 2.0)
         lane = doc.metadata.get("lane", "")
 
-        print(f"[router:emb] similitud={similarity:.2f} lane_candidato={lane}")
+        log.debug("[router:emb] similitud=%.2f lane_candidato=%s", similarity, lane)
 
         # Prefiltro: si es una pregunta, no puede ir a carriles de escritura
         if _is_question(question) and lane in _WRITE_LANES:
-            print(f"[router:emb] pregunta detectada — bloqueando carril de escritura '{lane}' → pasa a LLM")
+            log.debug("[router:emb] pregunta detectada — bloqueando carril de escritura '%s' → pasa a LLM", lane)
             return None
 
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
 
-        print(f"[router:emb] similitud baja ({similarity:.2f} < {EMBED_THRESHOLD}) → pasa a LLM")
+        log.debug("[router:emb] similitud baja (%.2f < %.2f) → pasa a LLM", similarity, EMBED_THRESHOLD)
         return None
 
     except Exception as e:
-        print(f"[router:emb] error: {e} → pasa a LLM")
+        log.warning("[router:emb] error: %s → pasa a LLM", e)
         return None
 
 
@@ -383,11 +361,11 @@ def _route_by_llm(question: str) -> str:
         if lane in VALID_LANES:
             return lane
 
-        print(f"[router:llm] respuesta inesperada: '{raw}' → rag")
+        log.warning("[router:llm] respuesta inesperada: '%s' → rag", raw)
         return "rag"
 
     except Exception as e:
-        print(f"[router:llm] error: {e} → rag")
+        log.error("[router:llm] error: %s → rag", e)
         return "rag"
 
 
@@ -406,16 +384,16 @@ def route_query(question: str) -> str:
 
     if kw_lane is not None:
         SESSION_STATS["kw"] += 1
-        print(f"[router:kw]  '{question[:50]}' → {kw_lane}")
+        log.info("[router:kw]  '%s' → %s", question[:50], kw_lane)
         return kw_lane
 
     emb_lane = _route_by_embeddings(question)
     if emb_lane is not None:
         SESSION_STATS["emb"] += 1
-        print(f"[router:emb] '{question[:50]}' → {emb_lane}")
+        log.info("[router:emb] '%s' → %s", question[:50], emb_lane)
         return emb_lane
 
     SESSION_STATS["llm"] += 1
     llm_lane = _route_by_llm(question)
-    print(f"[router:llm] '{question[:50]}' → {llm_lane}")
+    log.info("[router:llm] '%s' → %s", question[:50], llm_lane)
     return llm_lane

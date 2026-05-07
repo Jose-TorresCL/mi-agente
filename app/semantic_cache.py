@@ -3,16 +3,18 @@
 Cómo funciona:
   1. Antes de llamar al LLM, se calcula el embedding de la pregunta nueva.
   2. Se compara contra los embeddings de preguntas ya cacheadas.
-  3. Si la similitud coseno supera SIMILARITY_THRESHOLD (0.92), se devuelve
+  3. Si la similitud coseno supera SIMILARITY_THRESHOLD, se devuelve
      la respuesta guardada sin tocar Chroma ni el LLM.
   4. Si no hay hit, el flujo RAG normal sigue y al final guarda el par
      (embedding, respuesta) para futuras consultas.
 
 Configuración:
   SIMILARITY_THRESHOLD — qué tan parecidas deben ser dos preguntas para
-    considerarlas iguales. 0.92 es conservador: 'cómo funciona el router'
-    y 'explica el router' tendrán ~0.91 → no se cachean juntas.
-    Bajar a 0.88 para una caché más agresiva.
+    considerarlas iguales.
+    0.82: equilibrio entre precisión y hit-rate para español con/sin tilde.
+    0.86: más conservador (antiguo valor).
+    0.88: muy conservador — 'cómo funciona el router' y 'explica el router'
+          tienen ~0.91 → se cachean juntas solo si bajan a 0.88.
 
   MAX_CACHE_SIZE — número máximo de entradas. Al superar el límite se
     descartan las más antiguas (FIFO).
@@ -24,9 +26,13 @@ import math
 from pathlib import Path
 from datetime import datetime
 
+from app.logger import get_logger
+
+log = get_logger(__name__)
+
 
 CACHE_FILE          = Path("storage/semantic_cache.json")
-SIMILARITY_THRESHOLD = 0.86
+SIMILARITY_THRESHOLD = 0.82
 MAX_CACHE_SIZE      = 200
 EMBED_MODEL         = "nomic-embed-text"
 OLLAMA_URL          = "http://localhost:11434"
@@ -85,7 +91,7 @@ def get_embedding(text: str) -> list[float] | None:
         client = _get_embed_client()
         return client.embed_query(text)
     except Exception as e:
-        print(f"[cache] error al obtener embedding: {e}")
+        log.warning("[cache] error al obtener embedding: %s", e)
         return None
 
 
@@ -120,10 +126,10 @@ def cache_lookup(question: str) -> str | None:
             best_answer = entry.get("answer")
 
     if best_sim >= SIMILARITY_THRESHOLD and best_answer:
-        print(f"[cache:hit]  similitud={best_sim:.3f}")
+        log.info("[cache:hit]  similitud=%.3f", best_sim)
         return best_answer
 
-    print(f"[cache:miss] mejor similitud={best_sim:.3f} (umbral={SIMILARITY_THRESHOLD})")
+    log.debug("[cache:miss] mejor similitud=%.3f (umbral=%.2f)", best_sim, SIMILARITY_THRESHOLD)
     return None
 
 
@@ -158,13 +164,14 @@ def cache_save(question: str, answer: str) -> None:
         entries = entries[-MAX_CACHE_SIZE:]
 
     _save_cache(entries)
+    log.debug("[cache] entrada guardada para: %s", question[:60])
 
 
 def cache_invalidate() -> None:
     """Borra toda la caché semántica (se llama desde !reset)."""
     if CACHE_FILE.exists():
         CACHE_FILE.unlink()
-    print("[cache] caché semántica limpiada.")
+    log.info("[cache] caché semántica limpiada.")
 
 
 def cache_stats() -> dict:
