@@ -19,6 +19,7 @@ from app.tools import (
     tool_create_task,
     tool_complete_task,
     tool_update_work_state,
+    suggest_next_step,
     extract_task_id,
     parse_work_state_update,
 )
@@ -363,7 +364,7 @@ def handle_query(
 ) -> tuple[str, list]:
     route = route_query(user_input)
 
-    # ── SimpleMem: hook de salida ─────────────────────────────────────────
+    # ── SimpleMem: hook de salida ────────────────────────────────────────
     if route == "exit":
         turns = len(chat_history) // 2
         if turns > 0:
@@ -373,7 +374,7 @@ def handle_query(
             print(f"Episodio guardado ({turns} turnos).")
         return "__EXIT__", []
 
-    # ── Tools de escritura ──────────────────────────────────────────
+    # ── Tools de escritura ────────────────────────────────
     if route == "tool_save_fact":
         prefixes = [
             "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
@@ -394,7 +395,7 @@ def handle_query(
         text = user_input.lower()
         for prefix in ["crea una tarea:", "crea una tarea", "crear tarea:", "crear tarea",
                        "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
-                       "añade una tarea:", "añade una tarea", "anota una tarea:", "anota una tarea",
+                       "áñade una tarea:", "áñade una tarea", "anota una tarea:", "anota una tarea",
                        "registra una tarea:", "registra una tarea"]:
             if text.startswith(prefix):
                 raw = user_input[len(prefix):].strip()
@@ -414,8 +415,9 @@ def handle_query(
         return tool_complete_task(task_id), []
 
     if route == "tool_update_work_state":
-        # La tool ahora es autosuficiente
-        return tool_update_work_state(user_input), []
+        update_msg = tool_update_work_state(user_input)
+        suggestion = suggest_next_step()
+        return update_msg + suggestion, []
 
     if route == "tool_list_files":
         files = list_project_files()
@@ -435,7 +437,7 @@ def handle_query(
         if memory_answer is not None:
             return memory_answer, []
 
-    # ── RAG + caché semántica (10c) + fidelidad (10a) ───────────────────
+    # ── RAG + caché semántica (10c) + fidelidad (10a) ─────────────────────
     # Paso 1: caché semántica (umbral 0.88)
     cached = cache_lookup(user_input)
     if cached is not None:
