@@ -1,10 +1,24 @@
-from __future__ import annotations
+"""Herramientas que modifican el estado del asistente.
 
+Este módulo contiene SOLO las funciones tool_* que leen/escriben memoria.
+Las utilidades de parseo y filesystem viven en tool_helpers.py.
+
+Funciones públicas (sin cambio de interfaz):
+  tool_save_fact()          — guarda hecho en project_facts.json
+  tool_create_task()        — crea tarea en tasks.json
+  tool_complete_task()      — marca tarea como completada
+  tool_update_work_state()  — actualiza work_state.json
+  suggest_next_step()       — sugerencia post-actualización
+
+Re-exporta desde tool_helpers para compatibilidad con imports existentes:
+  list_project_files, extract_file_path, read_project_file,
+  extract_task_id, parse_work_state_update
+"""
+from __future__ import annotations
 
 import re
 from pathlib import Path
 from datetime import datetime
-
 
 from app.memory_store import (
     save_project_fact,
@@ -14,290 +28,39 @@ from app.memory_store import (
     load_tasks,
 )
 
+# Re-exportar helpers para mantener compatibilidad con imports existentes
+from app.tool_helpers import (  # noqa: F401
+    list_project_files,
+    extract_file_path,
+    read_project_file,
+    extract_task_id,
+    parse_work_state_update,
+    _parse_key_value,
+    VALID_PRIORITIES,
+)
 
-PROJECT_ROOT = Path(".")
-
-ALLOWED_DIRS = [
-    PROJECT_ROOT / "app",
-    PROJECT_ROOT / "data" / "docs",
-    PROJECT_ROOT / "storage",
-    PROJECT_ROOT,
-]
-
-
-SKIP_DIR_NAMES = {
-    "__pycache__", ".git", ".venv", "chroma_db", "chroma",
-    ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    "node_modules", ".idea", ".vscode",
-}
-SKIP_SUFFIXES = {".pyc", ".bak", ".log"}
 VALID_PRIORITIES = {"low", "medium", "high"}
 
-ROOT_ALLOWED_SUFFIXES = {
-    ".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
-}
-
-
-ALLOWED_WORK_STATE_FIELDS = {
-    "current_focus",
-    "current_phase",
-    "last_completed",
-    "last_completed_step",
-    "next_step",
-    "current_blockers",
-    "session_goal",
-}
-
-
-WORK_STATE_FIELD_ALIASES = {
-    "foco":                   "current_focus",
-    "foco actual":            "current_focus",
-    "focus":                  "current_focus",
-    "fase":                   "current_phase",
-    "fase actual":            "current_phase",
-    "phase":                  "current_phase",
-    "último paso":            "last_completed",
-    "ultimo paso":            "last_completed",
-    "último paso completado": "last_completed",
-    "siguiente paso":         "next_step",
-    "next step":              "next_step",
-    "bloqueante":             "current_blockers",
-    "bloqueo":                "current_blockers",
-    "blockers":               "current_blockers",
-    "meta sesión":            "session_goal",
-    "meta de sesión":         "session_goal",
-    "objetivo sesión":        "session_goal",
-    "session goal":           "session_goal",
-}
-
-
 _VALUE_PREFIXES = [
-    "el foco a",
-    "foco a",
-    "la fase a",
-    "fase a",
-    "siguiente paso a",
-    "el siguiente paso a",
-    "último paso a",
-    "el último paso a",
-    "bloqueante a",
-    "bloqueo a",
-    "work_state a",
+    "el foco a", "foco a", "la fase a", "fase a",
+    "siguiente paso a", "el siguiente paso a",
+    "último paso a", "el último paso a",
+    "bloqueante a", "bloqueo a", "work_state a",
 ]
 
 
-
-def _is_allowed(path: Path) -> bool:
-    """Verifica si la ruta está dentro de los directorios permitidos.
-
-    Para archivos en la raíz del proyecto aplica filtro de extensiones.
-
-    Args:
-        path: Ruta a verificar.
-
-    Returns:
-        True si la ruta está permitida, False en caso contrario.
-
-    Never raises.
-    """
-    try:
-        resolved = path.resolve()
-    except Exception:
-        return False
-
-    root_resolved = PROJECT_ROOT.resolve()
-
-    for base in ALLOWED_DIRS:
-        try:
-            base_resolved = base.resolve()
-            is_relative = resolved.is_relative_to(base_resolved)
-        except AttributeError:
-            base_resolved = base.resolve()
-            is_relative = str(resolved).startswith(str(base_resolved))
-
-        if is_relative:
-            if base_resolved == root_resolved:
-                try:
-                    rel = resolved.relative_to(root_resolved)
-                except ValueError:
-                    continue
-                parts = rel.parts
-                if len(parts) > 1 and parts[0] in SKIP_DIR_NAMES:
-                    continue
-                if resolved.suffix not in ROOT_ALLOWED_SUFFIXES:
-                    continue
-            return True
-    return False
-
-
-
-def _should_skip(path: Path) -> bool:
-    """Indica si una ruta debe omitirse al listar archivos del proyecto.
-
-    Args:
-        path: Ruta a evaluar.
-
-    Returns:
-        True si se debe omitir (carpeta excluida o extensión bloqueada).
-
-    Never raises.
-    """
-    if any(part in SKIP_DIR_NAMES for part in path.parts):
-        return True
-    if path.suffix in SKIP_SUFFIXES:
-        return True
-    return False
-
-
-
-def list_project_files() -> list[str]:
-    """Lista archivos del proyecto dentro de los directorios permitidos.
-
-    Returns:
-        Lista ordenada de rutas relativas a PROJECT_ROOT.
-
-    Never raises.
-    """
-    seen = set()
-    files = []
-    root_resolved = PROJECT_ROOT.resolve()
-
-    for base in ALLOWED_DIRS:
-        if not base.exists():
-            continue
-        for p in base.rglob("*"):
-            if _should_skip(p):
-                continue
-            if not p.is_file():
-                continue
-            try:
-                base_resolved = base.resolve()
-                if base_resolved == root_resolved:
-                    if p.suffix not in ROOT_ALLOWED_SUFFIXES:
-                        continue
-            except Exception:
-                pass
-            rel = str(p.relative_to(PROJECT_ROOT))
-            if rel not in seen:
-                seen.add(rel)
-                files.append(rel)
-    return sorted(files)
-
-
-
-def extract_file_path(text: str) -> str | None:
-    """Extrae una ruta de archivo del texto del usuario.
-
-    Detecta rutas con prefijo de carpeta conocida O nombres de archivo .py solos.
-
-    Args:
-        text: Texto libre del usuario (ej: 'lee app/router.py').
-
-    Returns:
-        Ruta relativa al proyecto, o None si no se detectó ninguna.
-
-    Never raises.
-    """
-    cleaned = text.strip()
-    lower_text = cleaned.lower()
-
-    markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
-    for marker in markers:
-        idx = lower_text.find(marker.lower())
-        if idx == -1:
-            continue
-        candidate = cleaned[idx:].strip()
-        candidate = candidate.strip('"').strip("'").strip("`")
-        candidate = candidate.rstrip("?.!,;:")
-        for stop in [" y ", " luego ", " después ", " despues "]:
-            stop_idx = candidate.lower().find(stop)
-            if stop_idx != -1:
-                candidate = candidate[:stop_idx].strip()
-        return candidate
-
-    match = re.search(r'\b([\w_.-]+\.(?:py|md|txt|toml|yaml|yml|json))\b', cleaned, re.IGNORECASE)
-    if match:
-        filename = match.group(1)
-        for base in [PROJECT_ROOT / "app", PROJECT_ROOT, PROJECT_ROOT / "data" / "docs"]:
-            candidate = base / filename
-            if candidate.exists():
-                return str(candidate.relative_to(PROJECT_ROOT))
-        return filename
-
-    return None
-
-
-
-def read_project_file(path: str, max_chars: int = 8000) -> str:
-    """Lee un archivo del proyecto y devuelve su contenido como texto.
-
-    Args:
-        path:      Ruta relativa al archivo (ej: 'app/router.py').
-        max_chars: Máximo de caracteres a devolver. Default 8000.
-
-    Returns:
-        Contenido del archivo (truncado si supera max_chars),
-        o mensaje de error si la ruta no está permitida o el archivo no existe.
-
-    Never raises.
-    """
-    p = Path(path)
-    if not _is_allowed(p):
-        return (
-            f"Ruta no permitida: '{path}'. "
-            "Usa archivos dentro de app/, data/docs/, storage/ o la raíz del proyecto "
-            "(.py, .md, .txt, .toml, .json)."
-        )
-    if not p.exists() or not p.is_file():
-        return f"Archivo no encontrado: '{path}'."
-    text = p.read_text(encoding="utf-8", errors="ignore")
-    return text[:max_chars]
-
-
-
 # ─────────────────────────────────────────────
-# Tools de escritura seguras
+# Tool: guardar hecho
 # ─────────────────────────────────────────────
-
-
-def _parse_key_value(content: str) -> tuple[str, str] | None:
-    """Detecta si el contenido tiene formato 'clave = valor' o 'clave=valor'.
-
-    Args:
-        content: Texto a analizar.
-
-    Returns:
-        Tupla (clave_normalizada, valor) si se detectó el patrón, None si no.
-
-    Never raises.
-    """
-    match = re.match(
-        r'^([\w\s]{1,40}?)\s*[=:]\s*(.+)$',
-        content.strip(),
-        re.UNICODE,
-    )
-    if not match:
-        return None
-
-    raw_key = match.group(1).strip()
-    value   = match.group(2).strip()
-
-    key = re.sub(r'\s+', '_', raw_key.lower())
-
-    if len(key.split('_')) > 5:
-        return None
-
-    return key, value
-
 
 def tool_save_fact(content: str) -> str:
     """Guarda un hecho en project_facts.json.
 
-    IMPORTANTE: recibe el contenido YA limpio (sin prefijos de navegación).
-    Los prefijos ('anota que', 'registra que', etc.) se extraen en chat_core.py.
+    D3: rechaza contenido vacío antes de llamar a save_project_fact.
+    _parse_key_value ya rechaza valores vacíos en el formato key=value.
 
     Args:
-        content: Texto del hecho a guardar (ya limpio).
+        content: Texto del hecho a guardar (ya limpio, sin prefijos de navegación).
 
     Returns:
         str con confirmación del hecho guardado, o mensaje de error.
@@ -306,19 +69,26 @@ def tool_save_fact(content: str) -> str:
     """
     content = content.strip()
 
+    # D3: bloquear contenido vacío
     if not content:
-        return "No pude guardar el hecho: no entendí el contenido."
+        return "No pude guardar el hecho: el contenido está vacío."
 
     kv = _parse_key_value(content)
     if kv:
         key, value = kv
+        # D3: key y value ya vienen limpios de _parse_key_value
         save_project_fact(key, value)
         return f"✓ Hecho guardado: {key} = \"{value}\""
 
+    # Hecho libre sin formato key=value
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
     return f"✓ Hecho guardado: \"{content}\""
 
+
+# ─────────────────────────────────────────────
+# Tool: crear tarea
+# ─────────────────────────────────────────────
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     """Crea una nueva tarea en tasks.json.
@@ -346,34 +116,9 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
     return f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})"
 
 
-
 # ─────────────────────────────────────────────
 # Tool: completar tarea
 # ─────────────────────────────────────────────
-
-
-def extract_task_id(text: str) -> str:
-    """Extrae un ID de tarea del texto del usuario.
-
-    Args:
-        text: Texto libre del usuario (ej: 'completa T-001').
-
-    Returns:
-        ID de tarea en formato 'T-XXXX', o string vacío si no se detectó.
-
-    Never raises.
-    """
-    match = re.search(r"T-(\d+)", text, re.IGNORECASE)
-    if match:
-        return f"T-{match.group(1)}"
-
-    match = re.search(r"\b(\d{3})\b", text)
-    if match:
-        return f"T-{match.group(1)}"
-
-    return ""
-
-
 
 def tool_complete_task(task_id: str) -> str:
     """Marca una tarea existente como completada dado su ID.
@@ -410,59 +155,9 @@ def tool_complete_task(task_id: str) -> str:
     return f"✅ Tarea {task_id} marcada como completada."
 
 
-
 # ─────────────────────────────────────────────
 # Tool: actualizar work_state
 # ─────────────────────────────────────────────
-
-
-def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
-    """Extrae (field, value) de una frase de actualización de work_state.
-
-    Args:
-        text: Frase del usuario (ej: 'actualiza el foco a fase 4').
-
-    Returns:
-        Tupla (field, value) si se detectó, o (None, None) si no.
-
-    Never raises.
-    """
-    text_lower = text.lower()
-
-    detected_field: str | None = None
-    for alias in sorted(WORK_STATE_FIELD_ALIASES, key=len, reverse=True):
-        if alias in text_lower:
-            detected_field = WORK_STATE_FIELD_ALIASES[alias]
-            break
-
-    if not detected_field:
-        for field in ALLOWED_WORK_STATE_FIELDS:
-            if field in text_lower:
-                detected_field = field
-                break
-
-    if not detected_field:
-        return None, None
-
-    patterns = [
-        r"(?:a|al|en|hacia|por)\s+(.+?)(?:\s*[.!?]|$)",
-        r"[:=]\s*(.+?)(?:\s*[.!?]|$)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            value = match.group(1).strip().strip("\"'")
-            value_lower = value.lower()
-            for prefix in sorted(_VALUE_PREFIXES, key=len, reverse=True):
-                if value_lower.startswith(prefix):
-                    value = value[len(prefix):].strip()
-                    break
-            if value:
-                return detected_field, value
-
-    return detected_field, None
-
-
 
 def tool_update_work_state(
     texto: str = "",
@@ -473,22 +168,14 @@ def tool_update_work_state(
 ) -> str:
     """Actualiza work_state.json desde conversación libre o desde kwargs directos.
 
-    Modo A — texto libre (usado por chat_core.py):
-        tool_update_work_state("actualiza el foco a fase 4")
+    D3: todos los valores vacíos o solo-espacios se ignoran.
 
-    Modo B — kwargs directos (usado por memory_extractor, futuro):
-        tool_update_work_state(next_step="escribir tests de consolidación")
-        tool_update_work_state(current_focus="fase 4", next_step="refactorizar router")
-
-    Args:
-        texto:               Frase libre del usuario (por defecto "").
-        current_focus:       Valor directo para current_focus.
-        next_step:           Valor directo para next_step.
-        last_completed_step: Valor directo para last_completed (se añade fecha).
+    Modo A — texto libre:   tool_update_work_state("actualiza el foco a fase 4")
+    Modo B — kwargs directos: tool_update_work_state(next_step="escribir tests")
 
     Returns:
         str con confirmación de los campos actualizados,
-        o mensaje de advertencia si no se detectó ningún cambio.
+        o advertencia si no se detectó ningún cambio.
 
     Never raises.
     """
@@ -505,19 +192,22 @@ def tool_update_work_state(
     # ── Modo B: kwargs directos ──────────────────────────────
     if current_focus is not None:
         val = current_focus.strip()
-        state["current_focus"] = val
-        cambios.append(f"current_focus → '{val}'")
+        if val:  # D3: ignorar vacíos
+            state["current_focus"] = val
+            cambios.append(f"current_focus → '{val}'")
 
     if next_step is not None:
         val = next_step.strip()
-        state["next_step"] = val
-        cambios.append(f"next_step → '{val}'")
+        if val:  # D3: ignorar vacíos
+            state["next_step"] = val
+            cambios.append(f"next_step → '{val}'")
 
     if last_completed_step is not None:
         val = last_completed_step.strip()
-        fecha = datetime.now().strftime("%d/%m/%Y")
-        state["last_completed"] = f"{val} — {fecha}"
-        cambios.append(f"last_completed → '{val}'")
+        if val:  # D3: ignorar vacíos
+            fecha = datetime.now().strftime("%d/%m/%Y")
+            state["last_completed"] = f"{val} — {fecha}"
+            cambios.append(f"last_completed → '{val}'")
 
     # ── Modo A: texto libre ───────────────────────────────────
     if texto:
@@ -529,8 +219,9 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    state["current_focus"] = valor
-                    cambios.append(f"current_focus → '{valor}'")
+                    if valor:  # D3
+                        state["current_focus"] = valor
+                        cambios.append(f"current_focus → '{valor}'")
                     break
 
         if last_completed_step is None:
@@ -541,9 +232,10 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    fecha = datetime.now().strftime("%d/%m/%Y")
-                    state["last_completed"] = f"{valor} — {fecha}"
-                    cambios.append(f"last_completed → '{valor}'")
+                    if valor:  # D3
+                        fecha = datetime.now().strftime("%d/%m/%Y")
+                        state["last_completed"] = f"{valor} — {fecha}"
+                        cambios.append(f"last_completed → '{valor}'")
                     break
 
         if next_step is None:
@@ -554,8 +246,9 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    state["next_step"] = valor
-                    cambios.append(f"next_step → '{valor}'")
+                    if valor:  # D3
+                        state["next_step"] = valor
+                        cambios.append(f"next_step → '{valor}'")
                     break
 
     if not cambios:
@@ -575,15 +268,7 @@ def tool_update_work_state(
 # ─────────────────────────────────────────────
 
 def suggest_next_step() -> str:
-    """Lee work_state.json y tasks.json y devuelve una sugerencia del siguiente paso.
-
-    Se llama desde chat_core.py después de tool_update_work_state.
-
-    Returns:
-        str con el bloque de sugerencia formateado (multi-línea).
-
-    Never raises: si los archivos no existen, devuelve sugerencia vacía.
-    """
+    """Lee work_state.json y tasks.json y devuelve una sugerencia del siguiente paso."""
     import json
 
     ws_path = Path("storage/work_state.json")
