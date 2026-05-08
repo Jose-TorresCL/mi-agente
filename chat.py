@@ -22,9 +22,11 @@ from pathlib import Path
 
 from rich.markdown import Markdown
 
+# CHROMA_DIR → config.py  (movido en refactor C0)
+# MEMORY_FILE → memory_store.py  (movido en refactor C2)
+from app.config import CHROMA_DIR
+from app.memory_store import MEMORY_FILE
 from app.chat_core import (
-    CHROMA_DIR,
-    MEMORY_FILE,
     ensure_storage,
     load_vector_store,
     build_memory,
@@ -63,7 +65,7 @@ def mostrar_contexto_inicial():
 
     foco   = ws.get("current_focus", "sin foco definido")
     next_s = ws.get("next_step", "sin siguiente paso")
-    last_s = ws.get("last_completed_step", "—")
+    last_s = ws.get("last_completed", "—")
 
     console.print("\n[bold yellow]📌 Retomando donde lo dejaste:[/bold yellow]")
     console.print(f"   [cyan]Foco:[/cyan]      {foco}")
@@ -147,7 +149,7 @@ def cmd_estado():
     console.print("\n[bold]── Estado actual ────────────────────────────[/bold]")
     console.print(f"  [cyan]Foco:[/cyan]           {ws.get('current_focus', '—')}")
     console.print(f"  [cyan]Siguiente paso:[/cyan] {ws.get('next_step', '—')}")
-    console.print(f"  [cyan]Último paso:[/cyan]    {ws.get('last_completed_step', '—')}")
+    console.print(f"  [cyan]Último paso:[/cyan]    {ws.get('last_completed', '—')}")
     blockers = ws.get("current_blockers", [])
     if blockers:
         console.print(f"  [red]Bloqueos:[/red]       {', '.join(blockers)}")
