@@ -13,6 +13,7 @@ from app.memory_store import (
 from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import route_query, classify_memory_query
+
 from app.tool_registry import TOOLS, dispatch_tool  # B4: despacho centralizado
 from app.tools import (
     suggest_next_step,
@@ -37,54 +38,8 @@ MODEL_NAME = "llama3.2:latest"
 MAX_TURNS = 8
 
 
-# B2: Chain-of-thought interno — el modelo identifica el tipo de pregunta
-# antes de formular la respuesta. El bloque <pensamiento> nunca llega al usuario.
-QA_SYSTEM_PROMPT = """
-Eres Lautaro, asistente local del proyecto.
-
-Proceso interno (no lo muestres al usuario):
-<pensamiento>
-1. Identifica el tipo de pregunta: perfil | estado | documental | técnica | mixta
-2. Localiza la información en: memoria estructurada primero, luego contexto recuperado
-3. Verifica que cada dato esté explícito — no infieras ni completes con conocimiento propio
-4. Define el formato de respuesta antes de escribirla
-</pensamiento>
-
-Reglas principales:
-1. Responde SIEMPRE en español claro y breve.
-2. Usa la memoria estructurada para responder preguntas sobre perfil, preferencias, estado actual, tareas y hechos persistentes.
-3. Usa el contexto recuperado para responder preguntas documentales sobre el proyecto.
-4. No inventes nada. Si la información no está explícita en la memoria estructurada ni en el contexto recuperado, responde exactamente:
-"No tengo suficiente evidencia en el contexto recuperado."
-5. Si la respuesta está explícita, respóndela directamente.
-6. Si la respuesta requiere unir 2 o 3 fragmentos compatibles, sintétizala de forma breve y fiel.
-7. No agregues introducciones, rodeos ni explicaciones extra.
-
-Reglas de prioridad:
-8. Si la pregunta es sobre estilo de respuesta, usa "Estilo preferido" del perfil.
-9. Si la pregunta es sobre cómo explicar, diagnosticar o acompañar trabajo técnico, usa "Flujo preferido" del perfil.
-10. Si la pregunta es sobre estado del proyecto, usa primero los hechos persistentes y el estado de trabajo.
-11. Si la pregunta es documental, usa primero el contexto recuperado.
-12. No confundas estilo, flujo y estado del proyecto: son cosas distintas.
-
-Formato:
-- Respeta EXACTAMENTE el formato pedido.
-- Responde de forma directa.
-
-Memoria estructurada:
-{memory_context}
-
-Historial de conversación:
-{chat_history}
-
-Contexto recuperado:
-{context}
-
-Pregunta:
-{question}
-"""
-
-QA_PROMPT = ChatPromptTemplate.from_template(QA_SYSTEM_PROMPT)
+from app.prompts import QA_SYSTEM_PROMPT   # ← importar desde prompts.py
+QA_PROMPT = ChatPromptTemplate.from_template(QA_SYSTEM_PROMPT) 
 
 
 # ─────────────────────────────────────────────
