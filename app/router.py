@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.config import MODEL_NAME, OLLAMA_URL   # ← C4: sin hardcoding
 from app.tools import extract_file_path
 from app.logger import get_logger
 
@@ -38,10 +39,10 @@ log = get_logger(__name__)
 # ─────────────────────────────────────────────
 
 SESSION_STATS: dict[str, int] = {
-    "kw":    0,   # Capa 1: keywords
-    "emb":   0,   # Capa 2: embeddings
-    "llm":   0,   # Capa 3: LLM fallback
-    "total": 0,   # total de consultas en la sesión
+    "kw":    0,
+    "emb":   0,
+    "llm":   0,
+    "total": 0,
 }
 
 
@@ -51,16 +52,9 @@ SESSION_STATS: dict[str, int] = {
 
 INTENT_DIR      = Path("storage/intent_index")
 EMBED_MODEL     = "nomic-embed-text"
-OLLAMA_URL      = "http://localhost:11434"
-
-# Umbral de similitud coseno [0.0 — 1.0].
-# Chroma devuelve distancia: 0 = idéntico, 2 = opuesto.
-# Convertimos a similitud: sim = 1 - (dist / 2).
-# Por debajo de este umbral la Capa 2 renuncia y pasa a la Capa 3.
 EMBED_THRESHOLD = 0.70
-
-# Cuántos vecinos buscar. Con 1 es suficiente — queremos el más cercano.
 EMBED_TOP_K     = 1
+
 
 # ─────────────────────────────────────────────
 # Singleton para intent_db (Capa 2)
@@ -89,7 +83,7 @@ def _get_intent_db():
 
 
 # ─────────────────────────────────────────────
-# Palabras de salida — interceptadas antes de cualquier capa
+# Palabras de salida
 # ─────────────────────────────────────────────
 
 _EXIT_WORDS = {
@@ -105,7 +99,7 @@ _EXIT_WORDS = {
 
 
 # ─────────────────────────────────────────────
-# Carriles de escritura — NUNCA deben recibir preguntas
+# Carriles de escritura
 # ─────────────────────────────────────────────
 
 _WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "tool_update_work_state"}
@@ -175,10 +169,6 @@ TOOL_CREATE_TASK_KEYWORDS = [
     "nueva tarea", "añade una tarea", "anota una tarea", "registra una tarea",
 ]
 
-# Regla tiempo verbal:
-#   "complete la tarea" (imperativo, sin tilde) → tool_complete_task
-#   "completé la tarea" (pasado, con tilde)    → tool_update_work_state (via keyword "completé")
-# _COMPLETE_TASK_PATTERN cubre el caso con ID explícito: "completa T-3"
 TOOL_COMPLETE_TASK_KEYWORDS = [
     "marca como completada", "marca como completado",
     "marcar como completada", "marcar como completado",
@@ -193,22 +183,14 @@ _COMPLETE_TASK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Regla tiempo verbal:
-#   "completé" (pasado, con tilde)  → tool_update_work_state  ✓
-#   "termine" / "acabe" (sin tilde)  → tool_update_work_state  ✓
-#   "complete" suelta REMOVIDA — era demasiado genérica y capturaba imperativos
-#   como "complete la tarea del logger" que deben ir a tool_complete_task.
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
     "completé", "terminé", "acabé", "ya hice", "listo:",
-    # variantes sin tilde — solo pasado, no imperativo
     "termine", "acabe",
     "el siguiente paso es", "sigue:", "próximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
-# RAG_HINTS: sin "documentación/documentacion" — demasiado genéricos.
-# Bloqueaban "leer documentación" → tool_read_file.
 RAG_HINTS = [
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
@@ -292,39 +274,21 @@ def _is_question(text: str) -> bool:
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: clasificación instantánea por keywords.
-
-    Orden de prioridad:
-      1. Tools de escritura (save, create, complete, update)
-         IMPORTANTE: complete_task se evalúa ANTES que update_work_state
-         para que "complete la tarea" (imperativo) no sea capturado por
-         "completé" en update_work_state.
-      2. RAG_HINTS — antes de extract_file_path
-      3. extract_file_path — leer archivo literal
-      4. TOOL_LIST/READ keywords
-      5. memory
-    """
+    """Capa 1: clasificación instantánea por keywords."""
     q = question.lower().strip()
 
     if q in {"!estatus", "!status"}:
         return "!estado"
 
-    # 1. Tools de escritura
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
-
-    # 2. RAG hints — ANTES de extract_file_path
     if any(k in q for k in RAG_HINTS):                        return "rag"
-
-    # 3. Leer archivo literal
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
-
-    # 4. Memoria estructurada
     if classify_memory_query(question) is not None:           return "memory"
 
     return None
@@ -333,30 +297,22 @@ def _route_by_keywords(question: str) -> str | None:
 def _route_by_embeddings(question: str) -> str | None:
     if not INTENT_DIR.exists():
         return None
-
     try:
         vectordb = _get_intent_db()
         results = vectordb.similarity_search_with_score(query=question, k=EMBED_TOP_K)
-
         if not results:
             return None
-
         doc, distance = results[0]
         similarity = 1.0 - (distance / 2.0)
         lane = doc.metadata.get("lane", "")
-
         log.debug("[router:emb] similitud=%.2f lane_candidato=%s", similarity, lane)
-
         if _is_question(question) and lane in _WRITE_LANES:
             log.debug("[router:emb] pregunta detectada — bloqueando '%s' → pasa a LLM", lane)
             return None
-
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
-
         log.debug("[router:emb] similitud baja (%.2f < %.2f) → pasa a LLM", similarity, EMBED_THRESHOLD)
         return None
-
     except Exception as e:
         log.warning("[router:emb] error: %s → pasa a LLM", e)
         return None
@@ -367,9 +323,9 @@ def _route_by_llm(question: str) -> str:
         import requests
         prompt = _CLASSIFICATION_PROMPT.format(question=question)
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            f"{OLLAMA_URL}/api/generate",
             json={
-                "model": "llama3.2:latest",
+                "model": MODEL_NAME,
                 "prompt": prompt,
                 "stream": False,
                 "options": {"temperature": 0, "num_predict": 10, "stop": ["\n", " ", "."]},
@@ -378,13 +334,10 @@ def _route_by_llm(question: str) -> str:
         )
         raw = response.json().get("response", "").strip().lower()
         lane = raw.strip("\"' \n\t")
-
         if lane in VALID_LANES:
             return lane
-
         log.warning("[router:llm] respuesta inesperada: '%s' → rag", raw)
         return "rag"
-
     except Exception as e:
         log.error("[router:llm] error: %s → rag", e)
         return "rag"
