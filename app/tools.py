@@ -12,7 +12,7 @@ Funciones públicas (sin cambio de interfaz):
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
   list_project_files, extract_file_path, read_project_file,
-  extract_task_id, parse_work_state_update
+  extract_task_id, parse_work_state_update, VALID_PRIORITIES
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from app.memory_store import (
     load_tasks,
 )
 
-# Re-exportar helpers para mantener compatibilidad con imports existentes
+# Re-exportar helpers — mantiene compatibilidad con todos los imports existentes
 from app.tool_helpers import (  # noqa: F401
     list_project_files,
     extract_file_path,
@@ -37,16 +37,8 @@ from app.tool_helpers import (  # noqa: F401
     parse_work_state_update,
     _parse_key_value,
     VALID_PRIORITIES,
+    _VALUE_PREFIXES,
 )
-
-VALID_PRIORITIES = {"low", "medium", "high"}
-
-_VALUE_PREFIXES = [
-    "el foco a", "foco a", "la fase a", "fase a",
-    "siguiente paso a", "el siguiente paso a",
-    "último paso a", "el último paso a",
-    "bloqueante a", "bloqueo a", "work_state a",
-]
 
 
 # ─────────────────────────────────────────────
@@ -57,7 +49,6 @@ def tool_save_fact(content: str) -> str:
     """Guarda un hecho en project_facts.json.
 
     D3: rechaza contenido vacío antes de llamar a save_project_fact.
-    _parse_key_value ya rechaza valores vacíos en el formato key=value.
 
     Args:
         content: Texto del hecho a guardar (ya limpio, sin prefijos de navegación).
@@ -69,18 +60,15 @@ def tool_save_fact(content: str) -> str:
     """
     content = content.strip()
 
-    # D3: bloquear contenido vacío
     if not content:
         return "No pude guardar el hecho: el contenido está vacío."
 
     kv = _parse_key_value(content)
     if kv:
         key, value = kv
-        # D3: key y value ya vienen limpios de _parse_key_value
         save_project_fact(key, value)
         return f"✓ Hecho guardado: {key} = \"{value}\""
 
-    # Hecho libre sin formato key=value
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_project_fact(key, content)
     return f"✓ Hecho guardado: \"{content}\""
@@ -170,7 +158,7 @@ def tool_update_work_state(
 
     D3: todos los valores vacíos o solo-espacios se ignoran.
 
-    Modo A — texto libre:   tool_update_work_state("actualiza el foco a fase 4")
+    Modo A — texto libre:     tool_update_work_state("actualiza el foco a fase 4")
     Modo B — kwargs directos: tool_update_work_state(next_step="escribir tests")
 
     Returns:
@@ -192,19 +180,19 @@ def tool_update_work_state(
     # ── Modo B: kwargs directos ──────────────────────────────
     if current_focus is not None:
         val = current_focus.strip()
-        if val:  # D3: ignorar vacíos
+        if val:
             state["current_focus"] = val
             cambios.append(f"current_focus → '{val}'")
 
     if next_step is not None:
         val = next_step.strip()
-        if val:  # D3: ignorar vacíos
+        if val:
             state["next_step"] = val
             cambios.append(f"next_step → '{val}'")
 
     if last_completed_step is not None:
         val = last_completed_step.strip()
-        if val:  # D3: ignorar vacíos
+        if val:
             fecha = datetime.now().strftime("%d/%m/%Y")
             state["last_completed"] = f"{val} — {fecha}"
             cambios.append(f"last_completed → '{val}'")
@@ -219,7 +207,7 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    if valor:  # D3
+                    if valor:
                         state["current_focus"] = valor
                         cambios.append(f"current_focus → '{valor}'")
                     break
@@ -232,7 +220,7 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    if valor:  # D3
+                    if valor:
                         fecha = datetime.now().strftime("%d/%m/%Y")
                         state["last_completed"] = f"{valor} — {fecha}"
                         cambios.append(f"last_completed → '{valor}'")
@@ -246,7 +234,7 @@ def tool_update_work_state(
                 m = re.search(pat, texto_lower)
                 if m:
                     valor = m.group(1).strip().rstrip(".,")
-                    if valor:  # D3
+                    if valor:
                         state["next_step"] = valor
                         cambios.append(f"next_step → '{valor}'")
                     break

@@ -1,16 +1,16 @@
 """Utilidades de parseo y filesystem para tools.py
 
 Este módulo contiene funciones que NO modifican estado:
-  - _is_allowed()          validación de rutas
-  - _should_skip()         filtro para rglob
-  - list_project_files()   listar archivos del proyecto
-  - extract_file_path()    extraer ruta de texto libre
-  - read_project_file()    leer archivo del proyecto
-  - extract_task_id()      extraer ID de tarea de texto
-  - _parse_key_value()     detectar formato 'clave = valor'
+  - _is_allowed()             validación de rutas
+  - _should_skip()            filtro para rglob
+  - list_project_files()      listar archivos del proyecto
+  - extract_file_path()       extraer ruta de texto libre
+  - read_project_file()       leer archivo del proyecto
+  - extract_task_id()         extraer ID de tarea de texto
+  - _parse_key_value()        detectar formato 'clave = valor'
   - parse_work_state_update() extraer (field, value) de frase libre
 
-Importar desde tools.py para no romper imports existentes.
+Importar desde tools.py para mantener compatibilidad con imports existentes.
 """
 from __future__ import annotations
 
@@ -37,6 +37,9 @@ SKIP_SUFFIXES = {".pyc", ".bak", ".log"}
 ROOT_ALLOWED_SUFFIXES = {
     ".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
 }
+
+# Constantes de validación
+VALID_PRIORITIES = {"low", "medium", "high"}
 
 ALLOWED_WORK_STATE_FIELDS = {
     "current_focus",
@@ -227,7 +230,6 @@ def _parse_key_value(content: str) -> tuple[str, str] | None:
     raw_key = match.group(1).strip()
     value   = match.group(2).strip()
 
-    # D3: rechazar valores vacíos
     if not value:
         return None
 
