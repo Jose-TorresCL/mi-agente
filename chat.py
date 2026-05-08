@@ -22,12 +22,9 @@ from pathlib import Path
 
 from rich.markdown import Markdown
 
-# CHROMA_DIR → config.py  (movido en refactor C0)
-# MEMORY_FILE → memory_store.py  (movido en refactor C2)
 from app.config import CHROMA_DIR
 from app.memory_store import MEMORY_FILE
 from app.chat_core import (
-    ensure_storage,
     load_vector_store,
     build_memory,
     handle_query,
@@ -37,8 +34,22 @@ from app.logger import get_logger
 
 log = get_logger(__name__)
 
-DIAS_ALERTA_TAREA = 3  # avisa si una tarea lleva más de estos días sin moverse
+DIAS_ALERTA_TAREA = 3
 
+
+# ─────────────────────────────────────────────
+# Infraestructura mínima
+# ─────────────────────────────────────────────
+
+def ensure_storage() -> None:
+    """Crea las carpetas de storage/ si no existen."""
+    for folder in ("storage", "storage/logs", "storage/cache"):
+        Path(folder).mkdir(parents=True, exist_ok=True)
+
+
+# ─────────────────────────────────────────────
+# Helpers de tiempo
+# ─────────────────────────────────────────────
 
 def _dias_desde(fecha_str: str) -> int | None:
     """Devuelve cuántos días han pasado desde fecha_str (ISO 8601). None si no parsea."""
@@ -50,10 +61,12 @@ def _dias_desde(fecha_str: str) -> int | None:
     return None
 
 
+# ─────────────────────────────────────────────
+# UI de arranque y cierre
+# ─────────────────────────────────────────────
+
 def mostrar_contexto_inicial():
-    """Muestra automáticamente el estado del proyecto al arrancar.
-    Incluye aviso si hay tareas que llevan más de DIAS_ALERTA_TAREA días sin cerrar.
-    """
+    """Muestra automáticamente el estado del proyecto al arrancar."""
     from app.memory_store import load_work_state, load_tasks
 
     ws = load_work_state()
@@ -80,7 +93,7 @@ def mostrar_contexto_inicial():
     else:
         console.print("   [dim]Sin tareas pendientes.[/dim]")
 
-    # ── Alerta de tareas viejas ─────────────────────────────────
+    # ── Alerta de tareas viejas ────────────────────────────────
     viejas = []
     for t in pending:
         fecha = t.get("created_at") or t.get("updated_at") or t.get("date")
@@ -100,7 +113,7 @@ def mostrar_contexto_inicial():
 
 
 def resumen_sesion_al_salir(chat_history):
-    """Muestra un resumen de la sesión y lo guarda en workstate al salir."""
+    """Muestra un resumen de la sesión al salir."""
     from app.memory_store import load_work_state, load_tasks, save_work_state
 
     ws = load_work_state()
@@ -173,7 +186,6 @@ def cmd_estado():
         console.print(f"    [green]Capa 1 keywords :[/green]   {SESSION_STATS['kw']:>3} consultas  ({kw_pct}%)  0ms")
         console.print(f"    [blue]Capa 2 embeddings:[/blue]  {SESSION_STATS['emb']:>3} consultas  ({emb_pct}%)  ~50ms")
         console.print(f"    [red]Capa 3 LLM       :[/red]   {SESSION_STATS['llm']:>3} consultas  ({llm_pct}%)  ~3-8s")
-
         if llm_pct >= 30:
             console.print(
                 "\n  [bold red]⚠ El LLM se usa mucho (≥30%).[/bold red] "
@@ -185,6 +197,10 @@ def cmd_estado():
 
     console.print("[bold]──────────────────────────────────────[/bold]\n")
 
+
+# ─────────────────────────────────────────────
+# Punto de entrada
+# ─────────────────────────────────────────────
 
 def main():
     ensure_storage()
