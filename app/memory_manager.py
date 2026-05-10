@@ -32,9 +32,9 @@ Interfaces públicas:
     get_last_episode()      → dict del último episodio | None
 
   Escritura con reglas:
-    save_fact(key, value)           → bool (False si key/value vacíos)
+    save_fact(key, value)           → bool (False si key/value vacíos o valor duplicado)
     update_state(field, value)      → None
-    create_task(title, priority)    → str con ID generado
+    create_task(title, priority)    → str con ID generado (o ID existente si título duplicado)
     complete_task(task_id)          → None
     record_episode(summary, turns)  → None
 """
@@ -183,20 +183,45 @@ def get_last_episode() -> dict | None:
 def save_fact(key: str, value: str) -> bool:
     """Guarda un hecho en project_facts.
 
-    Regla: key y value deben ser no-vacíos.
+    Reglas:
+    1. key y value deben ser no-vacíos.
+    2. Guardia anti-duplicado semántico: si ya existe algún hecho con
+       exactamente el mismo valor (ignorando la key), no escribe y retorna False.
+       Esto previene triplicados como hecho_20260510_XXXXXX con el mismo dato.
+    3. Si la key ya existe con un valor distinto, actualiza (comportamiento previo).
 
     Args:
         key:   Nombre del hecho (ej: 'modelo_base').
         value: Valor del hecho (ej: 'llama3.2').
 
     Returns:
-        True si se guardó correctamente, False si key o value están vacíos.
+        True si se guardó correctamente.
+        False si key o value están vacíos, o si el valor ya existe en otro hecho.
 
     Never raises.
     """
     if not key.strip() or not value.strip():
         log.warning("save_fact rechazado: key=%r value=%r", key, value)
         return False
+
+    # Guardia anti-duplicado semántico
+    existing_facts = load_project_facts()
+    value_normalized = value.strip().lower()
+    for existing_key, existing_value in existing_facts.items():
+        if existing_value.strip().lower() == value_normalized:
+            if existing_key == key.strip():
+                # Misma key, mismo valor → idempotente, no hace nada
+                log.debug(
+                    "save_fact omitido (ya existe igual): %s = %s", key, value
+                )
+            else:
+                # Distinta key, mismo valor → sería un duplicado semántico
+                log.info(
+                    "save_fact omitido (valor duplicado en '%s'): %s = %s",
+                    existing_key, key, value,
+                )
+            return False
+
     save_project_fact(key.strip(), value.strip())
     log.debug("Hecho guardado: %s = %s", key, value)
     return True
@@ -224,7 +249,12 @@ def update_state(field: str, value: str) -> None:
 def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     """Crea una tarea nueva y devuelve su ID.
 
-    Regla: title debe ser no-vacío. priority inválido → 'medium'.
+    Reglas:
+    1. title debe ser no-vacío. priority inválido → 'medium'.
+    2. Guardia anti-duplicado: si ya existe una tarea pendiente con el
+       mismo título (comparación case-insensitive, sin espacios extras),
+       retorna el ID de la tarea existente sin crear una nueva.
+       Esto previene duplicados de tareas de prueba y de uso normal.
 
     Args:
         title:    Título de la tarea.
@@ -232,7 +262,7 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
         notes:    Notas adicionales. Default ''.
 
     Returns:
-        str con el ID generado (ej: 'T-0510123456').
+        str con el ID generado (ej: 'T-0510123456') o el ID existente si duplicado.
 
     Never raises.
     """
@@ -247,6 +277,20 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     valid_priorities = {"low", "medium", "high"}
     if priority not in valid_priorities:
         priority = "medium"
+
+    # Guardia anti-duplicado por título
+    existing_tasks = load_tasks()
+    title_normalized = title.lower()
+    for task in existing_tasks.get("tasks", []):
+        if (
+            task.get("title", "").strip().lower() == title_normalized
+            and task.get("status") not in ("done", "completed")
+        ):
+            log.info(
+                "create_task omitido (ya existe pendiente '%s'): %s",
+                task["id"], title,
+            )
+            return task["id"]
 
     task_id = add_task(title=title, priority=priority, notes=notes)
     log.debug("Tarea creada: %s — %s", task_id, title)

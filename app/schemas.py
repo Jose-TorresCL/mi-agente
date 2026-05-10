@@ -57,12 +57,14 @@ class WorkState(WorkStateRequired, total=False):
     session_goal: str
     notes: list[str]
     last_updated: str
+    last_session: str           # legacy — generado por versiones anteriores del código
 
 
 _WORK_STATE_KNOWN_KEYS = {
     "current_focus", "next_step", "last_completed",
     "current_phase", "last_completed_step",
     "current_blockers", "session_goal", "notes", "last_updated",
+    "last_session",  # legacy — presente en work_state.json de sesiones anteriores
 }
 
 
