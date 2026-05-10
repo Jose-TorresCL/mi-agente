@@ -71,6 +71,18 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
         "objetivo actual", "objetivo de esta etapa",
         "estado del proyecto",
     ],
+    # ── Tipos nuevos — docs indexados el 10/05/2026 ──────────────────
+    "adr": [
+        "adr", "decisión arquitectural", "decision arquitectural",
+        "por qué se eligió", "por que se eligio",
+        "alternativa descartada", "registro de decisión",
+        "registro de decision", "ADR-001", "ADR-002", "ADR-003",
+    ],
+    "general": [
+        "roadmap", "prioridad", "prioridades", "siguiente fase",
+        "qué falta", "que falta", "qué queda", "que queda",
+        "plan del proyecto", "próxima sesión", "proxima sesion",
+    ],
 }
 
 
