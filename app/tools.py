@@ -13,6 +13,11 @@ Funciones públicas (sin cambio de interfaz):
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
   list_project_files, extract_file_path, read_project_file,
   extract_task_id, parse_work_state_update, VALID_PRIORITIES
+
+Nota de arquitectura:
+  Todas las operaciones de memoria pasan por memory_manager,
+  no por memory_store directamente. memory_manager es el
+  guardián de la capa de memoria.
 """
 from __future__ import annotations
 
@@ -20,12 +25,11 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-from app.memory_store import (
-    save_project_fact,
-    add_task,
-    update_task_status,
-    update_work_state,
-    load_tasks,
+from app.memory_manager import (
+    save_fact as _mm_save_fact,
+    create_task as _mm_create_task,
+    complete_task as _mm_complete_task,
+    get_tasks as _mm_get_tasks,
 )
 
 # Re-exportar helpers — mantiene compatibilidad con todos los imports existentes
@@ -48,7 +52,7 @@ from app.tool_helpers import (  # noqa: F401
 def tool_save_fact(content: str) -> str:
     """Guarda un hecho en project_facts.json.
 
-    D3: rechaza contenido vacío antes de llamar a save_project_fact.
+    D3: rechaza contenido vacío antes de llamar a memory_manager.save_fact.
 
     Args:
         content: Texto del hecho a guardar (ya limpio, sin prefijos de navegación).
@@ -66,12 +70,16 @@ def tool_save_fact(content: str) -> str:
     kv = _parse_key_value(content)
     if kv:
         key, value = kv
-        save_project_fact(key, value)
-        return f"✓ Hecho guardado: {key} = \"{value}\""
+        ok = _mm_save_fact(key, value)
+        if ok:
+            return f"✓ Hecho guardado: {key} = \"{value}\""
+        return "No pude guardar el hecho: clave o valor vacíos."
 
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    save_project_fact(key, content)
-    return f"✓ Hecho guardado: \"{content}\""
+    ok = _mm_save_fact(key, content)
+    if ok:
+        return f"✓ Hecho guardado: \"{content}\""
+    return "No pude guardar el hecho: contenido vacío."
 
 
 # ─────────────────────────────────────────────
@@ -97,10 +105,10 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
 
     if not title:
         return "No pude crear la tarea: falta el título."
-    if priority not in VALID_PRIORITIES:
-        priority = "medium"
 
-    task_id = add_task(title=title, priority=priority, notes=notes)
+    task_id = _mm_create_task(title=title, priority=priority, notes=notes)
+    if not task_id:
+        return "No pude crear la tarea: título vacío."
     return f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})"
 
 
@@ -122,7 +130,7 @@ def tool_complete_task(task_id: str) -> str:
     if not task_id:
         return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
 
-    tasks_data = load_tasks()
+    tasks_data = _mm_get_tasks()
     tasks = tasks_data.get("tasks", [])
 
     found = False
@@ -130,8 +138,6 @@ def tool_complete_task(task_id: str) -> str:
         if task.get("id", "").upper() == task_id.upper():
             if task.get("status") == "completed":
                 return f"ℹ️  La tarea {task_id} ya estaba marcada como completada."
-            task["status"] = "completed"
-            task["completed_at"] = datetime.now().isoformat(timespec="seconds")
             found = True
             break
 
@@ -139,7 +145,7 @@ def tool_complete_task(task_id: str) -> str:
         available = [t.get("id") for t in tasks]
         return f"❌ No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
 
-    update_task_status(task_id, "completed")
+    _mm_complete_task(task_id)
     return f"✅ Tarea {task_id} marcada como completada."
 
 
@@ -266,7 +272,7 @@ def suggest_next_step() -> str:
     current_focus = state.get("current_focus", "")
     last_done     = state.get("last_completed", "")
 
-    tasks_data = load_tasks()
+    tasks_data = _mm_get_tasks()
     pending = [
         t for t in tasks_data.get("tasks", [])
         if t.get("status") not in ("done", "completed")

@@ -3,7 +3,7 @@
 Responsabilidad única: coordinar el flujo de una consulta.
 No contiene lógica de infraestructura — delega en módulos especializados:
   - app.config          → constantes globales
-  - app.memory_context  → construir contexto de memoria para el LLM
+  - app.memory_manager  → acceso unificado a la capa de memoria
   - app.rag_engine      → recuperación RAG y chain LangChain
   - app.router          → clasificación de intención
   - app.tool_registry   → despacho de tools
@@ -18,14 +18,14 @@ from typing import Any
 
 from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
-from app.memory_store import (
-    load_profile,
-    load_project_facts,
-    load_tasks,
-    load_work_state,
-    save_episode,
+from app.memory_manager import (
+    get_full_context,
+    get_profile,
+    get_project_facts,
+    get_tasks,
+    get_work_state,
+    record_episode,
 )
-from app.memory_context import build_memory_context
 from app.rag_engine import retrieve_context, build_chain, load_vector_store
 from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
@@ -98,16 +98,16 @@ def answer_from_memory(question: str) -> str | None:
     kind = classify_memory_query(question)
     log.debug("Carril memory clasificado como: %s", kind)
     if kind == "profile":
-        p = load_profile()
+        p = get_profile()
         return _format_profile_answer(p) if p else "No encontré información de perfil."
     if kind == "project_facts":
-        f = load_project_facts()
+        f = get_project_facts()
         return _format_project_facts_answer(f) if f else "No encontré hechos del proyecto."
     if kind == "tasks":
-        t = load_tasks()
+        t = get_tasks()
         return _format_tasks_answer(t) if t else "No encontré tareas registradas."
     if kind == "work_state":
-        w = load_work_state()
+        w = get_work_state()
         return _format_work_state_answer(w) if w else "No encontré estado de trabajo."
     return None
 
@@ -147,7 +147,7 @@ def _persist_turn(user_input: str, answer: str) -> None:
     if MEMORY_FILE.exists():
         try:
             data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data.get("messages"), list):
+            if not isinstance(data.get("messages"), list:
                 data = {"messages": []}
         except Exception:
             data = {"messages": []}
@@ -210,7 +210,7 @@ def _handle_exit(chat_history: list) -> tuple[str, list]:
     if turns > 0:
         log.info("Guardando resumen episódico (%d turnos)", turns)
         summary = generate_session_summary(chat_history)
-        save_episode(summary=summary, turns=turns)
+        record_episode(summary=summary, turns=turns)
         log.info("Episodio guardado correctamente")
     return "__EXIT__", []
 
@@ -231,8 +231,8 @@ def _handle_rag(
             chat_history.pop(0)
         return cached, []
 
-    # 2. Recuperar contexto RAG
-    memory_context = build_memory_context()
+    # 2. Recuperar contexto RAG — via memory_manager
+    memory_context = get_full_context()
     context_text, source_docs = retrieve_context(user_input, vectordb)
     chat_history_text = _format_chat_history(chat_history)
 
