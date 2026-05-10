@@ -147,7 +147,7 @@ def _persist_turn(user_input: str, answer: str) -> None:
     if MEMORY_FILE.exists():
         try:
             data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data.get("messages"), list:
+            if not isinstance(data.get("messages"), list):
                 data = {"messages": []}
         except Exception:
             data = {"messages": []}
