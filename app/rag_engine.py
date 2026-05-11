@@ -76,7 +76,7 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
         "adr", "decisión arquitectural", "decision arquitectural",
         "por qué se eligió", "por que se eligio",
         "alternativa descartada", "registro de decisión",
-        "registro de decision", "ADR-001", "ADR-002", "ADR-003",
+        "registro de decision", "ADR-001", "ADR-002", "ADR-003", "ADR-004",
     ],
     "general": [
         "roadmap", "prioridad", "prioridades", "siguiente fase",
@@ -96,15 +96,29 @@ def _infer_doc_types(question: str) -> list[str]:
 
 
 def build_retriever(vectordb: Chroma, question: str):
-    """Construye el retriever con filtro opcional por tipo de documento."""
+    """Construye el retriever con MMR y filtro opcional por tipo de documento.
+
+    MMR (Maximal Marginal Relevance) balancea relevancia y diversidad:
+    - fetch_k=20: candidatos iniciales que Chroma evalúa
+    - lambda_mult=0.6: 0=diversidad pura, 1=similitud pura. 0.6 prioriza
+      levemente la relevancia manteniendo diversidad entre las fuentes.
+    - k=5: chunks finales devueltos (sin cambio)
+
+    Si lambda_mult=0.6 empeora fidelity_check en preguntas muy específicas,
+    ajustar a lambda_mult=0.7 (más relevancia, menos diversidad).
+    """
     doc_types = _infer_doc_types(question)
-    search_kwargs: dict = {"k": 5}
+    search_kwargs: dict = {
+        "k": 5,
+        "fetch_k": 20,
+        "lambda_mult": 0.6,
+    }
     if len(doc_types) == 1:
         search_kwargs["filter"] = {"doc_type": doc_types[0]}
     elif len(doc_types) > 1:
         search_kwargs["filter"] = {"$or": [{"doc_type": dt} for dt in doc_types]}
     return vectordb.as_retriever(
-        search_type="similarity",
+        search_type="mmr",
         search_kwargs=search_kwargs,
     )
 

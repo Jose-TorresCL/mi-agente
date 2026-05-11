@@ -9,13 +9,18 @@ Cómo funciona:
   1. Se calcula el embedding de la respuesta del LLM.
   2. Se calcula el embedding de cada chunk recuperado.
   3. Se toma la similitud coseno máxima entre la respuesta y cualquier chunk.
-  4. Si esa similitud supera FIDELITY_THRESHOLD -> la respuesta es fiel.
+  4. Si esa similitud supera el umbral dinámico -> la respuesta es fiel.
   5. Si no -> la respuesta es sospechosa y se reemplaza por el mensaje estándar.
 
-Por qué embeddings y no otro LLM:
-  - No necesita una llamada extra al LLM (más rápido, ~200ms extra).
-  - nomic-embed-text ya está corriendo para la caché semántica.
-  - Es determinista: el mismo par (respuesta, chunk) siempre da el mismo score.
+Umbral dinámico (fix ADR-004):
+  Preguntas cortas (<=4 tokens): 0.40  — "¿qué es MMR?" tiene pocas palabras
+                                          pero la respuesta puede ser correcta aunque
+                                          tenga baja similitud léxica con el chunk.
+  Preguntas normales (5-12 tokens): 0.55 — umbral base conservador.
+  Preguntas largas (>12 tokens): 0.60  — más contexto = esperar más fidelidad.
+
+  Esto elimina los 3 WARNs por preguntas de 1-4 palabras ("MMR", "RAG", "ADR-001")
+  sin relajar el umbral para preguntas detalladas.
 
 Limitaciones conocidas:
   - Respuestas muy cortas ("Sí", "No") tendrán similitud baja aunque sean correctas.
@@ -23,7 +28,7 @@ Limitaciones conocidas:
     se considera fiel automáticamente (evitar falsos negativos).
   - Si Ollama está caído, la función retorna (True, 1.0) para no bloquear.
 
-Umbral recomendado:
+Umbral base recomendado:
   0.55 — conservador, solo bloquea respuestas claramente desconectadas del contexto.
   Bajar a 0.45 para ser más permisivo. No subir de 0.65 (demasiados falsos negativos).
 
@@ -36,6 +41,10 @@ Cambios (B3):
     Campos: timestamp, question (120 chars), score, threshold.
     Never raises — fallo de escritura no bloquea la respuesta.
 
+Cambios (ADR-004):
+  - Umbral dinámico según longitud de la pregunta (_dynamic_threshold)
+  - FIDELITY_THRESHOLD pasa a ser el umbral BASE para preguntas de 5-12 tokens
+
 Contrato de retorno (nivel 1):
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones — cualquier fallo interno retorna (True, 1.0).
@@ -47,7 +56,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-FIDELITY_THRESHOLD  = 0.55   # similitud mínima respuesta↔chunk
+FIDELITY_THRESHOLD  = 0.55   # umbral BASE — preguntas de 5-12 tokens
 SHORT_ANSWER_WORDS  = 7      # fix 5b: era 20 — solo bypass para respuestas de 1-2 palabras
 NO_EVIDENCE_MSG     = "No tengo suficiente evidencia en el contexto recuperado."
 
@@ -73,12 +82,39 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def log_fidelity_failure(question: str, score: float) -> None:
+def _dynamic_threshold(question: str) -> float:
+    """Calcula el umbral de fidelidad según la longitud de la pregunta.
+
+    Lógica:
+      Preguntas muy cortas (<=4 tokens) como "¿qué es MMR?" o "define RAG"
+      generan respuestas con baja similitud léxica a los chunks aunque sean
+      correctas, porque el LLM elabora una explicación que va más allá del
+      texto literal del documento. Bajamos el umbral para no bloquearlas.
+
+      Preguntas largas (>12 tokens) aportan más contexto: la respuesta fiel
+      debería parecerse más al chunk. Subimos levemente el umbral.
+
+    Args:
+        question: Texto de la pregunta del usuario.
+
+    Returns:
+        float: umbral a usar para esta pregunta específica.
+    """
+    token_count = len(question.split())
+    if token_count <= 4:
+        return 0.40   # pregunta muy corta — umbral permisivo
+    if token_count > 12:
+        return 0.60   # pregunta larga — umbral más estricto
+    return FIDELITY_THRESHOLD  # 0.55 — rango normal
+
+
+def log_fidelity_failure(question: str, score: float, threshold: float) -> None:
     """Registra un bloqueo de fidelidad en storage/logs/fidelity_failures.jsonl.
 
     Args:
-        question: Texto de la consulta del usuario (se trunca a 120 chars).
-        score:    Similitud máxima encontrada (float en [0.0, 1.0]).
+        question:  Texto de la consulta del usuario (se trunca a 120 chars).
+        score:     Similitud máxima encontrada (float en [0.0, 1.0]).
+        threshold: Umbral dinámico que se aplicó en esta consulta.
 
     Never raises: cualquier fallo de escritura se descarta silenciosamente.
     """
@@ -88,7 +124,7 @@ def log_fidelity_failure(question: str, score: float) -> None:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "question":  question[:120],
             "score":     round(score, 4),
-            "threshold": FIDELITY_THRESHOLD,
+            "threshold": threshold,
         }
         with FAILURES_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -96,12 +132,14 @@ def log_fidelity_failure(question: str, score: float) -> None:
         pass  # Never raises — el log es opcional, no bloquea al usuario
 
 
-def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
+def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple[bool, float]:
     """Verifica si la respuesta está soportada por los chunks recuperados.
 
     Args:
         answer:      Texto generado por el LLM.
         source_docs: Lista de Document devuelta por el retriever.
+        question:    Texto de la pregunta (opcional, para umbral dinámico).
+                     Si se omite, se usa FIDELITY_THRESHOLD fijo.
 
     Returns:
         tuple[bool, float]:
@@ -111,10 +149,12 @@ def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
 
     Never raises: cualquier fallo interno retorna (True, 1.0) para no bloquear.
     """
+    threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
+
     # Caso 1: sin chunks — fix 5c: bloqueamos, no hay evidencia posible
     if not source_docs:
         print("[fidelity:block] sin chunks recuperados — bloqueando respuesta")
-        log_fidelity_failure(answer, 0.0)
+        log_fidelity_failure(answer, 0.0, threshold)
         return False, 0.0
 
     # Caso 2: respuesta muy corta — bypass solo para "Sí", "No", etc.
@@ -149,10 +189,10 @@ def verify_fidelity(answer: str, source_docs: list) -> tuple[bool, float]:
         if sim > max_sim:
             max_sim = sim
 
-    if max_sim >= FIDELITY_THRESHOLD:
-        print(f"[fidelity:ok]  max_similitud={max_sim:.3f} (umbral={FIDELITY_THRESHOLD})")
+    if max_sim >= threshold:
+        print(f"[fidelity:ok]  max_similitud={max_sim:.3f} (umbral={threshold})")
         return True, max_sim
 
-    print(f"[fidelity:low] max_similitud={max_sim:.3f} < umbral={FIDELITY_THRESHOLD} — bloqueando respuesta")
-    log_fidelity_failure(answer, max_sim)  # B3: registrar el fallo
+    print(f"[fidelity:low] max_similitud={max_sim:.3f} < umbral={threshold} — bloqueando respuesta")
+    log_fidelity_failure(answer, max_sim, threshold)  # B3 + ADR-004: registrar umbral usado
     return False, max_sim
