@@ -334,18 +334,32 @@ def save_tasks(data: TasksFile) -> None:
 def add_task(title: str, priority: str = "medium", notes: str = "") -> str:
     """Agrega una nueva tarea y devuelve su ID.
 
+    Guardia de duplicados: si ya existe una tarea pendiente con el mismo
+    título (comparación case-insensitive), devuelve el ID existente sin
+    crear un duplicado.
+
     Args:
         title:    Título de la tarea.
         priority: 'low' | 'medium' | 'high'. Default 'medium'.
         notes:    Notas adicionales. Default ''.
 
     Returns:
-        str con el ID generado (formato T-MMDDHHMISS).
+        str con el ID de la tarea (nuevo o existente).
 
     Never raises.
     """
     data = load_tasks()
     tasks = data.get("tasks", [])
+
+    # Guardia: evitar duplicados por título en tareas pendientes (case-insensitive)
+    title_normalized = title.strip().lower()
+    for existing in tasks:
+        if (
+            existing.get("title", "").strip().lower() == title_normalized
+            and existing.get("status") == "pending"
+        ):
+            return existing["id"]  # ya existe, devolver ID sin duplicar
+
     new_id = f"T-{datetime.now().strftime('%m%d%H%M%S')}"
     tasks.append(
         {
