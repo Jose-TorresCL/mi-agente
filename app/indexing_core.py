@@ -42,25 +42,27 @@ def reset_vectorstore():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Inferencia de tipo de documento
-# Cubre los 18 docs actuales en data/docs/ y es fácil de extender.
+# Cubre los docs actuales en data/docs/ y es fácil de extender.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def infer_doctype(path: Path) -> str:
     """Asigna doc_type a partir de la ruta/nombre del archivo.
 
     Jerarquía de detección (de más específico a más general):
-      adr       → carpeta adr/ o nombre "adr-"
-      paper     → nombre empieza con "paper-"
-      estado    → nombre contiene "estado"
-      roadmap   → nombre contiene "roadmap"
+      adr          → carpeta adr/ o nombre "adr-"
+      paper        → nombre empieza con "paper-"
+      estado       → nombre contiene "estado"
+      roadmap      → nombre contiene "roadmap"
+      vision       → nombre contiene "vision" (vision-agente.md y similares)
+      hardware     → nombre contiene "hardware" (hardware-modelos.md y similares)
       arquitectura → nombre contiene "arquitectura" o "decisiones"
-      memoria   → nombre contiene "memoria"
-      langchain → nombre contiene "langchain"
-      chroma    → nombre contiene "chroma"
-      ollama    → nombre contiene "ollama"
-      proyecto  → carpeta proyecto/
-      referencia → carpeta referencia/ (fallback para refs técnicas)
-      general   → todo lo demás
+      memoria      → nombre contiene "memoria"
+      langchain    → nombre contiene "langchain"
+      chroma       → nombre contiene "chroma"
+      ollama       → nombre contiene "ollama"
+      proyecto     → carpeta proyecto/
+      referencia   → carpeta referencia/ (fallback para refs técnicas)
+      general      → todo lo demás
     """
     name = path.name.lower()
     parts = [p.lower() for p in path.parts]
@@ -73,6 +75,10 @@ def infer_doctype(path: Path) -> str:
         return "estado"
     if "roadmap" in name:
         return "roadmap"
+    if "vision" in name:
+        return "vision"
+    if "hardware" in name:
+        return "hardware"
     if "arquitectura" in name or "decisiones" in name:
         return "arquitectura"
     if "memoria" in name:
@@ -98,6 +104,8 @@ def _build_title(path: Path) -> str:
       paper-memgpt-resumen.md  →  Paper: MemGPT Resumen
       ADR-001-router-hibrido.md → ADR-001: Router Híbrido
       langchain-retriever.md   → LangChain: Retriever
+      vision-agente.md         → Visión: Agente
+      hardware-modelos.md      → Hardware: Modelos
     """
     stem = path.stem  # sin extensión
     doc_type = infer_doctype(path)
@@ -120,6 +128,12 @@ def _build_title(path: Path) -> str:
     if doc_type == "ollama":
         label = stem.replace("ollama-", "").replace("-", " ").title()
         return f"Ollama — {label}"
+    if doc_type == "vision":
+        label = stem.replace("vision-", "").replace("-", " ").title()
+        return f"Visión — {label}"
+    if doc_type == "hardware":
+        label = stem.replace("hardware-", "").replace("-", " ").title()
+        return f"Hardware — {label}"
 
     # fallback: nombre limpio
     return stem.replace("-", " ").replace("_", " ").title()
