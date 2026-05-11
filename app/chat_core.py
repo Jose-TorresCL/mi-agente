@@ -20,6 +20,7 @@ from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
 from app.memory_manager import (
     get_full_context,
+    get_selective_context,
     get_profile,
     get_project_facts,
     get_tasks,
@@ -112,7 +113,7 @@ def answer_from_memory(question: str) -> str | None:
     return None
 
 
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────────��
 # Historial de conversación
 # ─────────────────────────────────────────────
 
@@ -219,6 +220,7 @@ def _handle_rag(
     user_input: str,
     vectordb: Any,
     chat_history: list,
+    route: str = "rag",
 ) -> tuple[str, list]:
     # 1. Caché semántica
     cached = cache_lookup(user_input)
@@ -231,8 +233,11 @@ def _handle_rag(
             chat_history.pop(0)
         return cached, []
 
-    # 2. Recuperar contexto RAG — via memory_manager
-    memory_context = get_full_context()
+    # 2. Contexto de memoria — selectivo según carril (ADR-004)
+    #    rag    → solo perfil mínimo (ahorra ~200 tokens en preguntas técnicas)
+    #    estado → workstate + tareas (sin hechos del proyecto)
+    #    resto  → contexto completo como antes
+    memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
     chat_history_text = _format_chat_history(chat_history)
 
@@ -244,8 +249,10 @@ def _handle_rag(
         "chat_history": chat_history_text,
     })
 
-    # 4. Fidelity check
-    is_faithful, score = verify_fidelity(answer, source_docs)
+    # 4. Fidelity check — con umbral dinámico (ADR-004)
+    #    Pasar question activa _dynamic_threshold en fidelity_check.py:
+    #    preguntas cortas (≤4 tokens) usan umbral 0.40 en vez de 0.55 fijo
+    is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
         log.warning(
             "Respuesta bloqueada por fidelidad (score=%.3f): %s",
@@ -287,4 +294,5 @@ def handle_query(
         answer = answer_from_memory(user_input)
         if answer is not None: return answer, []
 
-    return _handle_rag(user_input, vectordb, chat_history)
+    # Pasar route a _handle_rag para que elija el contexto correcto
+    return _handle_rag(user_input, vectordb, chat_history, route=route)
