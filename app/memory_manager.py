@@ -19,10 +19,11 @@ memory_manager.py es la capa de servicio.
 Interfaces públicas:
 
   Lectura de contexto:
-    get_full_context()      → perfil + facts + work_state + tareas + episodio
-    get_working_context()   → solo work_state + tareas pendientes
-    get_semantic_context()  → solo project_facts + perfil
-    get_episodic_context()  → solo episodio anterior
+    get_full_context()            → perfil + facts + work_state + tareas + episodio
+    get_selective_context(route)  → subconjunto según carril del router (ADR-004)
+    get_working_context()         → solo work_state + tareas pendientes
+    get_semantic_context()        → solo project_facts + perfil
+    get_episodic_context()        → solo episodio anterior
 
   Lectura directa:
     get_profile()           → dict del perfil
@@ -71,6 +72,61 @@ def get_full_context() -> str:
     return build_memory_context()
 
 
+def get_selective_context(route: str) -> str:
+    """Contexto de memoria ajustado al carril del router (ADR-004).
+
+    Objetivo: reducir tokens innecesarios en el prompt según el tipo
+    de pregunta, sin perder información relevante.
+
+    Mapeo de carriles:
+      "rag"     → perfil mínimo (nombre, nivel, proyecto) — ~3 líneas.
+                  El LLM necesita saber quién es el usuario, no su historial
+                  de trabajo, cuando busca en documentos técnicos.
+      "estado"  → get_working_context() — workstate + tareas pendientes.
+                  Solo lo operacional: qué se está haciendo y qué sigue.
+      "memoria" → get_semantic_context() + get_episodic_context().
+                  Facts del proyecto + última sesión. Sin workstate.
+      cualquier → get_full_context() como fallback seguro.
+
+    Args:
+        route: Carril devuelto por route_query(). Ej: 'rag', 'estado',
+               'memoria', 'save_fact', 'add_task', etc.
+
+    Returns:
+        String listo para inyectar en el system prompt.
+    Never raises.
+    """
+    if route == "rag":
+        # Solo perfil mínimo — el contexto RAG ya aporta los chunks relevantes
+        profile = load_profile()
+        if not profile:
+            return ""
+        lines = []
+        name = profile.get("user_name", "")
+        level = profile.get("user_level", "")
+        project = profile.get("project_type", "")
+        if name:
+            lines.append(f"Usuario: {name}")
+        if level:
+            lines.append(f"Nivel: {level}")
+        if project:
+            lines.append(f"Proyecto: {project}")
+        return "\n".join(lines)
+
+    if route == "estado":
+        # Estado operacional: qué se hace y qué sigue
+        return get_working_context()
+
+    if route == "memoria":
+        # Conocimiento estable + resumen de sesión anterior
+        parts = [get_semantic_context(), get_episodic_context()]
+        return "\n".join(p for p in parts if p)
+
+    # Fallback: contexto completo para cualquier otro carril
+    # (herramientas, general, memory, etc.)
+    return get_full_context()
+
+
 def get_working_context() -> str:
     """Contexto operacional: work_state + tareas pendientes.
 
@@ -92,7 +148,7 @@ def get_working_context() -> str:
         if siguiente:
             lines.append(f"Siguiente paso: {siguiente}")
         if ultimo:
-            lines.append(f"Último completado: {ultimo}")
+            lines.append(f"\u00daltimo completado: {ultimo}")
         blockers = ws.get("current_blockers", [])
         if blockers:
             lines.append(f"Bloqueos: {', '.join(blockers)}")
@@ -210,12 +266,10 @@ def save_fact(key: str, value: str) -> bool:
     for existing_key, existing_value in existing_facts.items():
         if existing_value.strip().lower() == value_normalized:
             if existing_key == key.strip():
-                # Misma key, mismo valor → idempotente, no hace nada
                 log.debug(
                     "save_fact omitido (ya existe igual): %s = %s", key, value
                 )
             else:
-                # Distinta key, mismo valor → sería un duplicado semántico
                 log.info(
                     "save_fact omitido (valor duplicado en '%s'): %s = %s",
                     existing_key, key, value,
@@ -229,9 +283,6 @@ def save_fact(key: str, value: str) -> bool:
 
 def update_state(field: str, value: str) -> None:
     """Actualiza un campo de work_state.
-
-    Punto único para actualizar estado — invalida caché automáticamente
-    a través de memory_store.update_work_state.
 
     Args:
         field: Campo a actualizar (ej: 'current_focus', 'next_step').
@@ -254,7 +305,6 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     2. Guardia anti-duplicado: si ya existe una tarea pendiente con el
        mismo título (comparación case-insensitive, sin espacios extras),
        retorna el ID de la tarea existente sin crear una nueva.
-       Esto previene duplicados de tareas de prueba y de uso normal.
 
     Args:
         title:    Título de la tarea.
@@ -278,7 +328,6 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     if priority not in valid_priorities:
         priority = "medium"
 
-    # Guardia anti-duplicado por título
     existing_tasks = load_tasks()
     title_normalized = title.lower()
     for task in existing_tasks.get("tasks", []):
