@@ -3,11 +3,13 @@
 # Ejecutar: python -m pytest tests/test_memoria_capas.py -v
 #
 # Historial de cambios:
-#   - Rutas de memoria: storage/memory/ -> storage/  (donde viven realmente los JSONs)
-#   - Claves de schema actualizadas al modelo real del proyecto
-#   - storage/rag -> storage/chroma
-#   - build_structured_memory_context -> eliminado (no existe en memory_store)
-#   - clasificar -> eliminado (router usa route_query, no clasificar)
+#   v1: rutas a storage/memory/ (obsoleto)
+#   v2: rutas a storage/, schema antiguo (projectfacts como lista)
+#   v3 (actual):
+#     - memory.json es {"messages": [{"role", "content"}]} — NO lista plana
+#     - workstate -> work_state.json
+#     - memory_store no expone load_json (es _read_json privado) -> test via _read_json
+#     - router usa route_query (confirmado)
 
 import json
 import pytest
@@ -18,10 +20,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
-MEMORY_DIR  = STORAGE_DIR          # los JSONs viven en storage/, no en storage/memory/
 
 # ---------------------------------------------------------------------------
-# CAPA 1 — Hechos estructurados (profile.json, project_facts.json, workstate.json)
+# CAPA 1 — Hechos estructurados
 # ---------------------------------------------------------------------------
 
 class TestCapaHechosEstructurados:
@@ -29,13 +30,13 @@ class TestCapaHechosEstructurados:
 
     def test_profile_existe(self):
         """profile.json debe existir en storage/."""
-        archivo = MEMORY_DIR / "profile.json"
+        archivo = STORAGE_DIR / "profile.json"
         if not archivo.exists():
             pytest.skip("profile.json no existe — ejecuta el agente una vez para generarlo")
 
     def test_profile_es_json_valido(self):
         """profile.json debe ser JSON válido con las claves actuales del schema."""
-        archivo = MEMORY_DIR / "profile.json"
+        archivo = STORAGE_DIR / "profile.json"
         if not archivo.exists():
             pytest.skip("profile.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
@@ -45,43 +46,43 @@ class TestCapaHechosEstructurados:
 
     def test_projectfacts_existe(self):
         """project_facts.json debe existir en storage/."""
-        archivo = MEMORY_DIR / "project_facts.json"
+        archivo = STORAGE_DIR / "project_facts.json"
         if not archivo.exists():
             pytest.skip("project_facts.json no existe — ejecuta el agente una vez para generarlo")
 
     def test_projectfacts_es_dict(self):
         """project_facts.json debe ser un dict (no una lista)."""
-        archivo = MEMORY_DIR / "project_facts.json"
+        archivo = STORAGE_DIR / "project_facts.json"
         if not archivo.exists():
             pytest.skip("project_facts.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
         assert isinstance(data, dict), "project_facts.json debe ser un dict JSON"
 
     def test_workstate_existe(self):
-        """workstate.json debe existir en storage/."""
-        archivo = MEMORY_DIR / "workstate.json"
+        """work_state.json debe existir en storage/."""
+        archivo = STORAGE_DIR / "work_state.json"
         if not archivo.exists():
-            pytest.skip("workstate.json no existe — ejecuta el agente una vez para generarlo")
+            pytest.skip("work_state.json no existe — ejecuta el agente una vez para generarlo")
 
     def test_workstate_tiene_claves_minimas(self):
-        """workstate.json debe tener las claves del schema actual."""
-        archivo = MEMORY_DIR / "workstate.json"
+        """work_state.json debe tener las claves del schema actual."""
+        archivo = STORAGE_DIR / "work_state.json"
         if not archivo.exists():
-            pytest.skip("workstate.json no existe")
+            pytest.skip("work_state.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
         assert isinstance(data, dict)
         for clave in ["current_focus", "next_step", "last_completed"]:
-            assert clave in data, f"Falta clave '{clave}' en workstate.json. Claves: {list(data.keys())}"
+            assert clave in data, f"Falta clave '{clave}' en work_state.json. Claves: {list(data.keys())}"
 
     def test_tasks_existe(self):
         """tasks.json debe existir en storage/."""
-        archivo = MEMORY_DIR / "tasks.json"
+        archivo = STORAGE_DIR / "tasks.json"
         if not archivo.exists():
             pytest.skip("tasks.json no existe — ejecuta el agente una vez para generarlo")
 
     def test_tasks_es_dict_con_lista(self):
         """tasks.json debe ser un dict con clave 'tasks' que contiene una lista."""
-        archivo = MEMORY_DIR / "tasks.json"
+        archivo = STORAGE_DIR / "tasks.json"
         if not archivo.exists():
             pytest.skip("tasks.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
@@ -91,7 +92,7 @@ class TestCapaHechosEstructurados:
 
     def test_tasks_items_tienen_schema(self):
         """Cada tarea en tasks.json debe tener id, title y status."""
-        archivo = MEMORY_DIR / "tasks.json"
+        archivo = STORAGE_DIR / "tasks.json"
         if not archivo.exists():
             pytest.skip("tasks.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
@@ -105,50 +106,67 @@ class TestCapaHechosEstructurados:
 # ---------------------------------------------------------------------------
 
 class TestCapaHistorialConversacion:
-    """Verifica que el historial de conversación tiene el formato correcto."""
+    """Verifica que memory.json tiene el formato {messages: [{role, content}]}."""
 
     def test_memory_json_existe(self):
         """storage/memory.json debe existir."""
-        archivo = MEMORY_DIR / "memory.json"
+        archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
             pytest.skip("memory.json no existe — ejecuta el agente una vez para generarlo")
 
-    def test_memory_json_es_lista(self):
-        """memory.json debe ser una lista de mensajes."""
-        archivo = MEMORY_DIR / "memory.json"
+    def test_memory_json_es_dict_con_messages(self):
+        """
+        memory.json debe ser un dict con clave 'messages'.
+        Formato actual: {"messages": [{"role": "human"|"ai", "content": "..."}]}
+        (distinto al formato LangChain antiguo de lista plana)
+        """
+        archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
             pytest.skip("memory.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
-        assert isinstance(data, list), "memory.json debe ser una lista JSON"
+        assert isinstance(data, dict), (
+            f"memory.json debe ser un dict {{\"messages\": [...]}}, "
+            f"pero es {type(data).__name__}. ¿Archivo en formato antiguo?"
+        )
+        assert "messages" in data, (
+            f"memory.json debe tener clave 'messages'. Claves: {list(data.keys())}"
+        )
+        assert isinstance(data["messages"], list), "memory.json['messages'] debe ser una lista"
 
-    def test_memory_mensajes_tienen_type_y_data(self):
+    def test_memory_mensajes_tienen_role_y_content(self):
         """
-        Cada mensaje debe tener 'type' (human/ai) y 'data.content'.
-        Detecta el bug histórico donde memory.json tenía formato incorrecto.
+        Cada mensaje debe tener 'role' (human/ai) y 'content'.
+        Formato actual del proyecto (definido en memory_store.py:append_message).
         """
-        archivo = MEMORY_DIR / "memory.json"
+        archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
             pytest.skip("memory.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
-        if not data:
+        messages = data.get("messages", [])
+        if not messages:
             pytest.skip("memory.json está vacío")
-        for i, msg in enumerate(data):
-            assert "type" in msg, f"Mensaje[{i}] falta 'type'"
-            assert msg["type"] in ("human", "ai"), f"Mensaje[{i}] type debe ser 'human' o 'ai'"
-            assert "data" in msg, f"Mensaje[{i}] falta 'data'"
-            assert "content" in msg["data"], f"Mensaje[{i}] falta 'data.content'"
+        for i, msg in enumerate(messages):
+            assert isinstance(msg, dict), f"Mensaje[{i}] debe ser dict"
+            assert "role" in msg, f"Mensaje[{i}] falta 'role'"
+            assert msg["role"] in ("human", "ai"), (
+                f"Mensaje[{i}] role debe ser 'human' o 'ai', obtuvo '{msg['role']}'"
+            )
+            assert "content" in msg, f"Mensaje[{i}] falta 'content'"
 
     def test_memory_no_supera_limite(self):
         """El historial no debe tener más de 200 mensajes."""
-        archivo = MEMORY_DIR / "memory.json"
+        archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
             pytest.skip("memory.json no existe")
         data = json.loads(archivo.read_text(encoding="utf-8"))
-        assert len(data) <= 200, f"memory.json tiene {len(data)} mensajes. ¿Se acumula sin límite?"
+        messages = data.get("messages", [])
+        assert len(messages) <= 200, (
+            f"memory.json tiene {len(messages)} mensajes. ¿Se acumula sin límite?"
+        )
 
 
 # ---------------------------------------------------------------------------
-# CAPA 3 — Vectorstore Chroma (existencia y accesibilidad)
+# CAPA 3 — Vectorstore Chroma
 # ---------------------------------------------------------------------------
 
 class TestCapaVectorstore:
@@ -158,12 +176,11 @@ class TestCapaVectorstore:
         """El directorio storage/chroma debe existir."""
         chroma_dir = STORAGE_DIR / "chroma"
         assert chroma_dir.exists(), (
-            f"No encontrado: {chroma_dir}. "
-            "¿Se ejecutó indexacion.py?"
+            f"No encontrado: {chroma_dir}. ¿Se ejecutó indexacion.py?"
         )
 
     def test_chroma_tiene_archivos(self):
-        """El directorio storage/chroma debe tener archivos (no estar vacío)."""
+        """El directorio storage/chroma debe tener archivos."""
         chroma_dir = STORAGE_DIR / "chroma"
         if not chroma_dir.exists():
             pytest.skip("storage/chroma no existe")
@@ -219,11 +236,11 @@ class TestCapaVectorstore:
 
 
 # ---------------------------------------------------------------------------
-# CAPA 4 — MemoryStore (importación y API pública)
+# CAPA 4 — MemoryStore
 # ---------------------------------------------------------------------------
 
 class TestCapaMemoryStore:
-    """Verifica que memory_store.py se puede importar y expone su API pública."""
+    """Verifica que memory_store.py se puede importar y su API interna funciona."""
 
     def test_memorystore_importable(self):
         """app/memory_store.py debe poder importarse sin error."""
@@ -232,21 +249,30 @@ class TestCapaMemoryStore:
         except ImportError as e:
             pytest.fail(f"No se pudo importar app.memory_store: {e}")
 
-    def test_memory_dir_accesible(self, tmp_path, monkeypatch):
+    def test_read_json_privado_no_lanza_con_archivo_ausente(self):
         """
-        memory_store puede operar con un directorio alternativo sin lanzar excepción.
-        Verifica degradación elegante ante JSONs ausentes.
+        _read_json (helper interno de memory_store) debe devolver el default
+        sin lanzar excepción cuando el archivo no existe.
+        Esto garantiza degradación elegante en toda la capa de persistencia.
         """
         import app.memory_store as ms
+        from pathlib import Path
+        import tempfile, os
 
-        # Redirigir MEMORY_DIR a un directorio temporal vacío
-        monkeypatch.setattr(ms, "MEMORY_DIR", tmp_path, raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_inexistente = Path(tmp) / "no_existe.json"
+            resultado = ms._read_json(ruta_inexistente, default={"ok": True})
+            assert resultado == {"ok": True}, (
+                f"_read_json con archivo ausente debe devolver el default, obtuvo: {resultado}"
+            )
 
-        # Verificar que las funciones de lectura no explotan con directorio vacío
-        try:
-            ms.load_json(tmp_path / "inexistente.json", default={})
-        except Exception as e:
-            pytest.fail(f"load_json lanzó excepción con archivo ausente: {e}")
+    def test_load_memory_devuelve_estructura_valida(self):
+        """load_memory() debe devolver dict con clave 'messages'."""
+        from app.memory_store import load_memory
+        resultado = load_memory()
+        assert isinstance(resultado, dict), "load_memory debe devolver un dict"
+        assert "messages" in resultado, "load_memory debe tener clave 'messages'"
+        assert isinstance(resultado["messages"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +296,7 @@ class TestCapaRouter:
         assert resultado == "rag", f"Esperado 'rag', obtuvo '{resultado}'"
 
     def test_router_pregunta_estado_retorna_memoria(self):
-        """Preguntas sobre estado del proyecto deben clasificarse como 'memory'."""
+        """Preguntas sobre estado del proyecto deben clasificarse en carril memoria/estado."""
         from app.router import route_query
         resultado = route_query("¿en qué fase estamos?")
         assert resultado in ("memory", "estado", "general"), (
