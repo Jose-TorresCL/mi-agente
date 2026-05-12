@@ -91,10 +91,22 @@
   { "text": "qué tareas tengo pendientes",                         "lane": "memory" },
   { "text": "cuáles son mis tareas actuales",                      "lane": "memory" },
   { "text": "qué hay en mi lista de tareas",                       "lane": "memory" },
+  // ← fix #8: variaciones naturales de 'estado' (Capa 2)
+  { "text": "qué hago hoy",                                        "lane": "memory" },
+  { "text": "cuál es el plan para hoy",                            "lane": "memory" },
+  { "text": "qué hicimos ayer",                                    "lane": "memory" },
+  { "text": "en qué estamos ahora",                                "lane": "memory" },
+  { "text": "cuál es mi foco de trabajo",                          "lane": "memory" },
+  { "text": "qué estoy trabajando actualmente",                    "lane": "memory" },
+  { "text": "en qué estaba trabajando",                            "lane": "memory" },
+  { "text": "ponme al día de hoy",                                 "lane": "memory" },
+  // ← fix #9: variaciones de identidad (Capa 2)
+  { "text": "quién soy yo",                                        "lane": "memory" },
+  { "text": "cómo me llamo",                                       "lane": "memory" },
+  { "text": "cuál es mi nombre",                                   "lane": "memory" },
 
   // ── rag ──────────────────────────────────────────────────────────
   // Preguntas conceptuales, técnicas, sugerencias o documentales sobre el sistema.
-  // Fix 1: añadir frases de "qué más podría hacer" para que NO vayan a memory/tool_list_files
   { "text": "qué tools están operativas",                          "lane": "rag" },
   { "text": "cómo funciona el router híbrido",                     "lane": "rag" },
   { "text": "cuáles son los componentes del sistema",              "lane": "rag" },

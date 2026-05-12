@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.config import MODEL_NAME, OLLAMA_URL   # ← C4: sin hardcoding
+from app.config import MODEL_NAME, OLLAMA_URL
 from app.tools import extract_file_path
 from app.logger import get_logger
 
@@ -126,7 +126,7 @@ MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
     "cómo prefiero", "como prefiero", "cómo trabajo", "como trabajo",
     "perfil", "mi perfil",
-    # ← fix #9: frases de identidad que antes caían a RAG
+    # fix #9: frases de identidad
     "quién soy", "quien soy",
     "quién soy yo", "quien soy yo",
     "cómo me llamo", "como me llamo",
@@ -138,7 +138,7 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en qué vamos", "en que vamos", "qué sigue", "que sigue",
     "en qué estoy", "en que estoy", "qué estoy haciendo", "que estoy haciendo",
     "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
-    # ← fix #8: frases naturales de 'estado' que antes tardaban 25s (caían a LLM)
+    # fix #8: frases naturales de estado
     "qué hago hoy", "que hago hoy",
     "cuál es el plan", "cual es el plan",
     "qué hicimos", "que hicimos",
@@ -364,6 +364,48 @@ def _route_by_llm(question: str) -> str:
     except Exception as e:
         log.error("[router:llm] error: %s → rag", e)
         return "rag"
+
+
+# ─────────────────────────────────────────────
+# !estado — display del estado de sesión
+# ─────────────────────────────────────────────
+
+def format_estado() -> str:
+    """Genera el bloque de texto para el comando !estado / !estatus.
+
+    Incluye:
+      - Estadísticas del router (kw / emb / llm / total)
+      - Stats de la caché semántica (hits, misses, entradas, ttl_hours)
+    """
+    from app.semantic_cache import cache_stats
+
+    stats  = cache_stats()
+    total  = SESSION_STATS["total"] or 1  # evitar división por cero
+    kw_pct  = SESSION_STATS["kw"]  * 100 // total
+    emb_pct = SESSION_STATS["emb"] * 100 // total
+    llm_pct = SESSION_STATS["llm"] * 100 // total
+
+    ttl_line = ""
+    if "ttl_hours" in stats:
+        ttl_line = f"  TTL caché:       {stats['ttl_hours']}h\n"
+
+    return (
+        f"\n{'─' * 40}\n"
+        f" Estado de sesión\n"
+        f"{'─' * 40}\n"
+        f"  Consultas totales: {SESSION_STATS['total']}\n"
+        f"  → Capa 1 (kw):    {SESSION_STATS['kw']}  ({kw_pct}%)\n"
+        f"  → Capa 2 (emb):   {SESSION_STATS['emb']}  ({emb_pct}%)\n"
+        f"  → Capa 3 (llm):   {SESSION_STATS['llm']}  ({llm_pct}%)\n"
+        f"{'─' * 40}\n"
+        f" Caché semántica\n"
+        f"{'─' * 40}\n"
+        f"  Hits:             {stats.get('hits', 0)}\n"
+        f"  Misses:           {stats.get('misses', 0)}\n"
+        f"  Entradas:         {stats.get('entries', 0)}\n"
+        f"{ttl_line}"
+        f"{'─' * 40}\n"
+    )
 
 
 # ─────────────────────────────────────────────

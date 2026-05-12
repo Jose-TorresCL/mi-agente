@@ -7,6 +7,8 @@ Cubre:
   - Salida / despedida
   - Casos límite y frases de frontera
   - Casos reales que fallaron en sesión (documentados con comentario)
+  - fix #8: frases de estado natural → memory
+  - fix #9: frases de identidad → memory
 
 NO requiere Ollama ni Chroma: sólo se prueba _route_by_keywords() y classify_memory_query().
 Si el índice no existe, las capas 2 y 3 son ignoradas correctamente.
@@ -260,8 +262,6 @@ class TestClassifyMemoryQuery:
     def test_tareas_con_signal_sugestion_va_a_rag(self):
         """'qué tareas podríamos crear' tiene signal de sugerencia → debe ir a rag."""
         result = _route_by_keywords("qué tareas podríamos crear")
-        # Con signal de sugerencia, classify_memory_query devuelve None → kw devuelve None
-        # (la decisión final entre rag/llm queda en capas 2 y 3)
         assert result != "memory"
 
     def test_fase_actual(self):
@@ -295,14 +295,8 @@ class TestMemoryViaRouteQuery:
 
 class TestEdgeCases:
     def test_pregunta_no_va_a_save_fact(self):
-        """Una pregunta (con ¿) nunca debe ir a un carril de escritura."""
         lane = kw("¿anota que algo?")
-        # Si detecta keyword de escritura pero es pregunta, puede ir a otro carril
-        # o a None. Lo importante es que NO sea tool_save_fact.
-        # Nota: en Capa 1 el prefiltro de preguntas se aplica en Capa 2, no aquí.
-        # Este test documenta el comportamiento actual esperado.
-        # Si cambia el prefiltro a Capa 1, actualizar este test.
-        assert lane in ("tool_save_fact", None)  # documentar comportamiento real
+        assert lane in ("tool_save_fact", None)
 
     def test_frase_vacia_devuelve_none(self):
         assert kw("") is None
@@ -311,20 +305,54 @@ class TestEdgeCases:
         assert kw("   ") is None
 
     def test_mayusculas_no_rompen_keyword(self):
-        """Keywords deben funcionar en cualquier capitalización."""
         assert kw("NUEVA TAREA: revisar el logger") == "tool_create_task"
 
     def test_tilde_no_rompe_keyword(self):
         assert kw("Completé la tarea del router") == "tool_update_work_state"
 
     def test_route_query_nunca_devuelve_none(self):
-        """route_query siempre retorna un string, nunca None."""
         result = route_query("una frase completamente aleatoria xyz123")
         assert result is not None
         assert isinstance(result, str)
 
     def test_session_stats_incrementan(self):
-        """SESSION_STATS['total'] debe aumentar en cada llamada a route_query."""
         antes = SESSION_STATS["total"]
         route_query("qué tareas tengo")
         assert SESSION_STATS["total"] == antes + 1
+
+
+# ─────────────────────────────────────────────────────────────
+# 12. KEYWORDS NUEVAS — fix #8 (estado) y fix #9 (identidad)
+# ─────────────────────────────────────────────────────────────
+
+class TestKeywordsNuevas:
+    """Verifica que las frases agregadas en fix #8 y fix #9
+    resuelven en Capa 1 (keywords) sin necesitar embeddings ni LLM.
+    Ejecutar: python -m pytest tests/test_router.py::TestKeywordsNuevas -v
+    """
+
+    # fix #9 — identidad → memory (classify → profile)
+    def test_quien_soy_yo(self):
+        assert kw("quién soy yo") == "memory"
+
+    def test_quien_soy_sin_tilde(self):
+        assert kw("quien soy yo") == "memory"
+
+    def test_como_me_llamo(self):
+        assert kw("cómo me llamo") == "memory"
+
+    def test_mi_nombre(self):
+        assert kw("mi nombre") == "memory"
+
+    # fix #8 — estado natural → memory (classify → work_state)
+    def test_que_hago_hoy(self):
+        assert kw("qué hago hoy") == "memory"
+
+    def test_cual_es_el_plan(self):
+        assert kw("cuál es el plan") == "memory"
+
+    def test_que_hicimos(self):
+        assert kw("qué hicimos") == "memory"
+
+    def test_cual_es_mi_foco(self):
+        assert kw("cuál es mi foco") == "memory"
