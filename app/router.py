@@ -126,6 +126,11 @@ MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
     "cómo prefiero", "como prefiero", "cómo trabajo", "como trabajo",
     "perfil", "mi perfil",
+    # ← fix #9: frases de identidad que antes caían a RAG
+    "quién soy", "quien soy",
+    "quién soy yo", "quien soy yo",
+    "cómo me llamo", "como me llamo",
+    "mi nombre", "cuál es mi nombre", "cual es mi nombre",
 ]
 
 MEMORY_WORK_STATE_KEYWORDS = [
@@ -133,6 +138,15 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en qué vamos", "en que vamos", "qué sigue", "que sigue",
     "en qué estoy", "en que estoy", "qué estoy haciendo", "que estoy haciendo",
     "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
+    # ← fix #8: frases naturales de 'estado' que antes tardaban 25s (caían a LLM)
+    "qué hago hoy", "que hago hoy",
+    "cuál es el plan", "cual es el plan",
+    "qué hicimos", "que hicimos",
+    "en qué estamos", "en que estamos",
+    "cuál es mi foco", "cual es mi foco",
+    "qué estoy trabajando", "que estoy trabajando",
+    "qué estaba haciendo", "que estaba haciendo",
+    "a qué me dedico ahora", "a que me dedico ahora",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
@@ -232,6 +246,13 @@ IMPORTANTE — memory vs rag para tareas:
   "qué más podríamos implementar"                 → rag
   "según los documentos qué falta por hacer"      → rag
 
+IMPORTANTE — memory para identidad y estado:
+  "quién soy yo"                                 → memory
+  "cómo me llamo"                                → memory
+  "qué hago hoy"                                 → memory
+  "cuál es mi foco actual"                       → memory
+  "qué hicimos ayer"                             → memory
+
 Ejemplos:
 "apunta que tengo que revisar el router"   → tool_create_task
 "ya terminé con la tarea del router"       → tool_complete_task
@@ -239,6 +260,8 @@ Ejemplos:
 "ponme al día de lo que hice ayer"         → memory
 "qué tengo pendiente"                      → memory
 "en qué fase estamos"                      → memory
+"quién soy yo"                             → memory
+"qué hago hoy"                             → memory
 "qué tools están operativas"               → rag
 "cómo funciona Chroma"                     → rag
 "muéstrame los archivos del proyecto"      → tool_list_files
