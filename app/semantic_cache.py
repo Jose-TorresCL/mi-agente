@@ -1,4 +1,4 @@
-"""Caché semántica para el carril RAG — 10c
+"""Caché semántica para el carril RAG — con TTL de expiración
 
 Cómo funciona:
   1. Antes de llamar al LLM, se calcula el embedding de la pregunta nueva.
@@ -7,35 +7,40 @@ Cómo funciona:
      la respuesta guardada sin tocar Chroma ni el LLM.
   4. Si no hay hit, el flujo RAG normal sigue y al final guarda el par
      (embedding, respuesta) para futuras consultas.
+  5. Entradas con más de CACHE_TTL_HOURS horas se descartan automáticamente
+     al leer la caché — evita envenenar respuestas con información obsoleta.
 
 Configuración:
   SIMILARITY_THRESHOLD — qué tan parecidas deben ser dos preguntas para
     considerarlas iguales.
     0.82: equilibrio entre precisión y hit-rate para español con/sin tilde.
     0.86: más conservador (antiguo valor).
-    0.88: muy conservador — 'cómo funciona el router' y 'explica el router'
-          tienen ~0.91 → se cachean juntas solo si bajan a 0.88.
 
   MAX_CACHE_SIZE — número máximo de entradas. Al superar el límite se
     descartan las más antiguas (FIFO).
+
+  CACHE_TTL_HOURS — horas de vida de cada entrada. Por defecto 24h.
+    Pasado ese tiempo la entrada se descarta aunque sea semánticamente
+    similar — garantiza que cambios en los docs se reflejen al día siguiente.
 """
 from __future__ import annotations
 
 import json
 import math
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.logger import get_logger
 
 log = get_logger(__name__)
 
 
-CACHE_FILE          = Path("storage/semantic_cache.json")
+CACHE_FILE           = Path("storage/semantic_cache.json")
 SIMILARITY_THRESHOLD = 0.82
-MAX_CACHE_SIZE      = 200
-EMBED_MODEL         = "nomic-embed-text"
-OLLAMA_URL          = "http://localhost:11434"
+MAX_CACHE_SIZE       = 200
+CACHE_TTL_HOURS      = 24          # ← nuevo: entradas expiran tras 24 horas
+EMBED_MODEL          = "nomic-embed-text"
+OLLAMA_URL           = "http://localhost:11434"
 
 # Singleton de embeddings en memoria — no recrea el cliente en cada consulta
 _embed_client = None
@@ -56,16 +61,41 @@ def _get_embed_client():
     return _embed_client
 
 
+def _is_expired(entry: dict) -> bool:
+    """Devuelve True si la entrada supera CACHE_TTL_HOURS."""
+    saved_at = entry.get("saved_at")
+    if not saved_at:
+        return True  # entrada sin timestamp → descartar por seguridad
+    try:
+        age = datetime.now() - datetime.fromisoformat(saved_at)
+        return age > timedelta(hours=CACHE_TTL_HOURS)
+    except (ValueError, TypeError):
+        return True  # timestamp malformado → descartar
+
+
 def _load_cache() -> list[dict]:
-    """Lee la caché desde disco. Devuelve lista vacía si no existe o está dañada."""
+    """Lee la caché desde disco, descartando entradas expiradas.
+
+    Si eliminó alguna entrada, persiste el archivo limpio inmediatamente
+    para que el próximo arranque no reprocese entradas viejas.
+    """
     if not CACHE_FILE.exists():
         return []
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("entries", [])
+        all_entries = data.get("entries", [])
     except (json.JSONDecodeError, OSError):
         return []
+
+    valid = [e for e in all_entries if not _is_expired(e)]
+
+    expired_count = len(all_entries) - len(valid)
+    if expired_count:
+        log.info("[cache] %d entrada(s) expiradas descartadas (TTL=%dh)", expired_count, CACHE_TTL_HOURS)
+        _save_cache(valid)  # persistir versión limpia de inmediato
+
+    return valid
 
 
 def _save_cache(entries: list[dict]) -> None:
@@ -77,7 +107,7 @@ def _save_cache(entries: list[dict]) -> None:
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Similitud coseno entre dos vectores. Puro Python, sin numpy."""
-    dot   = sum(x * y for x, y in zip(a, b))
+    dot    = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
     if norm_a == 0 or norm_b == 0:
@@ -104,6 +134,7 @@ def cache_lookup(question: str) -> str | None:
 
     Devuelve la respuesta guardada si hay un hit semántico,
     o None si no hay ninguna entrada suficientemente similar.
+    Las entradas expiradas (> CACHE_TTL_HOURS) se ignoran automáticamente.
     """
     entries = _load_cache()
     if not entries:
@@ -113,7 +144,7 @@ def cache_lookup(question: str) -> str | None:
     if q_embedding is None:
         return None  # Ollama no disponible → flujo normal
 
-    best_sim   = 0.0
+    best_sim    = 0.0
     best_answer = None
 
     for entry in entries:
@@ -181,4 +212,5 @@ def cache_stats() -> dict:
         "entries":   len(entries),
         "max_size":  MAX_CACHE_SIZE,
         "threshold": SIMILARITY_THRESHOLD,
+        "ttl_hours": CACHE_TTL_HOURS,
     }
