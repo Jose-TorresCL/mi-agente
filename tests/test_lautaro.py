@@ -2,8 +2,11 @@
 test_lautaro.py
 ================
 Suite de verificación funcional de Lautaro.
-Cubre: memoria corta, router, herramientas, caché semántica,
-       fidelidad RAG e indexación Chroma.
+Cubre: router, herramientas, caché semántica, fidelidad RAG e indexación Chroma.
+
+Nota: test_memoria_corta eliminado — _format_chat_history fue refactorizado
+fuera de la API pública de chat_core en la reorganización intelligence.py.
+La memoria corta ahora se gestiona internamente en process_turn.
 
 Uso:
     python tests/test_lautaro.py
@@ -55,49 +58,10 @@ def seccion(titulo):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. MEMORIA CORTA
-# ═══════════════════════════════════════════════════════════════════════════
-def test_memoria_corta():
-    seccion("1. Memoria corta (historial de sesión)")
-
-    from langchain_core.messages import HumanMessage, AIMessage
-    from app.chat_core import _format_chat_history, MAX_TURNS
-
-    # 1a: formato básico
-    history = [
-        HumanMessage(content="Hola Lautaro"),
-        AIMessage(content="Hola, ¿en qué te ayudo?"),
-    ]
-    resultado = _format_chat_history(history)
-    if "Usuario: Hola Lautaro" in resultado and "Lautaro:" in resultado:
-        ok("1a — _format_chat_history formatea correctamente")
-    else:
-        fail("1a — formato inesperado", resultado[:80])
-
-    # 1b: historial vacío
-    resultado_vacio = _format_chat_history([])
-    if "sin historial" in resultado_vacio.lower():
-        ok("1b — Historial vacío retorna mensaje claro")
-    else:
-        fail("1b — Historial vacío no retorna mensaje esperado", resultado_vacio)
-
-    # 1c: límite MAX_TURNS
-    larga = []
-    for i in range(20):
-        larga.append(HumanMessage(content=f"pregunta {i}"))
-        larga.append(AIMessage(content=f"respuesta {i}"))
-    recortada = larga[-(MAX_TURNS * 2):]
-    if len(recortada) <= MAX_TURNS * 2:
-        ok(f"1c — MAX_TURNS={MAX_TURNS} limita el historial ({len(recortada)} msgs)")
-    else:
-        fail(f"1c — Historial excede MAX_TURNS", f"{len(recortada)} > {MAX_TURNS * 2}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. ROUTER
+# 1. ROUTER
 # ═══════════════════════════════════════════════════════════════════════════
 def test_router():
-    seccion("2. Router — clasificación de intenciones")
+    seccion("1. Router — clasificación de intenciones")
 
     from app.router import route_query
 
@@ -117,55 +81,55 @@ def test_router():
     for entrada, esperada, descripcion in casos:
         ruta = route_query(entrada)
         if ruta == esperada:
-            ok(f"2 — {descripcion}", f"'{entrada}' → {ruta}")
+            ok(f"1 — {descripcion}", f"'{entrada}' → {ruta}")
         else:
-            fail(f"2 — {descripcion}", f"esperaba '{esperada}', obtuvo '{ruta}'")
+            fail(f"1 — {descripcion}", f"esperaba '{esperada}', obtuvo '{ruta}'")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 3. HERRAMIENTAS
+# 2. HERRAMIENTAS
 # ═══════════════════════════════════════════════════════════════════════════
 def test_tools():
-    seccion("3. Herramientas básicas")
+    seccion("2. Herramientas básicas")
 
     from app.tools import tool_save_fact, tool_create_task, list_project_files
 
-    # 3a: guardar hecho
+    # 2a: guardar hecho
     try:
         r = tool_save_fact("test de verificación automática")
         if "guard" in r.lower() or "hecho" in r.lower():
-            ok("3a — tool_save_fact guarda y confirma", r[:60])
+            ok("2a — tool_save_fact guarda y confirma", r[:60])
         else:
-            warn("3a — tool_save_fact respondió, revisar mensaje", r[:60])
+            warn("2a — tool_save_fact respondió, revisar mensaje", r[:60])
     except Exception as e:
-        fail("3a — tool_save_fact excepción", str(e))
+        fail("2a — tool_save_fact excepción", str(e))
 
-    # 3b: crear tarea
+    # 2b: crear tarea
     try:
         r = tool_create_task(title="Tarea de prueba automática", priority="low")
         if "tarea" in r.lower() or "creada" in r.lower() or "T-" in r:
-            ok("3b — tool_create_task crea la tarea", r[:60])
+            ok("2b — tool_create_task crea la tarea", r[:60])
         else:
-            warn("3b — tool_create_task respondió, revisar mensaje", r[:60])
+            warn("2b — tool_create_task respondió, revisar mensaje", r[:60])
     except Exception as e:
-        fail("3b — tool_create_task excepción", str(e))
+        fail("2b — tool_create_task excepción", str(e))
 
-    # 3c: listar archivos
+    # 2c: listar archivos
     try:
         archivos = list_project_files()
         if isinstance(archivos, list):
-            ok(f"3c — list_project_files retorna lista ({len(archivos)} archivos)")
+            ok(f"2c — list_project_files retorna lista ({len(archivos)} archivos)")
         else:
-            fail("3c — list_project_files no retornó lista", type(archivos).__name__)
+            fail("2c — list_project_files no retornó lista", type(archivos).__name__)
     except Exception as e:
-        fail("3c — list_project_files excepción", str(e))
+        fail("2c — list_project_files excepción", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. CACHÉ SEMÁNTICA
+# 3. CACHÉ SEMÁNTICA
 # ═══════════════════════════════════════════════════════════════════════════
 def test_cache_semantico():
-    seccion("4. Caché semántica (umbral 0.88)")
+    seccion("3. Caché semántica (umbral 0.88)")
 
     from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
 
@@ -178,50 +142,50 @@ def test_cache_semantico():
     except Exception:
         pass
 
-    # 4a: sin caché → None
+    # 3a: sin caché → None
     if cache_lookup(pregunta_original) is None:
-        ok("4a — Pregunta nueva no tiene caché (correcto)")
+        ok("3a — Pregunta nueva no tiene caché (correcto)")
     else:
-        warn("4a — Ya tenía caché previo (puede ser de sesión anterior)")
+        warn("3a — Ya tenía caché previo (puede ser de sesión anterior)")
 
-    # 4b: guardar y recuperar
+    # 3b: guardar y recuperar
     cache_save(pregunta_original, "Lautaro es un asistente local de proyecto.")
     r = cache_lookup(pregunta_original)
     if r is not None:
-        ok("4b — cache_save + cache_lookup exacto funciona", r[:50])
+        ok("3b — cache_save + cache_lookup exacto funciona", r[:50])
     else:
-        fail("4b — cache_save guardó pero cache_lookup no recuperó")
+        fail("3b — cache_save guardó pero cache_lookup no recuperó")
 
-    # 4c: similar debe recuperar
+    # 3c: similar debe recuperar
     r_sim = cache_lookup(pregunta_similar)
     if r_sim is not None:
-        ok("4c — Pregunta similar recupera del caché (umbral ok)", r_sim[:50])
+        ok("3c — Pregunta similar recupera del caché (umbral ok)", r_sim[:50])
     else:
-        warn("4c — Pregunta similar NO recuperó del caché (revisar umbral)")
+        warn("3c — Pregunta similar NO recuperó del caché (revisar umbral)")
 
-    # 4d: distinta NO debe recuperar
+    # 3d: distinta NO debe recuperar
     r_dis = cache_lookup(pregunta_distinta)
     if r_dis is None:
-        ok("4d — Pregunta distinta no hace match en caché (correcto)")
+        ok("3d — Pregunta distinta no hace match en caché (correcto)")
     else:
-        warn("4d — Pregunta distinta hizo match (revisar umbral)", r_dis[:50])
+        warn("3d — Pregunta distinta hizo match (revisar umbral)", r_dis[:50])
 
-    # 4e: stats
+    # 3e: stats
     try:
         stats = cache_stats()
         if isinstance(stats, dict):
-            ok("4e — cache_stats retorna dict válido", str(stats))
+            ok("3e — cache_stats retorna dict válido", str(stats))
         else:
-            warn("4e — cache_stats retornó tipo inesperado", type(stats).__name__)
+            warn("3e — cache_stats retornó tipo inesperado", type(stats).__name__)
     except Exception as e:
-        fail("4e — cache_stats excepción", str(e))
+        fail("3e — cache_stats excepción", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. FIDELIDAD
+# 4. FIDELIDAD
 # ═══════════════════════════════════════════════════════════════════════════
 def test_fidelidad():
-    seccion("5. Verificación de fidelidad (fidelity_check)")
+    seccion("4. Verificación de fidelidad (fidelity_check)")
 
     from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
     from langchain_core.documents import Document
@@ -231,69 +195,69 @@ def test_fidelidad():
         Document(page_content="El modelo base es llama3.2 corriendo en Ollama.", metadata={}),
     ]
 
-    # 5a: respuesta fiel → True
+    # 4a: respuesta fiel → True
     if verify_fidelity("Lautaro usa LangChain y Chroma para RAG.", docs) is True:
-        ok("5a — Respuesta fiel pasa verificación")
+        ok("4a — Respuesta fiel pasa verificación")
     else:
-        fail("5a — Respuesta fiel fue rechazada (falso negativo)")
+        fail("4a — Respuesta fiel fue rechazada (falso negativo)")
 
-    # 5b: respuesta inventada → False
+    # 4b: respuesta inventada → False
     if verify_fidelity("Lautaro usa GPT-4 y Pinecone para embeddings.", docs) is False:
-        ok("5b — Respuesta inventada es correctamente rechazada")
+        ok("4b — Respuesta inventada es correctamente rechazada")
     else:
-        warn("5b — Respuesta inventada no fue rechazada (revisar umbral)")
+        warn("4b — Respuesta inventada no fue rechazada (revisar umbral)")
 
-    # 5c: sin documentos → False
+    # 4c: sin documentos → False
     if verify_fidelity("cualquier respuesta", []) is False:
-        ok("5c — Sin docs, fidelidad rechaza correctamente")
+        ok("4c — Sin docs, fidelidad rechaza correctamente")
     else:
-        warn("5c — Sin docs, fidelidad pasó (revisar lógica)")
+        warn("4c — Sin docs, fidelidad pasó (revisar lógica)")
 
-    # 5d: NO_EVIDENCE_MSG definido
+    # 4d: NO_EVIDENCE_MSG definido
     if NO_EVIDENCE_MSG and len(NO_EVIDENCE_MSG) > 5:
-        ok("5d — NO_EVIDENCE_MSG está definido", NO_EVIDENCE_MSG[:60])
+        ok("4d — NO_EVIDENCE_MSG está definido", NO_EVIDENCE_MSG[:60])
     else:
-        fail("5d — NO_EVIDENCE_MSG no está definido o vacío")
+        fail("4d — NO_EVIDENCE_MSG no está definido o vacío")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6. CHROMA
+# 5. CHROMA
 # ═══════════════════════════════════════════════════════════════════════════
 def test_chroma():
-    seccion("6. Indexación Chroma (RAG)")
+    seccion("5. Indexación Chroma (RAG)")
 
     storage_path = ROOT / "storage" / "chroma"
 
     if not storage_path.exists():
-        fail("6a — storage/chroma no existe", "Ejecuta: python indexacion.py")
+        fail("5a — storage/chroma no existe", "Ejecuta: python indexacion.py")
         return
 
-    ok("6a — Directorio storage/chroma existe")
+    ok("5a — Directorio storage/chroma existe")
 
     archivos = list(storage_path.iterdir())
     if not archivos:
-        fail("6b — Directorio chroma está vacío")
+        fail("5b — Directorio chroma está vacío")
         return
-    ok(f"6b — Chroma tiene {len(archivos)} archivos/carpetas")
+    ok(f"5b — Chroma tiene {len(archivos)} archivos/carpetas")
 
     try:
         from app.chat_core import load_vector_store
         vectordb = load_vector_store()
-        ok("6c — Conexión con Chroma exitosa (Ollama activo)")
+        ok("5c — Conexión con Chroma exitosa (Ollama activo)")
 
         retriever = vectordb.as_retriever(search_kwargs={"k": 2})
         docs = retriever.invoke("¿qué es Lautaro?")
         if docs:
-            ok(f"6d — Búsqueda retornó {len(docs)} documento(s)", docs[0].page_content[:60])
+            ok(f"5d — Búsqueda retornó {len(docs)} documento(s)", docs[0].page_content[:60])
         else:
-            warn("6d — Búsqueda retornó 0 docs (¿hay docs indexados?)")
+            warn("5d — Búsqueda retornó 0 docs (¿hay docs indexados?)")
 
     except Exception as e:
         msg = str(e).lower()
         if "connection" in msg or "refused" in msg:
-            warn("6c — Ollama no está corriendo", "Inicia con: ollama serve")
+            warn("5c — Ollama no está corriendo", "Inicia con: ollama serve")
         else:
-            fail("6c — Error al conectar con Chroma", str(e)[:100])
+            fail("5c — Error al conectar con Chroma", str(e)[:100])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -338,7 +302,6 @@ if __name__ == "__main__":
     print(f"{BOLD}  Suite de tests — Lautaro{RESET}")
     print(f"{BOLD}{'═'*60}{RESET}")
 
-    test_memoria_corta()
     test_router()
     test_tools()
     test_cache_semantico()
