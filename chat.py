@@ -1,270 +1,82 @@
+"""Punto de entrada del asistente.
+
+Arranca el loop de conversación, gestiona el vectorstore
+y delega cada turno a chat_core.handle_query().
+
+Auto-reindex: al arrancar detecta si hay docs más nuevos que el índice
+y re-indexa automáticamente antes de abrir el chat.
 """
-Asistente local Lautaro:
-- Usa Ollama (por defecto llama3.2:latest) como LLM.
-- Recupera contexto de tus docs con Chroma (RAG).
-- Responde desde memoria estructurada cuando corresponde.
-- Guarda memoria de conversación en storage/memory.json.
+from __future__ import annotations
 
-Ejecutar:
-    python chat.py
+from langchain_ollama import OllamaEmbeddings
+from langchain_chroma import Chroma
 
-Salir:
-    escribir 'salir', 'exit' o 'quit'.
-
-Comandos especiales:
-    !reset  -> borra la memoria de conversación (storage/memory.json)
-    !estado -> muestra foco actual, siguiente paso, tareas pendientes
-               y estadísticas del router en la sesión actual
-"""
-
-from datetime import datetime
-from pathlib import Path
-
-from rich.markdown import Markdown
-
-from app.config import CHROMA_DIR
-from app.memory_store import MEMORY_FILE
-from app.chat_core import (
-    load_vector_store,
-    build_memory,
-    handle_query,
-)
-from app.chat_ui import console, print_sources
+from app.config import CHROMA_DIR, OLLAMA_URL
+from app.indexing_core import needs_reindex, run_full_index
+from app.chat_core import build_memory, handle_query
+from app.chat_ui import print_welcome, print_sources, format_answer
 from app.logger import get_logger
 
 log = get_logger(__name__)
 
-DIAS_ALERTA_TAREA = 3
+EMBED_MODEL = "nomic-embed-text"
 
 
-# ─────────────────────────────────────────────
-# Infraestructura mínima
-# ─────────────────────────────────────────────
-
-def ensure_storage() -> None:
-    """Crea las carpetas de storage/ si no existen."""
-    for folder in ("storage", "storage/logs", "storage/cache"):
-        Path(folder).mkdir(parents=True, exist_ok=True)
-
-
-# ─────────────────────────────────────────────
-# Helpers de tiempo
-# ─────────────────────────────────────────────
-
-def _dias_desde(fecha_str: str) -> int | None:
-    """Devuelve cuántos días han pasado desde fecha_str (ISO 8601). None si no parsea."""
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return (datetime.now() - datetime.strptime(fecha_str[:19], fmt)).days
-        except ValueError:
-            continue
-    return None
-
-
-# ─────────────────────────────────────────────
-# UI de arranque y cierre
-# ─────────────────────────────────────────────
-
-def mostrar_contexto_inicial():
-    """Muestra automáticamente el estado del proyecto al arrancar."""
-    from app.memory_store import load_work_state, load_tasks
-
-    ws = load_work_state()
-    tasks_data = load_tasks()
-    pending = [
-        t for t in tasks_data.get("tasks", [])
-        if t.get("status") not in ("completed", "done")
-    ]
-
-    foco   = ws.get("current_focus", "sin foco definido")
-    next_s = ws.get("next_step", "sin siguiente paso")
-    last_s = ws.get("last_completed", "—")
-
-    console.print("\n[bold yellow]📌 Retomando donde lo dejaste:[/bold yellow]")
-    console.print(f"   [cyan]Foco:[/cyan]      {foco}")
-    console.print(f"   [cyan]Siguiente:[/cyan] {next_s}")
-    console.print(f"   [dim]Último:    {last_s}[/dim]")
-
-    if pending:
-        console.print(
-            f"   [yellow]Tareas pendientes ({len(pending)}):[/yellow] "
-            + ", ".join(t.get("title", t.get("id", "?")) for t in pending)
-        )
-    else:
-        console.print("   [dim]Sin tareas pendientes.[/dim]")
-
-    # ── Alerta de tareas viejas ────────────────────────────────
-    viejas = []
-    for t in pending:
-        fecha = t.get("created_at") or t.get("updated_at") or t.get("date")
-        if fecha:
-            dias = _dias_desde(fecha)
-            if dias is not None and dias >= DIAS_ALERTA_TAREA:
-                viejas.append((t, dias))
-
-    if viejas:
-        console.print(f"\n   [bold red]⏰ Tareas sin moverse hace más de {DIAS_ALERTA_TAREA} días:[/bold red]")
-        for t, dias in viejas:
-            titulo = t.get("title", t.get("id", "?"))
-            console.print(f"     ⚠ [red]{titulo}[/red] — {dias} días abierta")
-        console.print("   [dim]Considera cerrarla o actualizar su estado.[/dim]")
-
-    console.print("")
-
-
-def resumen_sesion_al_salir(chat_history):
-    """Muestra un resumen de la sesión al salir."""
-    from app.memory_store import load_work_state, load_tasks, save_work_state
-
-    ws = load_work_state()
-    tasks_data = load_tasks()
-    pending = [
-        t for t in tasks_data.get("tasks", [])
-        if t.get("status") not in ("completed", "done")
-    ]
-
-    n_mensajes = len([m for m in chat_history if hasattr(m, "type") and m.type == "human"])
-    foco   = ws.get("current_focus", "sin foco")
-    next_s = ws.get("next_step", "sin siguiente paso")
-    fecha  = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-    console.print("\n[bold green]── Resumen de sesión ─────────────────────────[/bold green]")
-    console.print(f"   [cyan]Foco trabajado:[/cyan]  {foco}")
-    console.print(f"   [cyan]Siguiente paso:[/cyan]  {next_s}")
-    console.print(f"   [cyan]Consultas:[/cyan]       {n_mensajes} en esta sesión")
-
-    if pending:
-        console.print(f"   [yellow]Tareas aún abiertas ({len(pending)}):[/yellow]")
-        for t in pending:
-            console.print(f"     · {t.get('title', t.get('id', '?'))} [{t.get('priority','—')}]")
-    else:
-        console.print("   [green]✅ Sin tareas pendientes.[/green]")
-
-    console.print(f"   [dim]Sesión cerrada: {fecha}[/dim]")
-    console.print("[bold green]──────────────────────────────────────────────[/bold green]\n")
-
-    ws["last_session"] = fecha
-    save_work_state(ws)
-
-
-def cmd_estado():
-    """Imprime un resumen completo del estado actual del proyecto."""
-    from app.memory_store import load_work_state, load_tasks
-    from app.router import SESSION_STATS
-
-    ws = load_work_state()
-    tasks_data = load_tasks()
-    pending = [
-        t for t in tasks_data.get("tasks", [])
-        if t.get("status") not in ("completed", "done")
-    ]
-
-    console.print("\n[bold]── Estado actual ────────────────────────────[/bold]")
-    console.print(f"  [cyan]Foco:[/cyan]           {ws.get('current_focus', '—')}")
-    console.print(f"  [cyan]Siguiente paso:[/cyan] {ws.get('next_step', '—')}")
-    console.print(f"  [cyan]Último paso:[/cyan]    {ws.get('last_completed', '—')}")
-    blockers = ws.get("current_blockers", [])
-    if blockers:
-        console.print(f"  [red]Bloqueos:[/red]       {', '.join(blockers)}")
-
-    console.print(f"\n  [yellow]Tareas pendientes ({len(pending)}):[/yellow]")
-    if pending:
-        for t in pending:
-            console.print(
-                f"    [[bold]{t['id']}[/bold]] {t['title']} "
-                f"([dim]{t.get('priority', 'media')}[/dim])"
-            )
-    else:
-        console.print("    Sin tareas pendientes.")
-
-    total = SESSION_STATS["total"]
-    if total > 0:
-        kw_pct  = SESSION_STATS["kw"]  * 100 // total
-        emb_pct = SESSION_STATS["emb"] * 100 // total
-        llm_pct = SESSION_STATS["llm"] * 100 // total
-        console.print(f"\n  [bold]Router esta sesión ({total} consultas):[/bold]")
-        console.print(f"    [green]Capa 1 keywords :[/green]   {SESSION_STATS['kw']:>3} consultas  ({kw_pct}%)  0ms")
-        console.print(f"    [blue]Capa 2 embeddings:[/blue]  {SESSION_STATS['emb']:>3} consultas  ({emb_pct}%)  ~50ms")
-        console.print(f"    [red]Capa 3 LLM       :[/red]   {SESSION_STATS['llm']:>3} consultas  ({llm_pct}%)  ~3-8s")
-        if llm_pct >= 30:
-            console.print(
-                "\n  [bold red]⚠ El LLM se usa mucho (≥30%).[/bold red] "
-                "Considera añadir más ejemplos a data/intent_examples.json "
-                "y reejecutar build_intent_index.py"
-            )
-    else:
-        console.print("\n  [dim]Router: sin consultas en esta sesión aún.[/dim]")
-
-    console.print("[bold]──────────────────────────────────────[/bold]\n")
-
-
-# ─────────────────────────────────────────────
-# Punto de entrada
-# ─────────────────────────────────────────────
-
-def main():
-    ensure_storage()
-    log.info("Lautaro iniciando...")
-
-    if not Path(CHROMA_DIR).exists():
-        log.error("Vector store no encontrado en %s", CHROMA_DIR)
-        raise FileNotFoundError(
-            f"No encuentro el vector store en {CHROMA_DIR}. "
-            "Primero ejecuta 'python indexacion.py'."
-        )
-
-    vectordb = load_vector_store()
-    log.info("Vector store cargado correctamente")
-
-    chat_history = build_memory()
-    log.info("Historial de conversación cargado (%d mensajes)", len(chat_history))
-
-    console.print("[bold green]Lautaro está iniciado[/bold green]")
-    console.print("Escribe tu pregunta. 'salir', 'exit' o 'quit' para terminar.")
-    console.print(
-        "Comandos: [yellow]!reset[/yellow] (borra memoria) "
-        "[yellow]!estado[/yellow] (resumen del proyecto + stats del router)\n"
+def _load_vectorstore() -> Chroma:
+    """Carga el vectorstore existente sin re-indexar."""
+    embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_URL)
+    return Chroma(
+        persist_directory=CHROMA_DIR,
+        embedding_function=embeddings,
     )
 
-    mostrar_contexto_inicial()
+
+def _boot_vectorstore() -> Chroma:
+    """Decide si hay que re-indexar y devuelve el vectorstore listo.
+
+    Flujo:
+      1. needs_reindex() compara mtime de docs vs mtime del índice.
+      2. Si hay docs nuevos → avisa al usuario → run_full_index().
+      3. Si está al día → carga el existente directamente.
+    """
+    should_reindex, reason = needs_reindex()
+
+    if should_reindex:
+        print(f"\n🔄  Detectados cambios en data/docs/ ({reason})")
+        print("    Actualizando el índice automáticamente...\n")
+        db = run_full_index()
+        print("✅  Índice actualizado. Iniciando chat...\n")
+    else:
+        log.info("[boot] %s — cargando índice existente", reason)
+        db = _load_vectorstore()
+
+    return db
+
+
+def main() -> None:
+    print_welcome()
+
+    vectordb     = _boot_vectorstore()
+    chat_history = build_memory()
 
     while True:
-        user_input = console.input("[bold cyan]Tú:[/bold cyan] ").strip()
-
-        if user_input.lower() in {"salir", "exit", "quit"}:
-            log.info("Sesión cerrada por el usuario")
-            resumen_sesion_al_salir(chat_history)
-            console.print("[yellow]Hasta luego 👋[/yellow]")
+        try:
+            user_input = input("Tú: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋 ¡Hasta luego!")
             break
-
-        if user_input.lower() == "!reset":
-            if MEMORY_FILE.exists():
-                MEMORY_FILE.unlink()
-            chat_history.clear()
-            log.info("Memoria de conversación reiniciada por el usuario")
-            console.print("[red]Memoria de conversación borrada.[/red]")
-            continue
-
-        if user_input.lower() == "!estado":
-            cmd_estado()
-            continue
 
         if not user_input:
             continue
 
-        log.debug("Consulta recibida: %s", user_input)
-        console.print("[magenta]Pensando...[/magenta]")
+        answer, source_docs = handle_query(user_input, vectordb, chat_history)
 
-        try:
-            answer, sources = handle_query(user_input, vectordb, chat_history)
-            log.debug("Respuesta generada (%d chars)", len(answer))
-        except Exception as exc:
-            log.error("Error procesando consulta: %s", exc, exc_info=True)
-            console.print("[red]Error interno. Revisa storage/logs/lautaro.log para detalles.[/red]")
-            continue
+        if answer == "__EXIT__":
+            print("\n👋 ¡Hasta luego!")
+            break
 
-        console.print(Markdown(f"**Lautaro:** {answer}"))
-        print_sources(sources)
+        print(format_answer(answer))
+        print_sources(source_docs)
 
 
 if __name__ == "__main__":
