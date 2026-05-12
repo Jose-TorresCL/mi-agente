@@ -53,7 +53,7 @@ class TestArchivosRequeridos:
     ARCHIVOS = [
         # Entry points
         "chat.py",
-        "indexar_documentos.py",
+        "indexacion.py",          # renombrado desde indexar_documentos.py
         # Paquete app
         "app/__init__.py",
         "app/chat_core.py",
@@ -182,7 +182,7 @@ class TestMemoryManagerAPI:
         for carril in ("rag", "estado", "memoria", "general", "save_fact"):
             resultado = mm.get_selective_context(carril)
             assert isinstance(resultado, str), (
-                f"get_selective_context('{carril}') devolvió {type(resultado)}, "
+                f"get_selective_context('{carril}') devolver {type(resultado)}, "
                 f"se esperaba str."
             )
 
@@ -232,7 +232,7 @@ class TestFidelityCheckAPI:
 
 
 # ---------------------------------------------------------------------------
-# 5. API de chat_core: handle_query y _handle_rag
+# 5. API de chat_core: handle_query y build_memory
 # ---------------------------------------------------------------------------
 
 class TestChatCoreAPI:
