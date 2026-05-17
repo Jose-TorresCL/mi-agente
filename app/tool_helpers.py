@@ -154,11 +154,23 @@ def list_project_files() -> list[str]:
 
 
 def extract_file_path(text: str) -> str | None:
-    """Extrae una ruta de archivo del texto del usuario."""
+    """Extrae una ruta de archivo del texto del usuario.
+
+    Orden de búsqueda:
+      1. Marcadores de ruta explícita (data/, app/, storage/, docs/, tests/)
+      2. Nombre de archivo puro → busca en storage/, app/, data/docs/, raíz
+    """
     cleaned = text.strip()
     lower_text = cleaned.lower()
 
-    markers = ["data/", "data\\\\", "app/", "app\\\\", "storage/", "storage\\\\"]
+    # ── 1. Ruta explícita con marcador de directorio ──────────────
+    markers = [
+        "data/", "data\\\\",
+        "app/",  "app\\\\",
+        "storage/", "storage\\\\",
+        "docs/", "docs\\\\",
+        "tests/", "tests\\\\",
+    ]
     for marker in markers:
         idx = lower_text.find(marker.lower())
         if idx == -1:
@@ -172,13 +184,22 @@ def extract_file_path(text: str) -> str | None:
                 candidate = candidate[:stop_idx].strip()
         return candidate
 
+    # ── 2. Solo nombre de archivo → buscar en directorios conocidos ──
     match = re.search(r'\b([\w_.-]+\.(?:py|md|txt|toml|yaml|yml|json))\b', cleaned, re.IGNORECASE)
     if match:
         filename = match.group(1)
-        for base in [PROJECT_ROOT / "app", PROJECT_ROOT, PROJECT_ROOT / "data" / "docs"]:
+        # Orden: storage/ primero (archivos JSON de estado), luego app/, raíz, docs
+        search_dirs = [
+            PROJECT_ROOT / "storage",
+            PROJECT_ROOT / "app",
+            PROJECT_ROOT,
+            PROJECT_ROOT / "data" / "docs",
+        ]
+        for base in search_dirs:
             candidate = base / filename
             if candidate.exists():
                 return str(candidate.relative_to(PROJECT_ROOT))
+        # No existe aún → devolver el nombre tal cual (read_project_file dará error claro)
         return filename
 
     return None

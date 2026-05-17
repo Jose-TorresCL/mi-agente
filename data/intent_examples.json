@@ -71,6 +71,11 @@
   { "text": "ver el contenido de profile.json",                    "lane": "tool_read_file" },
   { "text": "mostrar el archivo memory_store.py",                  "lane": "tool_read_file" },
   { "text": "leer estado_proyecto.md",                             "lane": "tool_read_file" },
+  { "text": "lee el archivo memory.json",                          "lane": "tool_read_file" },
+  { "text": "muéstrame profile.json",                              "lane": "tool_read_file" },
+  { "text": "abre tasks.json",                                     "lane": "tool_read_file" },
+  { "text": "ver project_facts.json",                              "lane": "tool_read_file" },
+  { "text": "lee el episodic_memory.json",                         "lane": "tool_read_file" },
 
   // ── memory ───────────────────────────────────────────────────────
   // Frases sobre estado actual, tareas EXISTENTES, hechos guardados o perfil.
@@ -104,6 +109,20 @@
   { "text": "quién soy yo",                                        "lane": "memory" },
   { "text": "cómo me llamo",                                       "lane": "memory" },
   { "text": "cuál es mi nombre",                                   "lane": "memory" },
+  // ← Día 1: identidad del agente
+  { "text": "quién eres tú",                                       "lane": "memory" },
+  { "text": "cómo te llamas",                                      "lane": "memory" },
+  { "text": "quién es lautaro",                                    "lane": "memory" },
+  { "text": "qué eres tú",                                         "lane": "memory" },
+  { "text": "preséntate",                                          "lane": "memory" },
+  { "text": "cuál es tu nombre",                                   "lane": "memory" },
+  // ← Día 1: métricas del proyecto
+  { "text": "cuántos tests pasaron",                               "lane": "memory" },
+  { "text": "resultado de los tests",                              "lane": "memory" },
+  { "text": "cuántos tests hay",                                   "lane": "memory" },
+  { "text": "cuál es el score del fidelity check",                 "lane": "memory" },
+  { "text": "qué porcentaje de tests pasó",                        "lane": "memory" },
+  { "text": "dame las métricas del proyecto",                      "lane": "memory" },
 
   // ── rag ──────────────────────────────────────────────────────────
   // Preguntas conceptuales, técnicas, sugerencias o documentales sobre el sistema.
