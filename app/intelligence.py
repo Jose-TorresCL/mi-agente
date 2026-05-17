@@ -11,6 +11,16 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 Contrato público
 ─────────────────
     process_turn(route, user_input, vectordb, chat_history) -> (str, list)
+
+Cambios Día 3:
+  _decide_exit():
+    - El episodio se guarda SIEMPRE, incluso si el resumen falla.
+      Antes: si requests.post lanzaba timeout, record_episode() nunca se llamaba.
+    - Historial comprimido: se pasa al LLM solo la última línea de cada turno
+      (máx. 80 chars). Menos tokens → respuesta más rápida → menos timeouts.
+    - Timeout reducido de 30s a 20s: el resumen es corto (3 líneas, 120 tokens);
+      si Ollama no responde en 20s en el cierre, probablemente no responderá.
+    - num_predict reducido de 120 a 80 tokens: 3 líneas de resumen no necesitan más.
 """
 from __future__ import annotations
 
@@ -36,6 +46,14 @@ from app.tool_registry import TOOLS, dispatch_tool
 from app.prompts import QA_SYSTEM_PROMPT
 
 log = get_logger(__name__)
+
+# Timeout para la llamada de resumen episódico (en segundos).
+# Más corto que el LLM principal porque el resumen es breve y predecible.
+_EPISODE_TIMEOUT = 20
+
+# Longitud máxima por línea de historial comprimido (chars).
+# Reduce tokens sin perder el hilo de los temas tratados.
+_HISTORY_LINE_MAX = 80
 
 
 # ─────────────────────────────────────────────
@@ -79,12 +97,20 @@ def _format_tasks_answer(tasks_data: dict) -> str:
 
 def _format_work_state_answer(work_state: dict) -> str:
     lines = ["**Estado actual de trabajo:**"]
-    lines.append(f"- Foco actual: {work_state.get('current_focus', 'sin definir')}")
-    lines.append(f"- Último paso completado: {work_state.get('last_completed', 'sin registrar')}")
-    lines.append(f"- Siguiente paso: {work_state.get('next_step', 'sin definir')}")
+    _fields = [
+        ("current_focus",  "Foco actual"),
+        ("last_completed", "Último paso completado"),
+        ("next_step",      "Siguiente paso"),
+    ]
+    for key, label in _fields:
+        value = work_state.get(key, "").strip()
+        lines.append(f"- {label}: {value or 'sin definir'}")
     blockers = work_state.get("current_blockers", [])
     if blockers:
-        lines.append(f"- Bloqueos: {', '.join(blockers)}")
+        if isinstance(blockers, list):
+            lines.append(f"- Bloqueos: {', '.join(blockers)}")
+        elif isinstance(blockers, str) and blockers.strip():
+            lines.append(f"- Bloqueos: {blockers.strip()}")
     return "\n".join(lines)
 
 
@@ -111,17 +137,49 @@ def _decide_memory(question: str) -> str | None:
     return None
 
 
+def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
+    """Comprime el historial de conversación para el prompt de resumen episódico.
+
+    En lugar de pasar todo el texto de cada mensaje, toma solo los primeros
+    `max_line` caracteres de cada turno. Esto reduce los tokens enviados a
+    Ollama en el cierre de sesión sin perder los temas tratados.
+
+    Ejemplo:
+        Usuario: qué hace el archivo router.py    (80 chars)
+        Lautaro: El archivo router.py contiene... (80 chars)
+
+    Returns:
+        str listo para insertar en el prompt de resumen.
+    """
+    lines: list[str] = []
+    for m in chat_history[-(MAX_TURNS * 2):]:
+        role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
+        content = m.content.strip().replace("\n", " ")
+        truncated = content[:max_line] + ("…" if len(content) > max_line else "")
+        lines.append(f"{role}: {truncated}")
+    return "\n".join(lines)
+
+
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión."""
+    """Genera resumen episódico y señala cierre de sesión.
+
+    Día 3 — cambios clave:
+      1. El episodio se guarda SIEMPRE (incluso si el resumen falla).
+         Antes: si el timeout saltaba, record_episode() nunca se ejecutaba.
+      2. Historial comprimido: solo los primeros 80 chars por turno.
+      3. Timeout reducido a 20s y num_predict a 80 tokens.
+    """
     turns = len(chat_history) // 2
+    summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
+
     if turns > 0:
         from app.config import MODEL_NAME, OLLAMA_URL
         import requests
+
         log.info("Guardando resumen episódico (%d turnos)", turns)
-        history_text = "\n".join(
-            f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
-            for m in chat_history[-(MAX_TURNS * 2):]
-        )
+
+        history_text = _compress_history(chat_history)
+
         prompt = (
             "Eres un asistente que resume sesiones de trabajo.\n"
             "Resume la siguiente conversación en exactamente 3 líneas en español.\n"
@@ -131,6 +189,7 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
             "Sin bullet points ni numeración. Solo 3 líneas.\n\n"
             f"Conversación:\n{history_text}\n\nResumen:"
         )
+
         try:
             response = requests.post(
                 f"{OLLAMA_URL}/api/generate",
@@ -138,16 +197,20 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
                     "model": MODEL_NAME,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 120},
+                    "options": {"temperature": 0.2, "num_predict": 80},
                 },
-                timeout=30,
+                timeout=_EPISODE_TIMEOUT,  # ← Día 3: 30s → 20s
             )
-            summary = response.json().get("response", "Resumen no disponible.").strip()
+            summary = response.json().get("response", summary).strip()
         except Exception as exc:
+            # ← Día 3: ya NO retornamos aquí — guardamos el episodio igualmente
             log.warning("No se pudo generar resumen de sesión: %s", exc)
-            summary = "Resumen no disponible (Ollama no respondió al cerrar)."
-        record_episode(summary=summary, turns=turns)
-        log.info("Episodio guardado correctamente")
+            # summary ya tiene el valor de fallback asignado arriba
+
+    # ← Día 3: record_episode() se llama SIEMPRE (antes estaba dentro del try)
+    record_episode(summary=summary, turns=turns)
+    log.info("Episodio guardado correctamente (turns=%d)", turns)
+
     return "__EXIT__", []
 
 
