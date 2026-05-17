@@ -15,6 +15,7 @@ Importar desde tools.py para mantener compatibilidad con imports existentes.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -78,6 +79,11 @@ _VALUE_PREFIXES = [
     "último paso a", "el último paso a",
     "bloqueante a", "bloqueo a", "work_state a",
 ]
+
+# Umbral mínimo de similitud para fuzzy matching de nombres de archivo.
+# 0.75 evita falsos positivos (ej: 'router.py' != 'memory_store.py')
+# pero acepta typos comunes (ej: 'chat.core.py' → 'chat_core.py' = 0.89)
+_FUZZY_THRESHOLD = 0.75
 
 
 # ─────────────────────────────────────────────
@@ -153,17 +159,52 @@ def list_project_files() -> list[str]:
     return sorted(files)
 
 
+def _fuzzy_find_file(filename: str) -> str | None:
+    """Busca el archivo más similar al nombre dado usando SequenceMatcher.
+
+    Tarea 7: maneja typos comunes en nombres de archivo:
+      - Punto en lugar de guion bajo: 'chat.core.py' → 'app/chat_core.py'
+      - Guión en lugar de guion bajo: 'chat-core.py' → 'app/chat_core.py'
+      - Capitalización incorrecta: 'Router.py' → 'app/router.py'
+      - Prefijo faltante: 'memory.json' → 'storage/memory.json'
+
+    Sólo compara el nombre base del archivo (sin directorio) para que
+    'chat.core.py' compita contra 'chat_core.py', no contra su ruta completa.
+
+    Returns:
+        Ruta relativa al PROJECT_ROOT del archivo más similar si la
+        similitud supera _FUZZY_THRESHOLD, o None si no hay candidato.
+    """
+    all_files = list_project_files()
+    filename_lower = filename.lower()
+
+    best_score = 0.0
+    best_path: str | None = None
+
+    for rel_path in all_files:
+        candidate_name = Path(rel_path).name.lower()
+        score = SequenceMatcher(None, filename_lower, candidate_name).ratio()
+        if score > best_score:
+            best_score = score
+            best_path = rel_path
+
+    if best_score >= _FUZZY_THRESHOLD and best_path:
+        return best_path
+    return None
+
+
 def extract_file_path(text: str) -> str | None:
     """Extrae una ruta de archivo del texto del usuario.
 
     Orden de búsqueda:
       1. Marcadores de ruta explícita (data/, app/, storage/, docs/, tests/)
       2. Nombre de archivo puro → busca en storage/, app/, data/docs/, raíz
+      3. [Tarea 7] Fuzzy matching → si no existe, busca el más parecido
     """
     cleaned = text.strip()
     lower_text = cleaned.lower()
 
-    # ── 1. Ruta explícita con marcador de directorio ──────────────
+    # ── 1. Ruta explícita con marcador de directorio ────────────
     markers = [
         "data/", "data\\\\",
         "app/",  "app\\\\",
@@ -188,7 +229,6 @@ def extract_file_path(text: str) -> str | None:
     match = re.search(r'\b([\w_.-]+\.(?:py|md|txt|toml|yaml|yml|json))\b', cleaned, re.IGNORECASE)
     if match:
         filename = match.group(1)
-        # Orden: storage/ primero (archivos JSON de estado), luego app/, raíz, docs
         search_dirs = [
             PROJECT_ROOT / "storage",
             PROJECT_ROOT / "app",
@@ -199,7 +239,16 @@ def extract_file_path(text: str) -> str | None:
             candidate = base / filename
             if candidate.exists():
                 return str(candidate.relative_to(PROJECT_ROOT))
-        # No existe aún → devolver el nombre tal cual (read_project_file dará error claro)
+
+        # ── 3. [Tarea 7] Fuzzy matching: el archivo no existe con ese nombre ──
+        # Puede ser un typo: 'chat.core.py' → 'app/chat_core.py'
+        fuzzy_match = _fuzzy_find_file(filename)
+        if fuzzy_match:
+            # Log implícito: read_project_file mostrará el contenido correcto.
+            # El usuario no necesita saber que hubo corrección — simplemente funciona.
+            return fuzzy_match
+
+        # Sin match fuzzy → devolver nombre original (read_project_file dará error claro)
         return filename
 
     return None
