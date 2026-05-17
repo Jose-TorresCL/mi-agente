@@ -1,5 +1,5 @@
 [
-  // ── tool_create_task ────────────────────────────────────────────
+  // ── tool_create_task ────────────────────────────────────────────────
   // Frases donde el usuario quiere crear, apuntar o registrar una tarea nueva.
   { "text": "crea una tarea para revisar el router",              "lane": "tool_create_task" },
   { "text": "agrega una tarea: implementar embeddings",           "lane": "tool_create_task" },
@@ -13,7 +13,7 @@
   { "text": "ponme un recordatorio de actualizar el JSON",        "lane": "tool_create_task" },
   { "text": "quiero agregar una tarea sobre la memoria de Chroma","lane": "tool_create_task" },
 
-  // ── tool_complete_task ───────────────────────────────────────────
+  // ── tool_complete_task ──────────────────────────────────────────────
   // Frases donde el usuario quiere cerrar, marcar o completar una tarea existente.
   { "text": "marca T-003 como completada",                        "lane": "tool_complete_task" },
   { "text": "marca como completado T-006",                        "lane": "tool_complete_task" },
@@ -26,7 +26,7 @@
   { "text": "esa tarea ya la hice, márcala como hecha",           "lane": "tool_complete_task" },
   { "text": "completa T-0506132952",                              "lane": "tool_complete_task" },
 
-  // ── tool_update_work_state ───────────────────────────────────────
+  // ── tool_update_work_state ─────────────────────────────────────────────
   // Frases donde el usuario quiere cambiar su foco, fase o siguiente paso.
   { "text": "actualiza el foco a fase 3B — embeddings",           "lane": "tool_update_work_state" },
   { "text": "cambia el foco a implementar el clasificador",        "lane": "tool_update_work_state" },
@@ -51,7 +51,7 @@
   { "text": "registra la decisión de no usar multiagente aún",    "lane": "tool_save_fact" },
   { "text": "guarda que Chroma persiste en storage/chroma",       "lane": "tool_save_fact" },
 
-  // ── tool_list_files ──────────────────────────────────────────────
+  // ── tool_list_files ────────────────────────────────────────────────
   // SOLO frases donde el usuario quiere ver la lista de archivos (paths), NO contenido.
   { "text": "listar archivos del proyecto",                        "lane": "tool_list_files" },
   { "text": "qué archivos hay en el proyecto",                     "lane": "tool_list_files" },
@@ -61,8 +61,12 @@
   { "text": "qué hay disponible para leer",                        "lane": "tool_list_files" },
   { "text": "mostrar archivos del proyecto",                       "lane": "tool_list_files" },
   { "text": "qué archivos puedes leer",                            "lane": "tool_list_files" },
+  // ← fix conteo: variantes con 'cuántos' también van a tool_list_files
+  { "text": "cuántos archivos tiene el proyecto",                  "lane": "tool_list_files" },
+  { "text": "cuántos archivos python hay",                         "lane": "tool_list_files" },
+  { "text": "cuántos archivos tiene este proyecto",                "lane": "tool_list_files" },
 
-  // ── tool_read_file ───────────────────────────────────────────────
+  // ── tool_read_file ────────────────────────────────────────────────
   // Frases donde el usuario quiere leer el CONTENIDO de un archivo específico.
   { "text": "leer el archivo router.py",                           "lane": "tool_read_file" },
   { "text": "muéstrame el contenido de chat_core.py",              "lane": "tool_read_file" },
@@ -77,7 +81,7 @@
   { "text": "ver project_facts.json",                              "lane": "tool_read_file" },
   { "text": "lee el episodic_memory.json",                         "lane": "tool_read_file" },
 
-  // ── memory ───────────────────────────────────────────────────────
+  // ── memory ─────────────────────────────────────────────────────
   // Frases sobre estado actual, tareas EXISTENTES, hechos guardados o perfil.
   { "text": "en qué fase estamos",                                 "lane": "memory" },
   { "text": "qué tengo pendiente",                                 "lane": "memory" },
@@ -96,7 +100,7 @@
   { "text": "qué tareas tengo pendientes",                         "lane": "memory" },
   { "text": "cuáles son mis tareas actuales",                      "lane": "memory" },
   { "text": "qué hay en mi lista de tareas",                       "lane": "memory" },
-  // ← fix #8: variaciones naturales de 'estado' (Capa 2)
+  // ← fix #8: variaciones naturales de 'estado'
   { "text": "qué hago hoy",                                        "lane": "memory" },
   { "text": "cuál es el plan para hoy",                            "lane": "memory" },
   { "text": "qué hicimos ayer",                                    "lane": "memory" },
@@ -105,13 +109,13 @@
   { "text": "qué estoy trabajando actualmente",                    "lane": "memory" },
   { "text": "en qué estaba trabajando",                            "lane": "memory" },
   { "text": "ponme al día de hoy",                                 "lane": "memory" },
-  // ← fix #9: variaciones de identidad (Capa 2)
+  // ← fix #9: variaciones de identidad
   { "text": "quién soy yo",                                        "lane": "memory" },
   { "text": "cómo me llamo",                                       "lane": "memory" },
   { "text": "cuál es mi nombre",                                   "lane": "memory" },
   // ← Día 1: identidad del agente
   { "text": "quién eres tú",                                       "lane": "memory" },
-  { "text": "cómo te llamas",                                      "lane": "memory" },
+  { "text": "cómo te llamas",                                       "lane": "memory" },
   { "text": "quién es lautaro",                                    "lane": "memory" },
   { "text": "qué eres tú",                                         "lane": "memory" },
   { "text": "preséntate",                                          "lane": "memory" },
@@ -123,8 +127,17 @@
   { "text": "cuál es el score del fidelity check",                 "lane": "memory" },
   { "text": "qué porcentaje de tests pasó",                        "lane": "memory" },
   { "text": "dame las métricas del proyecto",                      "lane": "memory" },
+  // ← Fix D: variantes de '¿cómo va el proyecto?' que iban a RAG por error
+  { "text": "cómo va el proyecto",                                 "lane": "memory" },
+  { "text": "cómo está el proyecto",                               "lane": "memory" },
+  { "text": "cómo anda el proyecto",                               "lane": "memory" },
+  { "text": "cómo vamos con el proyecto",                          "lane": "memory" },
+  { "text": "qué tal va el proyecto",                              "lane": "memory" },
+  { "text": "cuéntame del proyecto",                               "lane": "memory" },
+  { "text": "dame un update del proyecto",                         "lane": "memory" },
+  { "text": "dame una actualización del proyecto",                 "lane": "memory" },
 
-  // ── rag ──────────────────────────────────────────────────────────
+  // ── rag ───────────────────────────────────────────────────────
   // Preguntas conceptuales, técnicas, sugerencias o documentales sobre el sistema.
   { "text": "qué tools están operativas",                          "lane": "rag" },
   { "text": "cómo funciona el router híbrido",                     "lane": "rag" },
@@ -149,5 +162,5 @@
   { "text": "qué tareas nuevas podríamos crear según el proyecto", "lane": "rag" },
   { "text": "hazme una lista de tareas que podríamos crear",       "lane": "rag" },
   { "text": "qué hay pendiente por implementar",                   "lane": "rag" },
-  { "text": "sugiéreme próximos pasos para el agente",             "lane": "rag" }
+  { "text": "sugíreme próximos pasos para el agente",             "lane": "rag" }
 ]
