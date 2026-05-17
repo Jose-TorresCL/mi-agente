@@ -21,6 +21,15 @@ Cambios Día 3:
     - Timeout reducido de 30s a 20s: el resumen es corto (3 líneas, 120 tokens);
       si Ollama no responde en 20s en el cierre, probablemente no responderá.
     - num_predict reducido de 120 a 80 tokens: 3 líneas de resumen no necesitan más.
+
+Cambios Día 4:
+  _decide_memory():
+    - Ya no hace dump crudo de project_facts/work_state al usuario.
+    - Para preguntas de tipo 'project_facts' y 'work_state', el contexto se
+      pasa al LLM para que genere una respuesta sintetizada y natural.
+    - 'profile' y 'tasks' siguen con formato estructurado (son listas cortas
+      y el usuario espera verlas como lista, no como prosa).
+    - Timeout 25s para la llamada de síntesis (más corto que el RAG principal).
 """
 from __future__ import annotations
 
@@ -28,7 +37,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.config import MAX_TURNS
+from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
 from app.memory_manager import (
     get_selective_context,
@@ -48,11 +57,12 @@ from app.prompts import QA_SYSTEM_PROMPT
 log = get_logger(__name__)
 
 # Timeout para la llamada de resumen episódico (en segundos).
-# Más corto que el LLM principal porque el resumen es breve y predecible.
 _EPISODE_TIMEOUT = 20
 
+# Timeout para la síntesis del carril memory (en segundos).
+_MEMORY_SYNTHESIS_TIMEOUT = 25
+
 # Longitud máxima por línea de historial comprimido (chars).
-# Reduce tokens sin perder el hilo de los temas tratados.
 _HISTORY_LINE_MAX = 80
 
 
@@ -74,13 +84,6 @@ def _format_profile_answer(profile: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_project_facts_answer(facts: dict) -> str:
-    lines = ["**Hechos persistentes del proyecto:**"]
-    for key, value in facts.items():
-        lines.append(f"- {key}: {value}")
-    return "\n".join(lines)
-
-
 def _format_tasks_answer(tasks_data: dict) -> str:
     tasks = tasks_data.get("tasks", [])
     pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
@@ -95,23 +98,52 @@ def _format_tasks_answer(tasks_data: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_work_state_answer(work_state: dict) -> str:
-    lines = ["**Estado actual de trabajo:**"]
-    _fields = [
-        ("current_focus",  "Foco actual"),
-        ("last_completed", "Último paso completado"),
-        ("next_step",      "Siguiente paso"),
-    ]
-    for key, label in _fields:
-        value = work_state.get(key, "").strip()
-        lines.append(f"- {label}: {value or 'sin definir'}")
-    blockers = work_state.get("current_blockers", [])
-    if blockers:
-        if isinstance(blockers, list):
-            lines.append(f"- Bloqueos: {', '.join(blockers)}")
-        elif isinstance(blockers, str) and blockers.strip():
-            lines.append(f"- Bloqueos: {blockers.strip()}")
-    return "\n".join(lines)
+def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -> str:
+    """Llama al LLM para sintetizar una respuesta natural a partir del contexto
+    de memoria estructurada.
+
+    Día 4: reemplaza el dump crudo de project_facts/work_state por una respuesta
+    sintetizada. Si Ollama falla o tarda más de _MEMORY_SYNTHESIS_TIMEOUT,
+    devuelve el fallback con los datos en bruto.
+
+    Args:
+        question:     Pregunta original del usuario.
+        context_text: Contexto de memoria serializado (project_facts o work_state).
+        fallback:     Texto crudo a mostrar si la síntesis falla.
+
+    Returns:
+        Respuesta sintetizada o fallback.
+    """
+    import requests
+
+    prompt = (
+        "Eres Lautaro, asistente técnico local del proyecto 'mi-agente'.\n"
+        "Tienes acceso a los siguientes datos del proyecto:\n\n"
+        f"{context_text}\n\n"
+        "Responde la siguiente pregunta de forma natural, clara y concisa "
+        "en español. No listes todos los campos — sintetiza lo más relevante "
+        "para la pregunta. Máximo 4 oraciones.\n\n"
+        f"Pregunta: {question}\n\nRespuesta:"
+    )
+
+    try:
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 150},
+            },
+            timeout=_MEMORY_SYNTHESIS_TIMEOUT,
+        )
+        answer = response.json().get("response", "").strip()
+        if answer:
+            return answer
+    except Exception as exc:
+        log.warning("Síntesis de memoria falló, usando fallback: %s", exc)
+
+    return fallback
 
 
 # ─────────────────────────────────────────────
@@ -119,38 +151,58 @@ def _format_work_state_answer(work_state: dict) -> str:
 # ─────────────────────────────────────────────
 
 def _decide_memory(question: str) -> str | None:
-    """Responde desde memoria estructurada. Devuelve None si no aplica."""
+    """Responde desde memoria estructurada. Devuelve None si no aplica.
+
+    Día 4:
+    - 'profile' y 'tasks' mantienen formato de lista (el usuario espera verlos así).
+    - 'project_facts' y 'work_state' pasan por síntesis LLM para respuesta natural.
+      Si la síntesis falla, se muestra el formato estructurado como fallback.
+    """
     kind = classify_memory_query(question)
     log.debug("Carril memory clasificado como: %s", kind)
+
     if kind == "profile":
         p = get_profile()
         return _format_profile_answer(p) if p else "No encontré información de perfil."
-    if kind == "project_facts":
-        f = get_project_facts()
-        return _format_project_facts_answer(f) if f else "No encontré hechos del proyecto."
+
     if kind == "tasks":
         t = get_tasks()
         return _format_tasks_answer(t) if t else "No encontré tareas registradas."
+
+    if kind == "project_facts":
+        f = get_project_facts()
+        if not f:
+            return "No encontré hechos del proyecto."
+        # Día 4: sintetizar en lugar de listar todos los keys
+        context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
+        fallback = "**Hechos del proyecto:**\n" + context_text
+        return _synthesize_memory_answer(question, context_text, fallback)
+
     if kind == "work_state":
         w = get_work_state()
-        return _format_work_state_answer(w) if w else "No encontré estado de trabajo."
+        if not w:
+            return "No encontré estado de trabajo."
+        # Día 4: sintetizar en lugar de listar todos los campos
+        _ws_fields = [
+            ("current_focus",  "Foco actual"),
+            ("last_completed", "Último paso completado"),
+            ("next_step",      "Siguiente paso"),
+        ]
+        context_lines = [f"- {label}: {w.get(k, 'sin definir')}" for k, label in _ws_fields]
+        blockers = w.get("current_blockers", [])
+        if isinstance(blockers, list) and blockers:
+            context_lines.append(f"- Bloqueos: {', '.join(blockers)}")
+        elif isinstance(blockers, str) and blockers.strip():
+            context_lines.append(f"- Bloqueos: {blockers.strip()}")
+        context_text = "\n".join(context_lines)
+        fallback = "**Estado de trabajo:**\n" + context_text
+        return _synthesize_memory_answer(question, context_text, fallback)
+
     return None
 
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
-    """Comprime el historial de conversación para el prompt de resumen episódico.
-
-    En lugar de pasar todo el texto de cada mensaje, toma solo los primeros
-    `max_line` caracteres de cada turno. Esto reduce los tokens enviados a
-    Ollama en el cierre de sesión sin perder los temas tratados.
-
-    Ejemplo:
-        Usuario: qué hace el archivo router.py    (80 chars)
-        Lautaro: El archivo router.py contiene... (80 chars)
-
-    Returns:
-        str listo para insertar en el prompt de resumen.
-    """
+    """Comprime el historial de conversación para el prompt de resumen episódico."""
     lines: list[str] = []
     for m in chat_history[-(MAX_TURNS * 2):]:
         role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
@@ -165,17 +217,15 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 
     Día 3 — cambios clave:
       1. El episodio se guarda SIEMPRE (incluso si el resumen falla).
-         Antes: si el timeout saltaba, record_episode() nunca se ejecutaba.
       2. Historial comprimido: solo los primeros 80 chars por turno.
       3. Timeout reducido a 20s y num_predict a 80 tokens.
     """
+    import requests
+
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
     if turns > 0:
-        from app.config import MODEL_NAME, OLLAMA_URL
-        import requests
-
         log.info("Guardando resumen episódico (%d turnos)", turns)
 
         history_text = _compress_history(chat_history)
@@ -199,15 +249,13 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
                     "stream": False,
                     "options": {"temperature": 0.2, "num_predict": 80},
                 },
-                timeout=_EPISODE_TIMEOUT,  # ← Día 3: 30s → 20s
+                timeout=_EPISODE_TIMEOUT,
             )
             summary = response.json().get("response", summary).strip()
         except Exception as exc:
-            # ← Día 3: ya NO retornamos aquí — guardamos el episodio igualmente
             log.warning("No se pudo generar resumen de sesión: %s", exc)
-            # summary ya tiene el valor de fallback asignado arriba
 
-    # ← Día 3: record_episode() se llama SIEMPRE (antes estaba dentro del try)
+    # Día 3: record_episode() se llama SIEMPRE (antes estaba dentro del try)
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
 
@@ -289,9 +337,7 @@ def process_turn(
         answer = _decide_memory(user_input)
         if answer is not None:
             return answer, []
-        # fallback: la pregunta de memoria no resolvió → RAG con contexto completo
         log.debug("memory no resolvió, fallback a RAG")
         return _decide_rag(user_input, vectordb, chat_history, route="memory")
 
-    # carriles: rag, estado, conversación, y cualquier otro no reconocido
     return _decide_rag(user_input, vectordb, chat_history, route=route)
