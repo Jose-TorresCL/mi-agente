@@ -15,21 +15,23 @@ Contrato público
 Cambios Día 3:
   _decide_exit():
     - El episodio se guarda SIEMPRE, incluso si el resumen falla.
-      Antes: si requests.post lanzaba timeout, record_episode() nunca se llamaba.
     - Historial comprimido: se pasa al LLM solo la última línea de cada turno
       (máx. 80 chars). Menos tokens → respuesta más rápida → menos timeouts.
-    - Timeout reducido de 30s a 20s: el resumen es corto (3 líneas, 120 tokens);
-      si Ollama no responde en 20s en el cierre, probablemente no responderá.
-    - num_predict reducido de 120 a 80 tokens: 3 líneas de resumen no necesitan más.
+    - Timeout reducido de 30s a 20s.
+    - num_predict reducido de 120 a 80 tokens.
 
 Cambios Día 4:
   _decide_memory():
     - Ya no hace dump crudo de project_facts/work_state al usuario.
     - Para preguntas de tipo 'project_facts' y 'work_state', el contexto se
       pasa al LLM para que genere una respuesta sintetizada y natural.
-    - 'profile' y 'tasks' siguen con formato estructurado (son listas cortas
-      y el usuario espera verlas como lista, no como prosa).
-    - Timeout 25s para la llamada de síntesis (más corto que el RAG principal).
+    - 'profile' y 'tasks' siguen con formato estructurado.
+    - Timeout 10s para la llamada de síntesis (bajado de 25s).
+
+Fix Tarea 1 (post-pruebas):
+  - _MEMORY_SYNTHESIS_TIMEOUT: 25s → 10s.
+  - tool_list_files: detecta 'cuántos/cuántas' y devuelve conteo.
+  - _decide_rag: bypass de caché para preguntas de identidad.
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
 from app.prompts import QA_SYSTEM_PROMPT
+from app.tool_helpers import list_project_files
 
 log = get_logger(__name__)
 
@@ -60,10 +63,20 @@ log = get_logger(__name__)
 _EPISODE_TIMEOUT = 20
 
 # Timeout para la síntesis del carril memory (en segundos).
-_MEMORY_SYNTHESIS_TIMEOUT = 25
+# Fix Tarea 1: bajado de 25s a 10s — si Ollama tarda, cae al fallback
+# antes sin congelar la conversación demasiado tiempo.
+_MEMORY_SYNTHESIS_TIMEOUT = 10
 
 # Longitud máxima por línea de historial comprimido (chars).
 _HISTORY_LINE_MAX = 80
+
+# Palabras que indican que el usuario quiere un CONTEO, no una lista.
+_COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
+
+# Preguntas de identidad — bypass del caché semántico para evitar
+# que respuestas de sesiones anteriores contaminен la respuesta.
+_IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
+                      "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 
 
 # ─────────────────────────────────────────────
@@ -102,17 +115,9 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
     """Llama al LLM para sintetizar una respuesta natural a partir del contexto
     de memoria estructurada.
 
-    Día 4: reemplaza el dump crudo de project_facts/work_state por una respuesta
-    sintetizada. Si Ollama falla o tarda más de _MEMORY_SYNTHESIS_TIMEOUT,
-    devuelve el fallback con los datos en bruto.
-
-    Args:
-        question:     Pregunta original del usuario.
-        context_text: Contexto de memoria serializado (project_facts o work_state).
-        fallback:     Texto crudo a mostrar si la síntesis falla.
-
-    Returns:
-        Respuesta sintetizada o fallback.
+    Fix Tarea 1: timeout reducido de 25s a 10s para evitar bloqueos largos.
+    Si Ollama falla o tarda más de _MEMORY_SYNTHESIS_TIMEOUT, devuelve el
+    fallback con los datos en bruto.
     """
     import requests
 
@@ -147,6 +152,44 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
 
 
 # ─────────────────────────────────────────────
+# Helpers — carril tool_list_files
+# ─────────────────────────────────────────────
+
+def _handle_list_files(question: str) -> str:
+    """Devuelve conteo o lista según la intención de la pregunta.
+
+    Fix Tarea 1: si la pregunta contiene 'cuántos/cuántas', devuelve un
+    número en vez de la lista completa de archivos.
+
+    Ejemplos:
+      '¿Cuántos archivos Python tiene el proyecto?' → conteo de .py
+      '¿Cuántos archivos tiene el proyecto?'        → conteo total
+      'lista los archivos del proyecto'             → lista completa
+    """
+    files = list_project_files()
+    question_lower = question.lower()
+
+    wants_count = any(kw in question_lower for kw in _COUNT_KEYWORDS)
+
+    if wants_count:
+        # Detectar filtro por extensión
+        if "python" in question_lower or ".py" in question_lower:
+            py_files = [f for f in files if f.endswith(".py")]
+            return f"El proyecto tiene {len(py_files)} archivos Python (.py)."
+        if ".md" in question_lower or "markdown" in question_lower or "documentación" in question_lower:
+            md_files = [f for f in files if f.endswith(".md")]
+            return f"El proyecto tiene {len(md_files)} archivos Markdown (.md)."
+        if ".json" in question_lower or "json" in question_lower:
+            json_files = [f for f in files if f.endswith(".json")]
+            return f"El proyecto tiene {len(json_files)} archivos JSON."
+        # Sin filtro: contar todo
+        return f"El proyecto tiene {len(files)} archivos en total."
+
+    # Sin keyword de conteo: lista completa (comportamiento original)
+    return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
+
+
+# ─────────────────────────────────────────────
 # Decisores internos por carril
 # ─────────────────────────────────────────────
 
@@ -154,8 +197,8 @@ def _decide_memory(question: str) -> str | None:
     """Responde desde memoria estructurada. Devuelve None si no aplica.
 
     Día 4:
-    - 'profile' y 'tasks' mantienen formato de lista (el usuario espera verlos así).
-    - 'project_facts' y 'work_state' pasan por síntesis LLM para respuesta natural.
+    - 'profile' y 'tasks' mantienen formato de lista.
+    - 'project_facts' y 'work_state' pasan por síntesis LLM.
       Si la síntesis falla, se muestra el formato estructurado como fallback.
     """
     kind = classify_memory_query(question)
@@ -173,7 +216,6 @@ def _decide_memory(question: str) -> str | None:
         f = get_project_facts()
         if not f:
             return "No encontré hechos del proyecto."
-        # Día 4: sintetizar en lugar de listar todos los keys
         context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
         fallback = "**Hechos del proyecto:**\n" + context_text
         return _synthesize_memory_answer(question, context_text, fallback)
@@ -182,7 +224,6 @@ def _decide_memory(question: str) -> str | None:
         w = get_work_state()
         if not w:
             return "No encontré estado de trabajo."
-        # Día 4: sintetizar en lugar de listar todos los campos
         _ws_fields = [
             ("current_focus",  "Foco actual"),
             ("last_completed", "Último paso completado"),
@@ -255,7 +296,6 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
         except Exception as exc:
             log.warning("No se pudo generar resumen de sesión: %s", exc)
 
-    # Día 3: record_episode() se llama SIEMPRE (antes estaba dentro del try)
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
 
@@ -268,14 +308,22 @@ def _decide_rag(
     chat_history: list,
     route: str,
 ) -> tuple[str, list]:
-    """Recupera contexto RAG, invoca LLM y verifica fidelidad."""
-    # 1. Caché semántica
-    cached = cache_lookup(user_input)
-    if cached is not None:
-        log.debug("Respuesta servida desde caché semántica")
-        return cached, []
+    """Recupera contexto RAG, invoca LLM y verifica fidelidad.
 
-    # 2. Contexto de memoria selectivo según carril (ADR-004)
+    Fix Tarea 1: bypass de caché semántica para preguntas de identidad.
+    Evita que el caché devuelva respuestas de sesiones anteriores cuando
+    el usuario pregunta '¿Quién eres?'.
+    """
+    # Bypass caché para preguntas de identidad
+    input_lower = user_input.lower()
+    is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
+
+    if not is_identity:
+        cached = cache_lookup(user_input)
+        if cached is not None:
+            log.debug("Respuesta servida desde caché semántica")
+            return cached, []
+
     memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
 
@@ -284,7 +332,6 @@ def _decide_rag(
         for m in chat_history
     ) or "(sin historial previo)"
 
-    # 3. Invocar LLM
     chain = build_chain(QA_SYSTEM_PROMPT, memory_context)
     answer = chain.invoke({
         "question":     user_input,
@@ -292,7 +339,6 @@ def _decide_rag(
         "chat_history": chat_history_text,
     })
 
-    # 4. Fidelity check con umbral dinámico (ADR-004)
     is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
         log.warning(
@@ -301,8 +347,9 @@ def _decide_rag(
         )
         return NO_EVIDENCE_MSG, source_docs
 
-    # 5. Guardar en caché
-    cache_save(user_input, answer)
+    # Solo guardar en caché si no es pregunta de identidad
+    if not is_identity:
+        cache_save(user_input, answer)
     return answer, source_docs
 
 
@@ -322,13 +369,19 @@ def process_turn(
     No persiste historial — esa responsabilidad pertenece a chat_core.
 
     Flujo:
-        exit   → _decide_exit
-        tool   → dispatch_tool
-        memory → _decide_memory  (fallback a RAG si no resuelve)
-        resto  → _decide_rag
+        exit            → _decide_exit
+        tool            → dispatch_tool
+        tool_list_files → _handle_list_files (con detección de conteo)
+        memory          → _decide_memory (fallback a RAG si no resuelve)
+        resto           → _decide_rag
     """
     if route == "exit":
         return _decide_exit(chat_history)
+
+    # Fix Tarea 1: tool_list_files tiene su propio handler para detectar
+    # si el usuario quiere conteo ('cuántos') o lista completa.
+    if route == "tool_list_files":
+        return _handle_list_files(user_input), []
 
     if route in TOOLS:
         return dispatch_tool(route, user_input), []
