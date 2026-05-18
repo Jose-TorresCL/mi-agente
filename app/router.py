@@ -205,6 +205,30 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
+# ─────────────────────────────────────────────
+# Preguntas cuantitativas sobre el código
+# (parche A — interceptar ANTES de RAG_HINTS)
+# Cuando tool_code_stats esté lista (Opción B),
+# este carril se reemplazará por "tool_code_stats".
+# ─────────────────────────────────────────────
+
+TOOL_UNSUPPORTED_KEYWORDS = [
+    # líneas
+    "cuántas líneas", "cuantas líneas",
+    "cuántas lineas", "cuantas lineas",
+    "líneas de código", "lineas de codigo",
+    "líneas tiene", "lineas tiene",
+    # tamaño / peso
+    "cuánto código", "cuanto codigo",
+    "tamaño del proyecto", "peso del proyecto",
+    # conteo de archivos con intención numérica
+    "cuántos archivos hay", "cuantos archivos hay",
+    "cuántos archivos tiene", "cuantos archivos tiene",
+    # funciones / clases
+    "cuántas funciones", "cuantas funciones",
+    "cuántas clases", "cuantas clases",
+]
+
 RAG_HINTS = [
     "según los documentos", "segun los documentos",
     "según la documentación", "segun la documentación",
@@ -225,6 +249,8 @@ VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
     "memory", "rag",
+    "unsupported",       # parche A: preguntas cuantitativas sin tool aún
+    # "tool_code_stats", # Opción B: descomentar cuando esté implementada
 }
 
 _CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistente local.
@@ -239,6 +265,7 @@ Carriles disponibles y cuándo usarlos:
 - tool_read_file      : el usuario quiere leer el CONTENIDO de un archivo específico
 - memory              : el usuario pregunta por su perfil, tareas EXISTENTES, estado actual o hechos guardados
 - rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools, arquitectura o SUGERENCIAS
+- unsupported         : preguntas que piden MÉTRICAS NUMÉRICAS del código (líneas, bytes, funciones, clases)
 
 IMPORTANTE — memory vs rag para tareas:
   "qué tareas tengo pendientes"                  → memory
@@ -253,6 +280,11 @@ IMPORTANTE — memory para identidad y estado:
   "cuál es mi foco actual"                       → memory
   "qué hicimos ayer"                             → memory
 
+IMPORTANTE — unsupported para métricas numéricas:
+  "cuántas líneas de código tiene el proyecto"   → unsupported
+  "cuántos archivos hay"                         → unsupported
+  "cuántas funciones tiene router.py"            → unsupported
+
 Ejemplos:
 "apunta que tengo que revisar el router"   → tool_create_task
 "ya terminé con la tarea del router"       → tool_complete_task
@@ -266,6 +298,8 @@ Ejemplos:
 "cómo funciona Chroma"                     → rag
 "muéstrame los archivos del proyecto"      → tool_list_files
 "¿qué hace el router híbrido?"             → rag
+"cuántas líneas tiene el proyecto"         → unsupported
+"cuántos archivos hay en app/"             → unsupported
 
 Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
 
@@ -296,6 +330,19 @@ def _is_question(text: str) -> bool:
     return stripped.startswith(("¿", "?")) or stripped.endswith("?")
 
 
+def _handle_unsupported(question: str) -> str:
+    """Mensaje honesto para preguntas cuantitativas que el agente aún no puede responder."""
+    return (
+        "Todavía no tengo una herramienta para calcular métricas del código "
+        "(líneas, funciones, tamaño de archivos) de forma precisa.\n\n"
+        "Puedes obtener ese dato en tu terminal:\n"
+        "  • PowerShell:  `Get-ChildItem app/ -Recurse -Filter *.py | "
+        "ForEach-Object { (Get-Content $_).Count } | Measure-Object -Sum`\n"
+        "  • Git Bash / WSL:  `find app/ -name '*.py' | xargs wc -l`\n\n"
+        "Pronto tendré la herramienta `tool_code_stats` para responder esto directamente."
+    )
+
+
 def _route_by_keywords(question: str) -> str | None:
     """Capa 1: clasificación instantánea por keywords."""
     q = question.lower().strip()
@@ -308,6 +355,8 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
+    # Parche A: interceptar métricas ANTES de RAG para evitar alucinaciones numéricas
+    if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
     if any(k in q for k in RAG_HINTS):                        return "rag"
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
@@ -415,7 +464,7 @@ def format_estado() -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Returns str con el carril ('rag', 'memory', 'tool_*', 'exit').
+    Returns str con el carril ('rag', 'memory', 'tool_*', 'unsupported', 'exit').
     Nunca retorna None ni lanza excepciones — fallback a 'rag'.
     """
     if question.lower().strip() in _EXIT_WORDS:
