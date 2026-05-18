@@ -10,17 +10,19 @@ Estrategia en tres capas:
      Solo activa si la similitud supera el umbral EMBED_THRESHOLD.
      Usa singleton _intent_db para no recrear Chroma en cada consulta.
 
-  3. _route_by_llm()        → ~3-8s, solo si embeddings tiene baja confianza.
-     Último recurso para frases muy nuevas o sin ningún ejemplo cercano.
+  3. Fallback directo → 'rag' sin llamada al LLM.
+     Si Capa 1 y Capa 2 no resuelven, se asume RAG como carril seguro.
+     Eliminado _route_by_llm() porque timeout=30s + modelo ocupado
+     generando respuesta = 30s de espera inútil por turno.
 
 Logging diferenciado:
   [router:kw]    → resuelto por keywords (0ms)
   [router:emb]   → resuelto por embeddings (~50ms)
-  [router:llm]   → resuelto por LLM fallback (~3-8s)
+  [router:llm]   → fallback directo a rag (0ms, sin llamada LLM)
 
 Requisito previo para la Capa 2:
   Ejecutar python build_intent_index.py una vez para crear storage/intent_index.
-  Si el índice no existe, la Capa 2 se salta silenciosamente y pasa a la Capa 3.
+  Si el índice no existe, la Capa 2 se salta silenciosamente.
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ log = get_logger(__name__)
 SESSION_STATS: dict[str, int] = {
     "kw":    0,
     "emb":   0,
-    "llm":   0,
+    "llm":   0,   # ahora cuenta 'fallback directo a rag'
     "total": 0,
 }
 
@@ -126,7 +128,6 @@ MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
     "cómo prefiero", "como prefiero", "cómo trabajo", "como trabajo",
     "perfil", "mi perfil",
-    # fix #9: frases de identidad
     "quién soy", "quien soy",
     "quién soy yo", "quien soy yo",
     "cómo me llamo", "como me llamo",
@@ -138,7 +139,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en qué vamos", "en que vamos", "qué sigue", "que sigue",
     "en qué estoy", "en que estoy", "qué estoy haciendo", "que estoy haciendo",
     "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
-    # fix #8: frases naturales de estado
     "qué hago hoy", "que hago hoy",
     "cuál es el plan", "cual es el plan",
     "qué hicimos", "que hicimos",
@@ -205,26 +205,15 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
-# ─────────────────────────────────────────────
-# Preguntas cuantitativas sobre el código
-# (parche A — interceptar ANTES de RAG_HINTS)
-# Cuando tool_code_stats esté lista (Opción B),
-# este carril se reemplazará por "tool_code_stats".
-# ─────────────────────────────────────────────
-
 TOOL_UNSUPPORTED_KEYWORDS = [
-    # líneas
     "cuántas líneas", "cuantas líneas",
     "cuántas lineas", "cuantas lineas",
     "líneas de código", "lineas de codigo",
     "líneas tiene", "lineas tiene",
-    # tamaño / peso
     "cuánto código", "cuanto codigo",
     "tamaño del proyecto", "peso del proyecto",
-    # conteo de archivos con intención numérica
     "cuántos archivos hay", "cuantos archivos hay",
     "cuántos archivos tiene", "cuantos archivos tiene",
-    # funciones / clases
     "cuántas funciones", "cuantas funciones",
     "cuántas clases", "cuantas clases",
 ]
@@ -249,62 +238,8 @@ VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
     "memory", "rag",
-    "unsupported",       # parche A: preguntas cuantitativas sin tool aún
-    # "tool_code_stats", # Opción B: descomentar cuando esté implementada
+    "unsupported",
 }
-
-_CLASSIFICATION_PROMPT = """Eres un clasificador de intenciones para un asistente local.
-Tu única tarea es identificar a qué carril pertenece la pregunta del usuario.
-
-Carriles disponibles y cuándo usarlos:
-- tool_create_task    : el usuario quiere crear, apuntar, registrar o agregar una tarea nueva
-- tool_complete_task  : el usuario quiere marcar, cerrar o completar una tarea existente
-- tool_update_work_state : el usuario quiere cambiar el foco, fase, siguiente paso o estado de trabajo
-- tool_save_fact      : el usuario quiere guardar un hecho, dato o información del proyecto
-- tool_list_files     : el usuario quiere ver la LISTA DE ARCHIVOS del proyecto (solo esto)
-- tool_read_file      : el usuario quiere leer el CONTENIDO de un archivo específico
-- memory              : el usuario pregunta por su perfil, tareas EXISTENTES, estado actual o hechos guardados
-- rag                 : preguntas sobre funcionamiento, componentes, fases, conceptos, tools, arquitectura o SUGERENCIAS
-- unsupported         : preguntas que piden MÉTRICAS NUMÉRICAS del código (líneas, bytes, funciones, clases)
-
-IMPORTANTE — memory vs rag para tareas:
-  "qué tareas tengo pendientes"                  → memory
-  "hazme una lista de tareas que podríamos crear" → rag
-  "qué más podríamos implementar"                 → rag
-  "según los documentos qué falta por hacer"      → rag
-
-IMPORTANTE — memory para identidad y estado:
-  "quién soy yo"                                 → memory
-  "cómo me llamo"                                → memory
-  "qué hago hoy"                                 → memory
-  "cuál es mi foco actual"                       → memory
-  "qué hicimos ayer"                             → memory
-
-IMPORTANTE — unsupported para métricas numéricas:
-  "cuántas líneas de código tiene el proyecto"   → unsupported
-  "cuántos archivos hay"                         → unsupported
-  "cuántas funciones tiene router.py"            → unsupported
-
-Ejemplos:
-"apunta que tengo que revisar el router"   → tool_create_task
-"ya terminé con la tarea del router"       → tool_complete_task
-"cambia mi foco a fase 3"                  → tool_update_work_state
-"ponme al día de lo que hice ayer"         → memory
-"qué tengo pendiente"                      → memory
-"en qué fase estamos"                      → memory
-"quién soy yo"                             → memory
-"qué hago hoy"                             → memory
-"qué tools están operativas"               → rag
-"cómo funciona Chroma"                     → rag
-"muéstrame los archivos del proyecto"      → tool_list_files
-"¿qué hace el router híbrido?"             → rag
-"cuántas líneas tiene el proyecto"         → unsupported
-"cuántos archivos hay en app/"             → unsupported
-
-Responde únicamente con el nombre del carril, sin explicación ni texto adicional.
-
-Pregunta del usuario: "{question}"
-Carril:"""
 
 
 # ─────────────────────────────────────────────
@@ -355,7 +290,6 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
-    # Parche A: interceptar métricas ANTES de RAG para evitar alucinaciones numéricas
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
     if any(k in q for k in RAG_HINTS):                        return "rag"
     if extract_file_path(question) is not None:               return "tool_read_file"
@@ -379,40 +313,15 @@ def _route_by_embeddings(question: str) -> str | None:
         lane = doc.metadata.get("lane", "")
         log.debug("[router:emb] similitud=%.2f lane_candidato=%s", similarity, lane)
         if _is_question(question) and lane in _WRITE_LANES:
-            log.debug("[router:emb] pregunta detectada — bloqueando '%s' → pasa a LLM", lane)
+            log.debug("[router:emb] pregunta detectada — bloqueando '%s' → fallback rag", lane)
             return None
         if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
-        log.debug("[router:emb] similitud baja (%.2f < %.2f) → pasa a LLM", similarity, EMBED_THRESHOLD)
+        log.debug("[router:emb] similitud baja (%.2f < %.2f) → fallback rag", similarity, EMBED_THRESHOLD)
         return None
     except Exception as e:
-        log.warning("[router:emb] error: %s → pasa a LLM", e)
+        log.warning("[router:emb] error: %s → fallback rag", e)
         return None
-
-
-def _route_by_llm(question: str) -> str:
-    try:
-        import requests
-        prompt = _CLASSIFICATION_PROMPT.format(question=question)
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0, "num_predict": 10, "stop": ["\n", " ", "."]},
-            },
-            timeout=30,
-        )
-        raw = response.json().get("response", "").strip().lower()
-        lane = raw.strip("\"' \n\t")
-        if lane in VALID_LANES:
-            return lane
-        log.warning("[router:llm] respuesta inesperada: '%s' → rag", raw)
-        return "rag"
-    except Exception as e:
-        log.error("[router:llm] error: %s → rag", e)
-        return "rag"
 
 
 # ─────────────────────────────────────────────
@@ -420,16 +329,11 @@ def _route_by_llm(question: str) -> str:
 # ─────────────────────────────────────────────
 
 def format_estado() -> str:
-    """Genera el bloque de texto para el comando !estado / !estatus.
-
-    Incluye:
-      - Estadísticas del router (kw / emb / llm / total)
-      - Stats de la caché semántica (hits, misses, entradas, ttl_hours)
-    """
+    """Genera el bloque de texto para el comando !estado / !estatus."""
     from app.semantic_cache import cache_stats
 
     stats  = cache_stats()
-    total  = SESSION_STATS["total"] or 1  # evitar división por cero
+    total  = SESSION_STATS["total"] or 1
     kw_pct  = SESSION_STATS["kw"]  * 100 // total
     emb_pct = SESSION_STATS["emb"] * 100 // total
     llm_pct = SESSION_STATS["llm"] * 100 // total
@@ -445,7 +349,7 @@ def format_estado() -> str:
         f"  Consultas totales: {SESSION_STATS['total']}\n"
         f"  → Capa 1 (kw):    {SESSION_STATS['kw']}  ({kw_pct}%)\n"
         f"  → Capa 2 (emb):   {SESSION_STATS['emb']}  ({emb_pct}%)\n"
-        f"  → Capa 3 (llm):   {SESSION_STATS['llm']}  ({llm_pct}%)\n"
+        f"  → Fallback (rag): {SESSION_STATS['llm']}  ({llm_pct}%)\n"
         f"{'─' * 40}\n"
         f" Caché semántica\n"
         f"{'─' * 40}\n"
@@ -484,7 +388,7 @@ def route_query(question: str) -> str:
         log.info("[router:emb] '%s' → %s", question[:50], emb_lane)
         return emb_lane
 
+    # Capa 3 eliminada: fallback directo a rag sin llamada LLM
     SESSION_STATS["llm"] += 1
-    llm_lane = _route_by_llm(question)
-    log.info("[router:llm] '%s' → %s", question[:50], llm_lane)
-    return llm_lane
+    log.info("[router:llm] '%s' → rag", question[:50])
+    return "rag"
