@@ -32,6 +32,12 @@ Fix Tarea 1 (post-pruebas):
   - _MEMORY_SYNTHESIS_TIMEOUT: 25s → 10s.
   - tool_list_files: detecta 'cuántos/cuántas' y devuelve conteo.
   - _decide_rag: bypass de caché para preguntas de identidad.
+
+Fix Paso 2 (cache condicional):
+  - _CACHE_MIN_SCORE = 0.55: solo se cachea si fidelity_score >= umbral.
+  - Evita que respuestas genéricas/inventadas queden en caché entre sesiones.
+  - Las respuestas que pasan el bloqueo de fidelidad pero con score bajo
+    se recalculan en cada sesión en vez de propagarse como respuesta "oficial".
 """
 from __future__ import annotations
 
@@ -70,11 +76,17 @@ _MEMORY_SYNTHESIS_TIMEOUT = 10
 # Longitud máxima por línea de historial comprimido (chars).
 _HISTORY_LINE_MAX = 80
 
+# Score mínimo de fidelidad para guardar una respuesta en caché.
+# Fix Paso 2: antes se cacheaba cualquier respuesta que pasara el bloqueo.
+# Ahora solo se cachea si el score es suficientemente alto, evitando que
+# respuestas genéricas/inventadas se propaguen entre sesiones.
+_CACHE_MIN_SCORE = 0.55
+
 # Palabras que indican que el usuario quiere un CONTEO, no una lista.
 _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 
 # Preguntas de identidad — bypass del caché semántico para evitar
-# que respuestas de sesiones anteriores contaminен la respuesta.
+# que respuestas de sesiones anteriores contaminen la respuesta.
 _IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                       "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 
@@ -313,6 +325,10 @@ def _decide_rag(
     Fix Tarea 1: bypass de caché semántica para preguntas de identidad.
     Evita que el caché devuelva respuestas de sesiones anteriores cuando
     el usuario pregunta '¿Quién eres?'.
+
+    Fix Paso 2: solo se cachea si fidelity_score >= _CACHE_MIN_SCORE (0.55).
+    Evita que respuestas genéricas del LLM queden guardadas y se sirvan
+    como respuesta "oficial" en sesiones futuras con similitud alta.
     """
     # Bypass caché para preguntas de identidad
     input_lower = user_input.lower()
@@ -347,9 +363,15 @@ def _decide_rag(
         )
         return NO_EVIDENCE_MSG, source_docs
 
-    # Solo guardar en caché si no es pregunta de identidad
-    if not is_identity:
+    # Fix Paso 2: guardar en caché SOLO si score supera el umbral mínimo.
+    # Respuestas genéricas pasan el bloqueo de fidelidad pero no llegan
+    # a cachearse, forzando recalculo en la próxima sesión.
+    if not is_identity and score >= _CACHE_MIN_SCORE:
+        log.debug("Guardando en caché (score=%.3f >= %.2f)", score, _CACHE_MIN_SCORE)
         cache_save(user_input, answer)
+    elif not is_identity:
+        log.debug("Respuesta NO cacheada (score=%.3f < %.2f)", score, _CACHE_MIN_SCORE)
+
     return answer, source_docs
 
 
