@@ -1,7 +1,10 @@
 # Roadmap del proyecto
 
-Última actualización: 10/05/2026  
-Fase actual: Fase 5 — Refactor modular y consolidación arquitectural
+> ⚠️ **Documento vivo** — última actualización: 17/05/2026  
+> Las fases completadas son registro histórico permanente.  
+> Solo la sección "Prioridades actuales" describe el estado real hoy.
+
+Fase actual: **Fase 6 — Memory Manager y recuperación selectiva**
 
 ---
 
@@ -18,53 +21,38 @@ Cada prioridad se clasifica como:
 
 ---
 
-## Prioridades actuales
+## Prioridades actuales (Fase 6)
 
-### 🔴 1. Enriquecer el vector store
+### 🔴 1. Fix estructural del caché semántico
 
-**Qué es**: Actualizar los documentos en `data/docs/` para que el RAG
-tenga conocimiento real del estado actual del proyecto.
+**Qué es**: El caché semántico está actuando como cortocircuito global
+que se activa antes de que el carril `memory` llegue a su lógica real.
+El caché solo debe existir en el carril `rag`, nunca en `memory`.
 
-**Por qué ahora**: Sin documentos actualizados, todas las preguntas
-documentales al agente se responden con información de Fase 4 o
-anterior. Es el techo más bajo del sistema hoy.
+**Por qué ahora**: Sin este fix, el agente puede responder con entradas
+cacheadas obsoletas incluso para preguntas de estado actual.
 
-**Cómo medirlo**: El agente responde correctamente a:
-- "¿qué hace rag_engine.py?" → respuesta correcta con Fase 5
-- "¿en qué fase estamos?" → responde Fase 5
-- "¿qué es memory_context.py?" → lo describe bien
-
-**Acción concreta**:
-```
-Actualizar:   data/docs/proyecto/arquitectura_actual.md
-              data/docs/proyecto/estado_proyecto.md
-Agregar:      data/docs/proyecto/decisiones_arquitectura.md
-              data/docs/proyecto/roadmap.md
-Luego:        python indexacion.py
-```
+**Cómo medirlo**: Preguntar "¿en qué fase estamos?" siempre devuelve
+el estado real desde `work_state.json`, nunca desde el caché.
 
 ---
 
-### 🟠 2. memory_manager.py — guardián de la capa de memoria
+### 🟠 2. Recuperación selectiva de contexto
 
-**Qué es**: Un módulo que centraliza toda lectura y escritura de
-memoria estructurada. Ningún otro módulo toca los JSON directamente.
+**Qué es**: Elegir qué tipo de memoria es relevante para cada pregunta,
+en lugar de inyectar siempre toda la memoria disponible.
 
-**Por qué ahora**: Hoy `tools.py` escribe directo a JSON. Eso crea
-una fuga entre la capa de inteligencia y la capa de memoria. Es la
-única fuga arquitectural real que queda.
+**Por qué ahora**: `memory_manager.py` ya existe. Este es el siguiente
+paso natural para que la recuperación sea inteligente.
 
-**Interfaz objetivo**:
-```python
-memory_manager.get_context()       # ensambla contexto para el prompt
-memory_manager.update_state(...)   # actualiza work_state
-memory_manager.save_fact(...)      # guarda en project_facts
-memory_manager.save_episode(...)   # guarda resumen de sesión
-```
+**Mapa de tipos de memoria**:
 
-**Test arquitectural**: Si cambias cómo se guarda `work_state`,
-¿tienes que tocar `chat_ui.py`? Si la respuesta es sí, las capas
-siguen pegadas.
+| Tipo | Cuándo recuperar |
+|---|---|
+| Working memory | Preguntas sobre foco actual o estado |
+| Semántica | Preguntas sobre proyecto, arquitectura, decisiones |
+| Episódica | Preguntas sobre sesiones anteriores, "¿en qué quedamos?" |
+| Procedimental | Se activa automáticamente vía router y prompts |
 
 ---
 
@@ -72,53 +60,21 @@ siguen pegadas.
 
 **Qué es**: Tests que validan una capa sin depender de las otras.
 
-**Por qué**: Los 67 tests actuales validan comportamiento integrado.
-Tests por capa validan que los bordes entre capas son reales.
-
 **Tests mínimos**:
 - `test_memory_layer.py`: cambiar work_state no toca chat_ui
-- `test_intelligence_layer.py`: router clasifica correctamente sin LLM
+- `test_intelligence_layer.py`: router clasifica sin LLM
 - `test_rag_engine.py`: RAG retorna respuesta con evidencia real
 
 ---
 
-### 🟡 4. Batería de evaluación fija
+### 🟡 4. Distinción formal de 4 tipos de memoria en código
 
-**Qué es**: 9 preguntas estándar ejecutables con un script que
-mide si el sistema responde correctamente.
+**Qué es**: Implementar interfaces separadas para working, semántica,
+episódica y procedimental dentro de `memory_manager.py`.
 
-**Por qué**: Sin evaluación fija no sabes si un cambio mejoró o
-empeoró el comportamiento real.
-
-**Preguntas mínimas**:
-1. "¿qué tareas tengo pendientes?" → memory
-2. "¿qué hace router.py?" → rag
-3. "anota que el modelo es llama3.2" → tool_save_fact
-4. "¿en qué fase estamos?" → rag
-5. "crea una tarea: actualizar docs" → tool_create_task
-6. "¿qué hace memory_context.py?" → rag
-7. "¿cuál es mi foco actual?" → memory
-8. "lista los archivos del proyecto" → tool_list_files
-9. "¿cómo funciona el router?" → rag
-
----
-
-### 🟢 5. Recuperación selectiva de contexto
-
-**Qué es**: Elegir qué tipo de memoria es relevante para cada pregunta,
-en lugar de inyectar siempre toda la memoria disponible.
-
-**Mapa de tipos de memoria**:
-
-| Tipo | Cuándo recuperar |
-|---|---|
-| Working memory | Preguntas sobre foco actual o estado |
-| Semántica | Preguntas sobre el proyecto, arquitectura, decisiones |
-| Episódica | Preguntas sobre sesiones anteriores, "¿en qué quedamos?" |
-| Procedimental | Se activa automáticamente vía router y prompts |
-
-**Por qué es futuro**: Requiere que `memory_manager.py` exista
-primero y que los 4 tipos estén bien separados en el código.
+**Por qué**: Hoy `memory_manager` es un guardián que centraliza —
+el siguiente nivel es que distinga activamente qué tipo de memoria
+corresponde a cada operación.
 
 ---
 
@@ -136,12 +92,13 @@ Dos preguntas para saber si la arquitectura mejora:
 
 ## Métricas de progreso arquitectural
 
-| Métrica | Hoy | Objetivo |
+| Métrica | Hoy (17/05) | Objetivo |
 |---|---|---|
-| Imports cruzados entre capas | Algunos | Cero |
-| Módulos que escriben JSON directo | tools.py | Solo memory_manager |
-| Archivos tocados por cada cambio de memoria | 3-4 | 1 |
+| Imports cruzados entre capas | Mínimos | Cero |
+| Módulos que escriben JSON directo | Solo memory_manager | Solo memory_manager |
+| Archivos tocados por cambio de memoria | 1–2 | 1 |
 | Tests por capa aislada | 0 | 3 mínimos |
+| Docs de baja calidad en el índice | 0 (excluidos) | 0 |
 
 ---
 
@@ -154,5 +111,6 @@ Dos preguntas para saber si la arquitectura mejora:
 | Fase 3A | Router híbrido keywords + LLM | ✅ Completa |
 | Fase 3B | Clasificador embeddings + intent_index | ✅ Completa |
 | Fase 4 | Caché, fidelity check, episodios, anti-alucinación | ✅ Completa |
-| Fase 5 | Refactor modular, 3 capas limpias, 67 tests | 🔄 En curso |
-| Fase 6 | memory_manager + recuperación selectiva | 🔲 Pendiente |
+| Fase 5 | Refactor modular, 3 capas limpias, memory_manager, 67+ tests | ✅ Completa |
+| Fase 6 | Fix caché + recuperación selectiva + tests por capa | 🔄 En curso |
+| Fase 7 | 4 tipos de memoria con interfaces separadas | 🔲 Pendiente |

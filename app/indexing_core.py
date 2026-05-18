@@ -35,6 +35,20 @@ DOCS_DIR    = Path("data/docs")
 STORAGE_DIR = Path("storage")
 CHROMA_DIR  = Path(_CHROMA_DIR_STR)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Archivos excluidos del índice RAG
+# Razones de exclusión:
+#   ollama-api.md      → 55 KB, genera ~110 chunks de código sin contexto;
+#                        el agente nunca recibe preguntas sobre la API interna
+#   hardware-modelos.md → muy pequeño y genérico; el LLM ya conoce este info
+#   chroma-introduccion.md → genérico; chroma-queries.md lo cubre mejor
+# ─────────────────────────────────────────────────────────────────────────────
+EXCLUDED_FILENAMES: set[str] = {
+    "ollama-api.md",
+    "hardware-modelos.md",
+    "chroma-introduccion.md",
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-reindex — detección de docs nuevos
@@ -59,10 +73,12 @@ def needs_reindex() -> tuple[bool, str]:
     # Timestamp del vectorstore (cuándo se creó/actualizó por última vez)
     index_mtime = chroma_sqlite.stat().st_mtime
 
-    # Timestamp del doc más reciente en data/docs/
+    # Timestamp del doc más reciente en data/docs/ (excluidos los omitidos)
     doc_files = [
         p for p in DOCS_DIR.rglob("*")
-        if p.is_file() and p.suffix.lower() in {".md", ".txt", ".pdf"}
+        if p.is_file()
+        and p.suffix.lower() in {".md", ".txt", ".pdf"}
+        and p.name not in EXCLUDED_FILENAMES
     ]
     if not doc_files:
         return False, "no hay docs en data/docs/"
@@ -206,6 +222,11 @@ def load_documents() -> list[Document]:
 
     for path in DOCS_DIR.rglob("*"):
         if path.is_dir():
+            continue
+
+        # ── Exclusiones explícitas ──────────────────────────────────────────
+        if path.name in EXCLUDED_FILENAMES:
+            log.info("[indexing] EXCLUIDO: %s (en lista de exclusión)", path.name)
             continue
 
         suffix = path.suffix.lower()
