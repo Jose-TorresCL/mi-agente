@@ -12,11 +12,20 @@ Contrato público
 ─────────────────
     process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]
 
-R1-B (contratos internos):
-  - process_turn() tiene tipo de retorno explícito: tuple[str, list]
-  - _decide_rag() tiene tipo de retorno explícito: tuple[str, list, int, int, bool]
-  - Los tipos semánticos de cada campo están documentados en schemas.py
-    como DecisionResult y RagResult.
+R1 — contratos internos (CERRADO):
+  R1-A (schemas.py):
+    - DecisionResult: TypedDict con la semántica de process_turn().
+    - RagResult: TypedDict con la semántica de _decide_rag().
+  R1-B (este archivo):
+    - process_turn()  -> tuple[str, list]        (tipado explícito)
+    - _decide_rag()   -> tuple[str, list, int, int, bool]  (tipado explícito)
+  R1-C (test_architecture.py):
+    - intelligence.py NO importa memory_store directamente.
+  R1-D (test_architecture.py):
+    - tools.py NO importa memory_store directamente.
+  R1-E (test_architecture.py):
+    - router.py NO importa chromadb ni langchain_chroma directamente.
+  Verificar con: pytest tests/test_architecture.py -v
 
 Cambios Día 3:
   _decide_exit():
