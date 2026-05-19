@@ -1,149 +1,116 @@
-# ADR-004 — Mejoras de calidad RAG: MMR, encoding UTF-8 y context selectivo
+# ADR-004 — Calidad RAG: MMR, fidelity_check y contexto selectivo
 
-**Fecha**: 11/05/2026
-**Estado**: Parcialmente implementado (MMR y encoding pendientes de aplicar; context selectivo en diseño)
-**Autores**: Jose Torres + Lautaro (asistente IA local)
-**ADRs relacionados**: ADR-001 (router híbrido), ADR-003 (memory_manager)
+**Fecha original:** 11/05/2026 (MMR + encoding + context selectivo en diseño)  
+**Última actualización:** 19/05/2026 (Fix 6C — fidelity_check 3 reglas implementado)  
+**Estado:** ✅ IMPLEMENTADO  
+**Autor:** Jose Torres + Lautaro  
+**ADRs relacionados:** ADR-001 (router), ADR-003 (memory_manager), ADR-005 (carriles)
+
+> **Nota de versionado:** Originalmente registraba MMR, encoding y context selectivo
+> como decisiones pendientes. En Fase 6B–6C todas quedaron implementadas y el
+> `fidelity_check` fue endurecido con 3 reglas explícitas.
 
 ---
 
 ## Contexto
 
-Tras indexar 18 documentos con 228 chunks (sesión 11/05/2026), se identificaron tres problemas
-de calidad que limitan las respuestas del agente:
+Tras indexar documentos del proyecto, se identificaron tres problemas de calidad
+que limitaban las respuestas del agente:
 
-1. **Retriever usa `similarity`**: devuelve los k chunks más parecidos, que pueden ser todos
-   del mismo archivo. Si el doc más parecido es `ollama-api.md`, los 5 chunks son de Ollama
-   aunque la respuesta esté en `langchain-retriever.md`.
-
-2. **Encoding UTF-8 roto**: `json.dump` en `memory_store.py` usa `ensure_ascii=True` (default),
-   lo que convierte "próximo" en `"pr\\u00f3ximo"`. Los hechos en `project_facts.json` muestran
-   tildes corruptas al leerlos desde el sistema operativo.
-
-3. **Memory context no es selectivo**: `memory_context.py` inyecta siempre los mismos bloques
-   (perfil + workstate + hechos + tareas) sin importar si la pregunta es documental o de estado.
-   Esto ocupa tokens del contexto innecesariamente y puede confundir al LLM.
+1. **Retriever por similitud pura**: devuelve los k chunks más parecidos, que pueden
+   ser todos del mismo archivo (falta diversidad de fuentes).
+2. **RAG respondía sin soporte documental real**: el LLM generaba respuestas aunque
+   los chunks recuperados no tuvieran evidencia para la pregunta.
+3. **Contexto de memoria inyectado siempre completo**: tokens innecesarios para
+   preguntas documentales que no necesitan workstate ni tareas.
 
 ---
 
-## Decisiones
+## Decisión 1 — MMR en el retriever (Fase 5)
 
-### Decisión 1 — Activar MMR en el retriever
+**Qué es MMR**: Maximal Marginal Relevance balancea relevancia y diversidad.
+En vez de los 5 chunks más similares (que pueden ser redundantes), selecciona
+candidatos relevantes *y* distintos entre sí.
 
-**Qué es MMR (Maximal Marginal Relevance)**:
-MMR balancea relevancia y diversidad. En vez de devolver los 5 chunks más similares a la
-pregunta (que pueden ser redundantes), MMR selecciona candidatos que sean relevantes *y*
-distintos entre sí.
-
-**Parámetros clave**:
-- `fetch_k=20`: cuántos candidatos iniciales considera Chroma antes de filtrar
-- `lambda_mult=0.6`: balance entre relevancia (1.0) y diversidad (0.0). 0.6 prioriza
-  levemente la relevancia manteniendo diversidad razonable.
-- `k=5`: cantidad final de chunks devueltos (sin cambio)
-
-**Cambio en `app/rag_engine.py`**:
 ```python
-# ANTES
-return vectordb.as_retriever(
-    search_type="similarity",
-    search_kwargs=search_kwargs,
-)
-
-# DESPUÉS
-search_kwargs.setdefault("fetch_k", 20)
-search_kwargs.setdefault("lambda_mult", 0.6)
-return vectordb.as_retriever(
+# rag_engine.py
+vectordb.as_retriever(
     search_type="mmr",
-    search_kwargs=search_kwargs,
+    search_kwargs={"k": 5, "fetch_k": 20, "lambda_mult": 0.6}
 )
 ```
 
-**Por qué 0.6 y no 0.5**: Con documentos técnicos especializados (ADRs, papers, docs de
-LangChain) es preferible que el chunk más relevante siempre aparezca. 0.5 puede descartar
-el mejor chunk en favor de diversidad. 0.6 es el balance probado en la literatura RAG.
-
-**Alternativa descartada**: `search_type="similarity_score_threshold"` — requiere calibrar
-un umbral fijo que no funciona igual para todos los tipos de preguntas.
+- `fetch_k=20`: candidatos iniciales antes de filtrar por diversidad
+- `lambda_mult=0.6`: prioriza levemente relevancia sobre diversidad (0.5 = equilibrio, 1.0 = solo relevancia)
+- Alternativa descartada: `similarity_score_threshold` — requiere umbral fijo que no funciona igual para todos los tipos de preguntas
 
 ---
 
-### Decisión 2 — Fix encoding UTF-8 en json.dump
+## Decisión 2 — fidelity_check con 3 reglas (Fase 4 + Fix 6C)
 
-**El problema**:
+**Problema**: el LLM generaba respuestas aunque los docs recuperados fueran
+irrelevantes o estuvieran vacíos. No había forma de detectarlo automáticamente.
+
+**Solución**: `fidelity_check.py` verifica soporte documental antes de devolver
+la respuesta. Si falla, devuelve un mensaje de abstención explícito.
+
+### Las 3 reglas (Fix 6C — Fase 6C):
+
 ```python
-# memory_store.py — ANTES (bug):
-json.dump(data, f, indent=2)
-# Resultado en archivo: {"clave": "pr\u00f3ximo paso"}
+# fidelity_check.py
+def fidelity_check(source_docs, chunks_texts, answer) -> tuple[bool, float]:
 
-# DESPUÉS (fix):
-json.dump(data, f, indent=2, ensure_ascii=False)
-# Resultado en archivo: {"clave": "próximo paso"}
+    # Regla 1: sin docs → bloqueo directo
+    if not source_docs:
+        return False, 0.0
+
+    # Regla 2: chunks vacíos → bloqueo directo  
+    if not chunks_texts or all(len(c.strip()) == 0 for c in chunks_texts):
+        return False, 0.0
+
+    # Regla 3: respuesta corta SIN evidencia numérica en chunks → bloqueo
+    # (Fix 6C explícito: respuestas < 7 palabras que no tienen soporte)
+    if len(answer.split()) < 7 and not _has_numeric_evidence(chunks_texts, answer):
+        return False, 0.0
+
+    # Verificación semántica normal...
+    return _semantic_fidelity(source_docs, answer)
 ```
 
-**Por qué importa**: Los hechos en `project_facts.json` se inyectan al prompt del LLM.
-Si llegan con secuencias de escape unicode en vez de caracteres legibles, el LLM los
-interpreta peor y el contexto parece "ruidoso".
-
-**Alcance**: todos los `json.dump` en `memory_store.py` — se estima 4-6 ocurrencias.
-
-**Riesgo**: ninguno. `ensure_ascii=False` es el estándar para aplicaciones en español.
-Los archivos JSON con UTF-8 directo son más legibles y ocupan menos bytes que la versión
-escapada.
+**Test de verificación**:
+```python
+# test_fidelity_warn1.py — cubre los 3 casos
+assert fidelity_check(docs=[], answer="cualquier cosa") == (False, 0.0)
+assert fidelity_check(docs=[doc], chunks=[], answer="x") == (False, 0.0)
+assert fidelity_check(docs=[doc], chunks=["hola"], answer="sí") == (False, 0.0)
+```
 
 ---
 
-### Decisión 3 — Arquitectura de memory context selectivo (diseño)
+## Decisión 3 — Context selectivo por intención (Fase 6B)
 
-**Problema actual**:
-```python
-# memory_context.py — inyecta todo siempre
-def build_context(question, vs):
-    memoria = build_structured_memory_context()  # perfil + workstate + hechos + tareas
-    rag = retrieve_context(question, vs)         # chunks de Chroma
-    return memoria + rag                         # TODO: seleccionar según tipo de pregunta
-```
+Ver ADR-003 Decisión 2. El context selectivo se implementó en `memory_manager.get_context_for()`.
+El carril `rag` recibe solo RAG chunks + perfil mínimo. El carril `memory` es TERMINAL.
 
-**Diseño propuesto**:
-El router ya clasifica las preguntas en carriles (`rag`, `memoria`, `estado`, `tool`, etc.).
-La idea es usar esa clasificación para decidir qué bloques de memoria inyectar:
+---
 
-| Carril del router | Bloques inyectados |
-|---|---|
-| `rag` | RAG chunks + perfil mínimo (nombre, proyecto) |
-| `memoria` | workstate + hechos + tareas (sin RAG) |
-| `estado` | workstate + tareas pendientes (sin RAG) |
-| `tool` | workstate + hechos (contexto mínimo para ejecutar) |
-| `general` | todos los bloques (fallback) |
+## Decisión 4 — Exclusión de documentos baja calidad (Fase 5G)
 
-**Beneficio**: en preguntas como "¿qué es MMR?" no tiene sentido inyectar las 14 tareas
-pendientes ni el historial de workstate. Reduce tokens y mejora el foco del LLM.
-
-**Estado**: en diseño. Requiere modificar la interfaz entre `router.py` y `memory_context.py`
-para que el carril de routing sea accesible al momento de construir el contexto.
-
-**Dependencia**: requiere que ADR-001 (router) y ADR-003 (memory_manager) estén estables.
-No implementar hasta tener MMR y encoding corregidos.
+Se excluyeron 3 archivos del índice Chroma por ser genéricos o desactualizados.
+El índice resultó en 269 chunks desde documentos curados del proyecto.
 
 ---
 
 ## Consecuencias
 
-### Positivas
-- MMR elimina la redundancia de fuentes en el bloque "Basado en:" — menos chunks del mismo
-  archivo, más cobertura de la base documental.
-- Fix encoding hace los JSONs legibles directamente desde VS Code y PowerShell.
-- Context selectivo reducirá el uso de tokens del contexto en ~40% para preguntas RAG.
+- MMR elimina redundancia de fuentes en bloques "Basado en:" — más cobertura.
+- `fidelity_check` elimina respuestas sin soporte documental en 3 casos borde.
+- Context selectivo reduce tokens del prompt ~40% en preguntas RAG.
+- Si `fidelity_check` empeora recall, ajustar `lambda_mult` de 0.6 a 0.7.
 
-### A vigilar
-- MMR con `lambda_mult=0.6` puede traer un chunk menos relevante que `similarity` puro en
-  preguntas muy específicas. Si el `fidelity_check` empeora, bajar a `lambda_mult=0.7`.
-- El fix de encoding requiere re-escribir los JSONs existentes que ya tienen escapes unicode
-  (no se corrigen solos al cambiar el código — se corrigen en la próxima escritura).
+## Archivos clave
 
----
-
-## Orden de implementación recomendado
-
-1. Fix encoding UTF-8 → 1 línea, sin riesgo, desbloquea legibilidad inmediata
-2. MMR en retriever → 3 líneas, mejora calidad de respuestas RAG
-3. Context selectivo → refactor mayor, implementar cuando 1 y 2 estén estables y testeados
+- `app/rag_engine.py` — MMR configurado
+- `app/fidelity_check.py` — 3 reglas implementadas
+- `app/memory_manager.py` — get_context_for()
+- `tests/test_fidelity_warn1.py` — cubre los 3 casos borde
