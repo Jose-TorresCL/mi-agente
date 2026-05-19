@@ -19,11 +19,12 @@ memory_manager.py es la capa de servicio.
 Interfaces públicas:
 
   Lectura de contexto:
-    get_full_context()            → perfil + facts + work_state + tareas + episodio
-    get_selective_context(route)  → subconjunto según carril del router (ADR-004)
-    get_working_context()         → solo work_state + tareas pendientes
-    get_semantic_context()        → solo project_facts + perfil
-    get_episodic_context()        → solo episodio anterior
+    get_full_context()                → perfil + facts + work_state + tareas + episodio
+    get_selective_context(route)      → subconjunto según carril del router (ADR-004)
+    get_context_for(intent_type)      → contexto exacto según tipo de consulta de memoria
+    get_working_context()             → solo work_state + tareas pendientes
+    get_semantic_context()            → solo project_facts + perfil
+    get_episodic_context()            → solo episodio anterior
 
   Lectura directa:
     get_profile()           → dict del perfil
@@ -70,6 +71,43 @@ def get_full_context() -> str:
     Never raises.
     """
     return build_memory_context()
+
+
+def get_context_for(intent_type: str) -> str:
+    """Recuperación selectiva real por tipo de consulta de memoria (6B).
+
+    Dado el tipo devuelto por classify_memory_query(), retorna solo la
+    capa de contexto relevante — sin datos innecesarios en el prompt.
+
+    Mapeo:
+      'profile'       → get_semantic_context()   (perfil + facts)
+      'project_facts' → get_semantic_context()   (facts + perfil)
+      'work_state'    → get_working_context()    (workstate + tareas pendientes)
+      'tasks'         → get_working_context()    (tareas pendientes)
+      'episode'       → get_episodic_context()   (último episodio)
+      desconocido     → '' (string vacío — el decisor maneja el fallback)
+
+    Args:
+        intent_type: Tipo de consulta de memoria. Ej: 'profile', 'tasks',
+                     'work_state', 'project_facts', 'episode'.
+
+    Returns:
+        String de contexto listo para inyectar en prompt, o '' si el tipo
+        no es reconocido.
+
+    Never raises.
+    """
+    if intent_type in ("profile", "project_facts"):
+        return get_semantic_context()
+
+    if intent_type in ("work_state", "tasks"):
+        return get_working_context()
+
+    if intent_type == "episode":
+        return get_episodic_context()
+
+    log.debug("get_context_for: tipo desconocido '%s' — devolviendo vacío", intent_type)
+    return ""
 
 
 def get_selective_context(route: str) -> str:

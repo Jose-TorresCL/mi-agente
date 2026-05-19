@@ -52,11 +52,19 @@ Fix 6A — _decide_memory terminal:
     semántica del carril RAG.
   - El fallback a RAG desde memory queda como safety net explícito y logueado.
 
-Fix 6B — tipo 'episode' en classify_memory_query (ver router.py):
-  - _decide_memory maneja el nuevo tipo 'episode' con get_episodic_context().
+Fix 6B — get_context_for() en memory_manager:
+  - _decide_memory usa get_context_for(kind) para recuperación selectiva real.
+  - Elimina el try/except de importación que esperaba la función.
+  - El carril 'episode' ahora llama get_context_for('episode') directamente.
+
+Fix 7A — metrics.jsonl logger:
+  - process_turn() mide tiempos con time.perf_counter() por carril.
+  - Al final de cada turno llama metrics.record_turn() con route, tiempos
+    y estimación de tokens. Never raises — errores van a WARNING.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -65,12 +73,14 @@ from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
 from app.memory_manager import (
     get_selective_context,
+    get_context_for,
     get_profile,
     get_project_facts,
     get_tasks,
     get_work_state,
     record_episode,
 )
+from app.metrics import record_turn as _record_metric
 from app.rag_engine import retrieve_context, build_chain
 from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
@@ -85,24 +95,18 @@ log = get_logger(__name__)
 _EPISODE_TIMEOUT = 20
 
 # Timeout para la síntesis del carril memory (en segundos).
-# Fix Tarea 1: bajado de 25s a 10s — si Ollama tarda, cae al fallback
-# antes sin congelar la conversación demasiado tiempo.
 _MEMORY_SYNTHESIS_TIMEOUT = 10
 
 # Longitud máxima por línea de historial comprimido (chars).
 _HISTORY_LINE_MAX = 80
 
 # Score mínimo de fidelidad para guardar una respuesta en caché.
-# Fix Paso 2: antes se cacheaba cualquier respuesta que pasara el bloqueo.
-# Ahora solo se cachea si el score es suficientemente alto, evitando que
-# respuestas genéricas/inventadas se propaguen entre sesiones.
 _CACHE_MIN_SCORE = 0.55
 
 # Palabras que indican que el usuario quiere un CONTEO, no una lista.
 _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 
-# Preguntas de identidad — bypass del caché semántico para evitar
-# que respuestas de sesiones anteriores contaminen la respuesta.
+# Preguntas de identidad — bypass del caché semántico.
 _IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                       "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 
@@ -114,8 +118,6 @@ _UNSUPPORTED_MSG = (
 )
 
 # Fix 6A: mensaje cuando route=memory pero el tipo no es reconocido.
-# En lugar de caer silenciosamente a RAG (y potencialmente activar la caché),
-# se responde con un mensaje honesto y se loguea para diagnóstico.
 _MEMORY_NOT_FOUND_MSG = (
     "No encontré información relevante en la memoria para esa pregunta. "
     "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
@@ -158,10 +160,6 @@ def _format_tasks_answer(tasks_data: dict) -> str:
 def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -> str:
     """Llama al LLM para sintetizar una respuesta natural a partir del contexto
     de memoria estructurada.
-
-    Fix Tarea 1: timeout reducido de 25s a 10s para evitar bloqueos largos.
-    Si Ollama falla o tarda más de _MEMORY_SYNTHESIS_TIMEOUT, devuelve el
-    fallback con los datos en bruto.
     """
     import requests
 
@@ -200,23 +198,11 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
 # ─────────────────────────────────────────────
 
 def _handle_list_files(question: str) -> str:
-    """Devuelve conteo o lista según la intención de la pregunta.
-
-    Fix Tarea 1: si la pregunta contiene 'cuántos/cuántas', devuelve un
-    número en vez de la lista completa de archivos.
-
-    Ejemplos:
-      '¿Cuántos archivos Python tiene el proyecto?' → conteo de .py
-      '¿Cuántos archivos tiene el proyecto?'        → conteo total
-      'lista los archivos del proyecto'             → lista completa
-    """
     files = list_project_files()
     question_lower = question.lower()
-
     wants_count = any(kw in question_lower for kw in _COUNT_KEYWORDS)
 
     if wants_count:
-        # Detectar filtro por extensión
         if "python" in question_lower or ".py" in question_lower:
             py_files = [f for f in files if f.endswith(".py")]
             return f"El proyecto tiene {len(py_files)} archivos Python (.py)."
@@ -226,10 +212,8 @@ def _handle_list_files(question: str) -> str:
         if ".json" in question_lower or "json" in question_lower:
             json_files = [f for f in files if f.endswith(".json")]
             return f"El proyecto tiene {len(json_files)} archivos JSON."
-        # Sin filtro: contar todo
         return f"El proyecto tiene {len(files)} archivos en total."
 
-    # Sin keyword de conteo: lista completa (comportamiento original)
     return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
 
 
@@ -241,16 +225,16 @@ def _decide_memory(question: str) -> str:
     """Responde desde memoria estructurada.
 
     Fix 6A: ya no devuelve None. Siempre retorna un string.
-    Si el tipo no es reconocido, devuelve _MEMORY_NOT_FOUND_MSG en lugar
-    de caer silenciosamente al carril RAG (y potencialmente a la caché).
+    Fix 6B: usa get_context_for(kind) para recuperación selectiva real.
+            El carril 'episode' ya no necesita try/except de importación.
 
     Tipos reconocidos:
       'profile'       → formato de lista estructurada
       'tasks'         → formato de lista estructurada
       'project_facts' → síntesis LLM (fallback: formato bruto)
       'work_state'    → síntesis LLM (fallback: formato bruto)
-      'episode'       → episodios de sesiones anteriores (fix 6B)
-      None            → _MEMORY_NOT_FOUND_MSG (nunca cae a RAG)
+      'episode'       → get_context_for('episode') → get_episodic_context()
+      None/desconocido → _MEMORY_NOT_FOUND_MSG
     """
     kind = classify_memory_query(question)
     log.debug("Carril memory clasificado como: %s", kind)
@@ -291,21 +275,11 @@ def _decide_memory(question: str) -> str:
         return _synthesize_memory_answer(question, context_text, fallback)
 
     if kind == "episode":
-        # Fix 6B: conectar a get_episodic_context() cuando esté disponible.
-        # Por ahora, intento importar la función y caigo a mensaje informativo si no existe.
-        try:
-            from app.memory_manager import get_episodic_context
-            episodes = get_episodic_context()
-            if not episodes:
-                return "No encontré episodios de sesiones anteriores registrados."
-            return episodes
-        except (ImportError, AttributeError):
-            log.debug("get_episodic_context() no disponible aún — fix 6B-2 pendiente")
-            return (
-                "Los episodios de sesiones anteriores estarán disponibles pronto. "
-                "Por ahora, el historial se guarda en storage/memory/episodes.json "
-                "pero aún no tiene recuperación semántica activa."
-            )
+        # Fix 6B: get_context_for() ya existe — llamada directa sin try/except.
+        episodes = get_context_for("episode")
+        if not episodes:
+            return "No encontré episodios de sesiones anteriores registrados."
+        return episodes
 
     # Fix 6A: tipo no reconocido → respuesta explícita, NO caída a RAG.
     log.debug("memory: tipo no reconocido para '%s' — devolviendo not-found", question[:60])
@@ -313,7 +287,6 @@ def _decide_memory(question: str) -> str:
 
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
-    """Comprime el historial de conversación para el prompt de resumen episódico."""
     lines: list[str] = []
     for m in chat_history[-(MAX_TURNS * 2):]:
         role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
@@ -324,13 +297,7 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión.
-
-    Día 3 — cambios clave:
-      1. El episodio se guarda SIEMPRE (incluso si el resumen falla).
-      2. Historial comprimido: solo los primeros 80 chars por turno.
-      3. Timeout reducido a 20s y num_predict a 80 tokens.
-    """
+    """Genera resumen episódico y señala cierre de sesión."""
     import requests
 
     turns = len(chat_history) // 2
@@ -338,7 +305,6 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 
     if turns > 0:
         log.info("Guardando resumen episódico (%d turnos)", turns)
-
         history_text = _compress_history(chat_history)
 
         prompt = (
@@ -377,41 +343,42 @@ def _decide_rag(
     vectordb: Any,
     chat_history: list,
     route: str,
-) -> tuple[str, list]:
+) -> tuple[str, list, int, int, bool]:
     """Recupera contexto RAG, invoca LLM y verifica fidelidad.
 
-    Fix Tarea 1: bypass de caché semántica para preguntas de identidad.
-    Evita que el caché devuelva respuestas de sesiones anteriores cuando
-    el usuario pregunta '¿Quién eres?'.
-
-    Fix Paso 2: solo se cachea si fidelity_score >= _CACHE_MIN_SCORE (0.55).
-    Evita que respuestas genéricas del LLM queden guardadas y se sirvan
-    como respuesta "oficial" en sesiones futuras con similitud alta.
+    Devuelve (answer, source_docs, retrieval_ms, llm_ms, cached).
     """
-    # Bypass caché para preguntas de identidad
     input_lower = user_input.lower()
     is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
 
+    # — intento de caché —
     if not is_identity:
+        t0 = time.perf_counter()
         cached = cache_lookup(user_input)
         if cached is not None:
             log.debug("Respuesta servida desde caché semántica")
-            return cached, []
+            return cached, [], 0, 0, True
 
+    # — retrieval —
+    t_ret_start = time.perf_counter()
     memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
+    retrieval_ms = int((time.perf_counter() - t_ret_start) * 1000)
 
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
     ) or "(sin historial previo)"
 
+    # — LLM —
+    t_llm_start = time.perf_counter()
     chain = build_chain(QA_SYSTEM_PROMPT, memory_context)
     answer = chain.invoke({
         "question":     user_input,
         "context":      context_text,
         "chat_history": chat_history_text,
     })
+    llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
     is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
@@ -419,18 +386,15 @@ def _decide_rag(
             "Respuesta bloqueada por fidelidad (score=%.3f): %s",
             score, user_input[:60],
         )
-        return NO_EVIDENCE_MSG, source_docs
+        return NO_EVIDENCE_MSG, source_docs, retrieval_ms, llm_ms, False
 
-    # Fix Paso 2: guardar en caché SOLO si score supera el umbral mínimo.
-    # Respuestas genéricas pasan el bloqueo de fidelidad pero no llegan
-    # a cachearse, forzando recalculo en la próxima sesión.
     if not is_identity and score >= _CACHE_MIN_SCORE:
         log.debug("Guardando en caché (score=%.3f >= %.2f)", score, _CACHE_MIN_SCORE)
         cache_save(user_input, answer)
     elif not is_identity:
         log.debug("Respuesta NO cacheada (score=%.3f < %.2f)", score, _CACHE_MIN_SCORE)
 
-    return answer, source_docs
+    return answer, source_docs, retrieval_ms, llm_ms, False
 
 
 # ─────────────────────────────────────────────
@@ -447,37 +411,58 @@ def process_turn(
 
     Recibe el carril ya clasificado y devuelve (respuesta, source_docs).
     No persiste historial — esa responsabilidad pertenece a chat_core.
+    Registra métricas en storage/metrics.jsonl al final de cada turno (7A).
 
     Flujo:
         exit            → _decide_exit
-        tool_list_files → _handle_list_files (con detección de conteo)
+        tool_list_files → _handle_list_files
         tool            → dispatch_tool
-        memory          → _decide_memory (TERMINAL — fix 6A: nunca cae a RAG)
-        unsupported     → mensaje directo (sin LLM ni vectorstore)
+        memory          → _decide_memory (TERMINAL)
+        unsupported     → mensaje directo
         resto           → _decide_rag
     """
+    t_start = time.perf_counter()
+
     if route == "exit":
-        return _decide_exit(chat_history)
+        result = _decide_exit(chat_history)
+        _record_metric(route="exit", retrieval_ms=0, llm_ms=0)
+        return result
 
-    # Fix Tarea 1: tool_list_files tiene su propio handler para detectar
-    # si el usuario quiere conteo ('cuántos') o lista completa.
     if route == "tool_list_files":
-        return _handle_list_files(user_input), []
-
-    if route in TOOLS:
-        return dispatch_tool(route, user_input), []
-
-    if route == "memory":
-        # Fix 6A: _decide_memory siempre retorna str — carril memory es terminal.
-        # No hay fallback a RAG desde aquí: si la pregunta llega con route=memory,
-        # memory responde (aunque sea con 'no encontré').
-        answer = _decide_memory(user_input)
+        answer = _handle_list_files(user_input)
+        _record_metric(route=route)
         return answer, []
 
-    # Carril unsupported: consulta fuera del alcance del agente.
-    # No se toca el vectorstore ni el LLM — respuesta instantánea.
+    if route in TOOLS:
+        t0 = time.perf_counter()
+        answer = dispatch_tool(route, user_input)
+        _record_metric(route=route, llm_ms=int((time.perf_counter() - t0) * 1000))
+        return answer, []
+
+    if route == "memory":
+        t0 = time.perf_counter()
+        answer = _decide_memory(user_input)
+        _record_metric(
+            route=route,
+            llm_ms=int((time.perf_counter() - t0) * 1000),
+            tokens_est=int(len(answer.split()) * 1.3),
+        )
+        return answer, []
+
     if route == "unsupported":
         log.debug("Carril unsupported — respondiendo sin LLM")
+        _record_metric(route=route)
         return _UNSUPPORTED_MSG, []
 
-    return _decide_rag(user_input, vectordb, chat_history, route=route)
+    # Carril RAG (y cualquier otro)
+    answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
+        user_input, vectordb, chat_history, route=route
+    )
+    _record_metric(
+        route=route,
+        retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms,
+        tokens_est=int(len(answer.split()) * 1.3),
+        cached=cached,
+    )
+    return answer, source_docs
