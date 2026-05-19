@@ -1,4 +1,4 @@
-# ADR-003 — Capa de abstracción `memory_manager`
+# ADR-003 — `memory_manager` como guardián único de la memoria
 
 **Fecha:** 2026-05  
 **Estado:** ✅ Aceptado  
@@ -21,21 +21,27 @@ Eso generaba:
 ## Decisión
 
 Se creó `app/memory_manager.py` como **fachada única** de acceso a la
-capa de memoria declarativa.
+capa de memoria declarativa, con soporte para recuperación selectiva
+mediante `MemoryType`.
 
 ### Interfaz pública del módulo
 
 ```python
-# Lectura
-get_full_context()    → str   # contexto completo para el LLM
-get_working_context() → str   # solo foco + siguiente paso
-get_semantic_context()→ str   # perfil + hechos
-get_episodic_context()→ str   # último episodio
+# Recuperación selectiva por tipo (interfaz preferida)
+get_context_for(types: list[MemoryType]) → str
+
+# Lectura por tipo específico
 get_profile()         → dict
 get_project_facts()   → dict
 get_tasks()           → dict
 get_work_state()      → dict
 get_last_episode()    → dict | None
+
+# Contextos precompuestos (atajos comunes)
+get_full_context()    → str   # todos los tipos
+get_working_context() → str   # WORK_STATE + TASKS
+get_semantic_context()→ str   # PROFILE + FACTS
+get_episodic_context()→ str   # EPISODE
 
 # Escritura
 save_fact(key, value)           → dict
@@ -45,16 +51,32 @@ complete_task(task_id)          → dict
 record_episode(summary, turns)  → dict
 ```
 
-### Regla de dependencias resultante
+### Regla de dependencias
 
 ```
 chat_core.py  ──→  memory_manager.py  ──→  memory_store.py  ──→  memory.json
 tools.py      ──→  memory_manager.py
+intelligence.py → memory_manager.py
 
 # NUNCA:
-chat_core.py  ──✗──  memory_store.py   (importación directa prohibida)
-tools.py      ──✗──  memory_store.py
+chat_core.py   ──✗──  memory_store.py   (importación directa prohibida)
+tools.py       ──✗──  memory_store.py
+intelligence.py ──✗── memory_store.py
 ```
+
+### Anotaciones de tipo en tools
+
+Cada herramienta en `tools.py` anota qué tipo de memoria lee o escribe:
+
+```python
+# Ejemplo: la tool de perfil solo necesita PROFILE
+def get_profile_tool() -> str:
+    # MemoryType.PROFILE
+    return memory_manager.get_context_for([MemoryType.PROFILE])
+```
+
+Esto hace explícita la dependencia de memoria de cada herramienta
+sin necesidad de leer el código interno.
 
 ## Alternativas consideradas
 
@@ -69,6 +91,8 @@ tools.py      ──✗──  memory_store.py
 **Positivas:**
 - Cambiar el formato de `memory.json` o migrar a SQLite solo afecta a `memory_manager.py`.
 - Los tests de integración (`test_memory_layer.py`) validan la regla de dependencias automáticamente.
+- `get_context_for([MemoryType.WORK_STATE, MemoryType.TASKS])` permite al LLM recibir
+  solo lo que necesita para cada carril, reduciendo tokens innecesarios.
 - `chat_core.py` y `tools.py` son más simples y legibles.
 
 **Trade-offs:**
@@ -78,4 +102,5 @@ tools.py      ──✗──  memory_store.py
 ## Archivos clave
 
 - `app/memory_manager.py` — el módulo
+- `app/schemas.py` — `MemoryType` enum
 - `tests/test_memory_layer.py` — tests que validan las reglas de dependencia
