@@ -39,6 +39,10 @@ Interfaces públicas:
     create_task(title, priority)    → str con ID generado (o ID existente si título duplicado)
     complete_task(task_id)          → None
     record_episode(summary, turns)  → None
+
+Anotaciones MemoryType (8D):
+  Cada función pública indica qué capa de memoria accede.
+  Ver app.schemas.MemoryType para la definición del enum.
 """
 from __future__ import annotations
 
@@ -64,7 +68,7 @@ log = get_logger(__name__)
 # Lectura de contexto — para inyectar en prompts
 # ─────────────────────────────────────────────
 
-def get_full_context() -> str:
+def get_full_context() -> str:  # MemoryType: WORKING + SEMANTIC + EPISODIC
     """Contexto completo: perfil + facts + work_state + tareas + episodio.
 
     Usar en RAG y en respuestas que necesitan todo el contexto del proyecto.
@@ -73,18 +77,18 @@ def get_full_context() -> str:
     return build_memory_context()
 
 
-def get_context_for(intent_type: str) -> str:
+def get_context_for(intent_type: str) -> str:  # MemoryType: dispatch (WORKING | SEMANTIC | EPISODIC)
     """Recuperación selectiva real por tipo de consulta de memoria (6B).
 
     Dado el tipo devuelto por classify_memory_query(), retorna solo la
     capa de contexto relevante — sin datos innecesarios en el prompt.
 
     Mapeo:
-      'profile'       → get_semantic_context()   (perfil + facts)
-      'project_facts' → get_semantic_context()   (facts + perfil)
-      'work_state'    → get_working_context()    (workstate + tareas pendientes)
-      'tasks'         → get_working_context()    (tareas pendientes)
-      'episode'       → get_episodic_context()   (último episodio)
+      'profile'       → get_semantic_context()   (perfil + facts)  → SEMANTIC
+      'project_facts' → get_semantic_context()   (facts + perfil)  → SEMANTIC
+      'work_state'    → get_working_context()    (workstate + tareas pendientes) → WORKING
+      'tasks'         → get_working_context()    (tareas pendientes) → WORKING
+      'episode'       → get_episodic_context()   (último episodio)  → EPISODIC
       desconocido     → '' (string vacío — el decisor maneja el fallback)
 
     Args:
@@ -110,20 +114,16 @@ def get_context_for(intent_type: str) -> str:
     return ""
 
 
-def get_selective_context(route: str) -> str:
+def get_selective_context(route: str) -> str:  # MemoryType: dispatch (WORKING | SEMANTIC | EPISODIC)
     """Contexto de memoria ajustado al carril del router (ADR-004).
 
     Objetivo: reducir tokens innecesarios en el prompt según el tipo
     de pregunta, sin perder información relevante.
 
     Mapeo de carriles:
-      "rag"     → perfil mínimo (nombre, nivel, proyecto) — ~3 líneas.
-                  El LLM necesita saber quién es el usuario, no su historial
-                  de trabajo, cuando busca en documentos técnicos.
-      "estado"  → get_working_context() — workstate + tareas pendientes.
-                  Solo lo operacional: qué se está haciendo y qué sigue.
-      "memoria" → get_semantic_context() + get_episodic_context().
-                  Facts del proyecto + última sesión. Sin workstate.
+      "rag"     → perfil mínimo (nombre, nivel, proyecto) — ~3 líneas.  → SEMANTIC
+      "estado"  → get_working_context() — workstate + tareas pendientes. → WORKING
+      "memoria" → get_semantic_context() + get_episodic_context().       → SEMANTIC + EPISODIC
       cualquier → get_full_context() como fallback seguro.
 
     Args:
@@ -165,7 +165,7 @@ def get_selective_context(route: str) -> str:
     return get_full_context()
 
 
-def get_working_context() -> str:
+def get_working_context() -> str:  # MemoryType: WORKING
     """Contexto operacional: work_state + tareas pendientes.
 
     Usar cuando la pregunta es sobre qué hacer ahora.
@@ -202,7 +202,7 @@ def get_working_context() -> str:
     return "\n".join(lines)
 
 
-def get_semantic_context() -> str:
+def get_semantic_context() -> str:  # MemoryType: SEMANTIC
     """Contexto de conocimiento estable: project_facts + perfil.
 
     Usar cuando la pregunta es sobre el proyecto en general.
@@ -226,7 +226,7 @@ def get_semantic_context() -> str:
     return "\n".join(lines)
 
 
-def get_episodic_context() -> str:
+def get_episodic_context() -> str:  # MemoryType: EPISODIC
     """Contexto de sesión anterior: resumen del último episodio.
 
     Devuelve string vacío si no hay episodio previo.
@@ -245,27 +245,27 @@ def get_episodic_context() -> str:
 # Lectura directa — para carriles memory en chat_core
 # ─────────────────────────────────────────────
 
-def get_profile() -> dict:
+def get_profile() -> dict:  # MemoryType: SEMANTIC
     """Devuelve el perfil del usuario. Dict vacío si no existe."""
     return load_profile()
 
 
-def get_project_facts() -> dict:
+def get_project_facts() -> dict:  # MemoryType: SEMANTIC
     """Devuelve los hechos del proyecto. Dict vacío si no existe."""
     return load_project_facts()
 
 
-def get_tasks() -> dict:
+def get_tasks() -> dict:  # MemoryType: WORKING
     """Devuelve el dict completo de tareas. {'tasks': [...]} si no existe."""
     return load_tasks() or {"tasks": []}
 
 
-def get_work_state() -> dict:
+def get_work_state() -> dict:  # MemoryType: WORKING
     """Devuelve el estado de trabajo. Dict vacío si no existe."""
     return load_work_state()
 
 
-def get_last_episode() -> dict | None:
+def get_last_episode() -> dict | None:  # MemoryType: EPISODIC
     """Devuelve el último episodio o None si no existe."""
     return load_last_episode()
 
@@ -274,7 +274,7 @@ def get_last_episode() -> dict | None:
 # Escritura con reglas de negocio
 # ─────────────────────────────────────────────
 
-def save_fact(key: str, value: str) -> bool:
+def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
     """Guarda un hecho en project_facts.
 
     Reglas:
@@ -319,7 +319,7 @@ def save_fact(key: str, value: str) -> bool:
     return True
 
 
-def update_state(field: str, value: str) -> None:
+def update_state(field: str, value: str) -> None:  # MemoryType: WORKING
     """Actualiza un campo de work_state.
 
     Args:
@@ -335,7 +335,7 @@ def update_state(field: str, value: str) -> None:
     log.debug("work_state actualizado: %s = %s", field, value)
 
 
-def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
+def create_task(title: str, priority: str = "medium", notes: str = "") -> str:  # MemoryType: WORKING
     """Crea una tarea nueva y devuelve su ID.
 
     Reglas:
@@ -384,7 +384,7 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     return task_id
 
 
-def complete_task(task_id: str) -> None:
+def complete_task(task_id: str) -> None:  # MemoryType: WORKING
     """Marca una tarea como completada.
 
     Args:
@@ -399,7 +399,7 @@ def complete_task(task_id: str) -> None:
     log.debug("Tarea completada: %s", task_id)
 
 
-def record_episode(summary: str, turns: int) -> None:
+def record_episode(summary: str, turns: int) -> None:  # MemoryType: EPISODIC
     """Guarda el resumen de la sesión actual como episodio.
 
     Args:

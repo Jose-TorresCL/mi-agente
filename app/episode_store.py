@@ -52,6 +52,12 @@ _MIN_RELEVANCE_SCORE = 0.20
 # Score para inyección automática en contexto RAG (experience_lookup).
 EXPERIENCE_INJECT_THRESHOLD = 0.80
 
+# Boost aplicado a episodios exitosos en search_episodes() (8C).
+_EXITOSO_BOOST = 0.15
+
+# Umbral: episodios fallidos se muestran solo si no hay alternativos > este valor (8C).
+_FALLIDO_HIDE_THRESHOLD = 0.65
+
 # ─────────────────────────────────────────────
 # Inicialización lazy del cliente Chroma
 # ─────────────────────────────────────────────
@@ -184,8 +190,14 @@ def index_episode(episode: dict) -> bool:
 def search_episodes(query: str, k: int = 3) -> list[dict]:
     """Busca los k episodios más relevantes para la consulta.
 
-    Devuelve también los metadatos enriquecidos (exitoso, carril_dominante)
-    para que intelligence.py pueda filtrar por calidad.
+    Aplica boost de calidad (8C):
+      - Episodios con exitoso=True reciben +_EXITOSO_BOOST (+0.15) sobre
+        el score raw de Chroma. Esto los sube en el ranking de forma natural.
+      - Episodios con exitoso=False se descartan si hay al menos un episodio
+        alternativo (exitoso=True o unmarked) con score boosteado >= 0.65.
+        Solo se incluyen fallidos si son los únicos resultados disponibles.
+      - El campo 'score' devuelto refleja el score boosteado para que
+        intelligence.py tome decisiones basadas en calidad real.
 
     Args:
         query: Texto de búsqueda.
@@ -203,27 +215,63 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
         return []
     try:
         results = col.similarity_search_with_relevance_scores(query, k=k)
-        episodes_found = []
-        for doc, score in results:
+
+        # ── Paso 1: calcular score boosteado para cada resultado ──────────
+        candidates = []
+        for doc, raw_score in results:
+            if raw_score < _MIN_RELEVANCE_SCORE:
+                continue  # descartar por debajo del umbral mínimo
+
             meta = doc.metadata
             exitoso_str = meta.get("exitoso", "unmarked")
+
             if exitoso_str == "true":
                 exitoso = True
+                boosted_score = min(raw_score + _EXITOSO_BOOST, 1.0)  # cap a 1.0
             elif exitoso_str == "false":
                 exitoso = False
+                boosted_score = raw_score  # sin boost — se evaluará para descarte
             else:
-                exitoso = None  # sin marcar
-            episodes_found.append({
+                exitoso = None  # unmarked
+                boosted_score = raw_score
+
+            candidates.append({
                 "summary":          doc.page_content,
                 "date":             meta.get("date", "?"),
                 "time":             meta.get("time", "?"),
                 "turns":            meta.get("turns", 0),
-                "score":            round(score, 3),
+                "score":            round(boosted_score, 3),
                 "exitoso":          exitoso,
                 "carril_dominante": meta.get("carril_dominante", "unknown"),
             })
-        log.info(f"[episode_store] search '{query[:40]}' → {len(episodes_found)} resultados")
-        return episodes_found
+
+        if not candidates:
+            log.info(f"[episode_store] search '{query[:40]}' → 0 resultados (todos bajo umbral)")
+            return []
+
+        # ── Paso 2: descartar episodios fallidos si hay alternativos válidos ─
+        # Un alternativo válido es exitoso=True o exitoso=None (unmarked).
+        best_non_failed_score = max(
+            (
+                ep["score"] for ep in candidates
+                if ep["exitoso"] is not False
+            ),
+            default=0.0,
+        )
+
+        if best_non_failed_score >= _FALLIDO_HIDE_THRESHOLD:
+            # Hay resultados buenos sin marcar como fallidos — filtrar los fallidos
+            candidates = [ep for ep in candidates if ep["exitoso"] is not False]
+            log.debug(
+                "[episode_store] search: fallidos descartados (mejor alternativo=%.3f >= %.2f)",
+                best_non_failed_score, _FALLIDO_HIDE_THRESHOLD,
+            )
+
+        # ── Paso 3: ordenar por score boosteado descendente ──────────────
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        log.info(f"[episode_store] search '{query[:40]}' → {len(candidates)} resultados")
+        return candidates
     except Exception as exc:
         log.warning(f"[episode_store] error en búsqueda episódica: {exc}")
         return []

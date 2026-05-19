@@ -34,8 +34,45 @@ Nota sobre TypedDict y total=False:
 from __future__ import annotations
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import TypedDict
+
+
+# ─────────────────────────────────────────────
+# MemoryType — clasificación de capas de memoria (8D)
+# ─────────────────────────────────────────────
+
+class MemoryType(str, Enum):
+    """Clasificación de capas de memoria del agente.
+
+    Usada para anotar funciones en memory_manager.py y como contrato
+    explícito sobre qué tipo de memoria accede cada función.
+
+    Valores:
+        WORKING:    Memoria de trabajo — contexto operacional de la sesión
+                    activa. Incluye work_state y tareas pendientes.
+                    Volátil: cambia turno a turno.
+
+        SEMANTIC:   Memoria semántica — hechos estables del proyecto y
+                    perfil del usuario. Persistente entre sesiones.
+
+        EPISODIC:   Memoria episódica — resúmenes de sesiones anteriores.
+                    Permite recuperar qué se hizo en el pasado.
+
+        PROCEDURAL: Memoria procedimental — reglas, herramientas y
+                    comportamientos del agente (tool_registry, prompts).
+                    No se lee en tiempo de ejecución de memoria — es el
+                    propio código del agente.
+
+    Ejemplo de uso en memory_manager.py:
+        def get_working_context() -> str:  # MemoryType: WORKING
+            ...
+    """
+    WORKING    = "working"
+    SEMANTIC   = "semantic"
+    EPISODIC   = "episodic"
+    PROCEDURAL = "procedural"
 
 
 # ─────────────────────────────────────────────
