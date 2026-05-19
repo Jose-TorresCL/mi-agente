@@ -38,11 +38,10 @@ log = get_logger(__name__)
 CACHE_FILE           = Path("storage/semantic_cache.json")
 SIMILARITY_THRESHOLD = 0.82
 MAX_CACHE_SIZE       = 200
-CACHE_TTL_HOURS      = 24          # ← nuevo: entradas expiran tras 24 horas
+CACHE_TTL_HOURS      = 24
 EMBED_MODEL          = "nomic-embed-text"
 OLLAMA_URL           = "http://localhost:11434"
 
-# Singleton de embeddings en memoria — no recrea el cliente en cada consulta
 _embed_client = None
 
 
@@ -65,20 +64,28 @@ def _is_expired(entry: dict) -> bool:
     """Devuelve True si la entrada supera CACHE_TTL_HOURS."""
     saved_at = entry.get("saved_at")
     if not saved_at:
-        return True  # entrada sin timestamp → descartar por seguridad
+        return True
     try:
         age = datetime.now() - datetime.fromisoformat(saved_at)
         return age > timedelta(hours=CACHE_TTL_HOURS)
     except (ValueError, TypeError):
-        return True  # timestamp malformado → descartar
+        return True
+
+
+def _entry_age_hours(entry: dict) -> float | None:
+    """Devuelve la edad de una entrada en horas, o None si no hay saved_at."""
+    saved_at = entry.get("saved_at")
+    if not saved_at:
+        return None
+    try:
+        age = datetime.now() - datetime.fromisoformat(saved_at)
+        return age.total_seconds() / 3600
+    except (ValueError, TypeError):
+        return None
 
 
 def _load_cache() -> list[dict]:
-    """Lee la caché desde disco, descartando entradas expiradas.
-
-    Si eliminó alguna entrada, persiste el archivo limpio inmediatamente
-    para que el próximo arranque no reprocese entradas viejas.
-    """
+    """Lee la caché desde disco, descartando entradas expiradas."""
     if not CACHE_FILE.exists():
         return []
     try:
@@ -93,7 +100,7 @@ def _load_cache() -> list[dict]:
     expired_count = len(all_entries) - len(valid)
     if expired_count:
         log.info("[cache] %d entrada(s) expiradas descartadas (TTL=%dh)", expired_count, CACHE_TTL_HOURS)
-        _save_cache(valid)  # persistir versión limpia de inmediato
+        _save_cache(valid)
 
     return valid
 
@@ -106,7 +113,6 @@ def _save_cache(entries: list[dict]) -> None:
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Similitud coseno entre dos vectores. Puro Python, sin numpy."""
     dot    = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -116,7 +122,6 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def get_embedding(text: str) -> list[float] | None:
-    """Obtiene el embedding de un texto usando Ollama. Devuelve None si falla."""
     try:
         client = _get_embed_client()
         return client.embed_query(text)
@@ -130,19 +135,14 @@ def get_embedding(text: str) -> list[float] | None:
 # ─────────────────────────────────────────────
 
 def cache_lookup(question: str) -> str | None:
-    """Busca una respuesta cacheada para la pregunta.
-
-    Devuelve la respuesta guardada si hay un hit semántico,
-    o None si no hay ninguna entrada suficientemente similar.
-    Las entradas expiradas (> CACHE_TTL_HOURS) se ignoran automáticamente.
-    """
+    """Busca una respuesta cacheada para la pregunta."""
     entries = _load_cache()
     if not entries:
         return None
 
     q_embedding = get_embedding(question)
     if q_embedding is None:
-        return None  # Ollama no disponible → flujo normal
+        return None
 
     best_sim    = 0.0
     best_answer = None
@@ -165,23 +165,17 @@ def cache_lookup(question: str) -> str | None:
 
 
 def cache_save(question: str, answer: str) -> None:
-    """Guarda un par (pregunta, respuesta) en la caché.
-
-    Si ya existe una entrada con similitud >= 0.99 (prácticamente idéntica),
-    no guarda duplicado.
-    Descarta entradas antiguas si se supera MAX_CACHE_SIZE.
-    """
+    """Guarda un par (pregunta, respuesta) en la caché."""
     q_embedding = get_embedding(question)
     if q_embedding is None:
-        return  # no guardar si no hay embedding
+        return
 
     entries = _load_cache()
 
-    # Evitar duplicados casi exactos
     for entry in entries:
         cached_emb = entry.get("embedding")
         if cached_emb and _cosine_similarity(q_embedding, cached_emb) >= 0.99:
-            return  # ya existe, no duplicar
+            return
 
     entries.append({
         "question":  question,
@@ -190,7 +184,6 @@ def cache_save(question: str, answer: str) -> None:
         "saved_at":  datetime.now().isoformat(timespec="seconds"),
     })
 
-    # FIFO: si supera el límite, descartar los más viejos
     if len(entries) > MAX_CACHE_SIZE:
         entries = entries[-MAX_CACHE_SIZE:]
 
@@ -199,18 +192,43 @@ def cache_save(question: str, answer: str) -> None:
 
 
 def cache_invalidate() -> None:
-    """Borra toda la caché semántica (se llama desde !reset)."""
+    """Borra toda la caché semántica."""
     if CACHE_FILE.exists():
         CACHE_FILE.unlink()
     log.info("[cache] caché semántica limpiada.")
 
 
 def cache_stats() -> dict:
-    """Devuelve estadísticas básicas de la caché para !estado."""
+    """Devuelve estadísticas de la caché incluyendo edad de entradas.
+
+    Campos devueltos:
+        entries          — número de entradas válidas (no expiradas)
+        max_size         — límite máximo configurado
+        threshold        — umbral de similitud coseno
+        ttl_hours        — tiempo de vida configurado en horas
+        avg_age_hours    — edad promedio de entradas en horas
+        oldest_hours     — entrada más vieja en horas
+        newest_hours     — entrada más reciente en horas
+        near_expiry_count — entradas con más de (TTL - 4)h (próximas a expirar)
+    """
     entries = _load_cache()
+
+    ages: list[float] = []
+    for e in entries:
+        age = _entry_age_hours(e)
+        if age is not None:
+            ages.append(age)
+
+    near_expiry_threshold = max(0.0, CACHE_TTL_HOURS - 4)
+    near_expiry_count = sum(1 for a in ages if a >= near_expiry_threshold)
+
     return {
-        "entries":   len(entries),
-        "max_size":  MAX_CACHE_SIZE,
-        "threshold": SIMILARITY_THRESHOLD,
-        "ttl_hours": CACHE_TTL_HOURS,
+        "entries":           len(entries),
+        "max_size":          MAX_CACHE_SIZE,
+        "threshold":         SIMILARITY_THRESHOLD,
+        "ttl_hours":         CACHE_TTL_HOURS,
+        "avg_age_hours":     round(sum(ages) / len(ages), 1) if ages else 0.0,
+        "oldest_hours":      round(max(ages), 1) if ages else 0.0,
+        "newest_hours":      round(min(ages), 1) if ages else 0.0,
+        "near_expiry_count": near_expiry_count,
     }

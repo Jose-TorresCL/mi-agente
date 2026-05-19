@@ -1,7 +1,8 @@
 """
-show_metrics.py — Visor CLI de métricas de sesión (Fase 7B).
+show_metrics.py — Visor CLI de métricas de sesión (Fase 7B/7D).
 
 Lee storage/metrics.jsonl y muestra un resumen en tabla ASCII.
+Incluye sección de estado de caché semántica (7D).
 
 Uso:
     python show_metrics.py                 # últimas 50 entradas
@@ -9,8 +10,9 @@ Uso:
     python show_metrics.py --route rag     # filtrar por carril
     python show_metrics.py --json          # salida JSON raw
     python show_metrics.py --last 100 --route memory
+    python show_metrics.py --no-cache      # omitir sección de caché
 
-No requiere dependencias externas — solo stdlib.
+No requiere dependencias externas para la tabla — solo stdlib.
 """
 from __future__ import annotations
 
@@ -26,10 +28,8 @@ _DEFAULT_LAST = 50
 
 
 def _load_entries(last: int | None = None, route_filter: str | None = None) -> list[dict[str, Any]]:
-    """Carga entradas del JSONL, aplica filtros y devuelve lista."""
     if not _METRICS_FILE.exists():
         return []
-
     entries: list[dict[str, Any]] = []
     with _METRICS_FILE.open(encoding="utf-8") as f:
         for line in f:
@@ -43,14 +43,12 @@ def _load_entries(last: int | None = None, route_filter: str | None = None) -> l
                 entries.append(entry)
             except json.JSONDecodeError:
                 continue
-
     if last is not None:
         entries = entries[-last:]
     return entries
 
 
 def _fmt_ms(ms: int | float) -> str:
-    """Formatea milisegundos a cadena legible."""
     if ms >= 60_000:
         return f"{ms/60000:.1f} min"
     if ms >= 1_000:
@@ -58,70 +56,101 @@ def _fmt_ms(ms: int | float) -> str:
     return f"{int(ms)} ms"
 
 
-def _show_table(entries: list[dict[str, Any]]) -> None:
-    """Imprime resumen en tabla ASCII."""
+def _fmt_hours(h: float) -> str:
+    if h < 1:
+        return f"{int(h*60)} min"
+    return f"{h:.1f} h"
+
+
+def _get_cache_stats() -> dict | None:
+    """Obtiene stats de caché sin romper si hay error de import o I/O."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent))
+        from app.semantic_cache import cache_stats
+        return cache_stats()
+    except Exception:
+        return None
+
+
+def _show_table(entries: list[dict[str, Any]], show_cache: bool = True) -> None:
     if not entries:
         print("Sin entradas para mostrar.")
         return
 
     total = len(entries)
     cached_count = sum(1 for e in entries if e.get("cached"))
-    llm_ms_list = [e.get("llm_ms", 0) for e in entries if e.get("llm_ms", 0) > 0]
-    ret_ms_list = [e.get("retrieval_ms", 0) for e in entries if e.get("retrieval_ms", 0) > 0]
+    llm_ms_list  = [e.get("llm_ms", 0) for e in entries if e.get("llm_ms", 0) > 0]
+    ret_ms_list  = [e.get("retrieval_ms", 0) for e in entries if e.get("retrieval_ms", 0) > 0]
     total_ms_list = [e.get("total_ms", 0) for e in entries]
 
-    avg_llm = sum(llm_ms_list) / len(llm_ms_list) if llm_ms_list else 0
-    avg_ret = sum(ret_ms_list) / len(ret_ms_list) if ret_ms_list else 0
+    avg_llm   = sum(llm_ms_list)  / len(llm_ms_list)  if llm_ms_list  else 0
+    avg_ret   = sum(ret_ms_list)  / len(ret_ms_list)  if ret_ms_list  else 0
     avg_total = sum(total_ms_list) / len(total_ms_list) if total_ms_list else 0
     pct_cached = (cached_count / total * 100) if total else 0
+    total_tokens = sum(e.get("tokens_est", 0) for e in entries)
 
-    # Distribución por carril
     by_route: dict[str, int] = defaultdict(int)
     for e in entries:
         by_route[e.get("route", "unknown")] += 1
 
-    # Top 3 más lentos (por total_ms)
     slowest = sorted(entries, key=lambda e: e.get("total_ms", 0), reverse=True)[:3]
 
-    # Tokens estimados totales
-    total_tokens = sum(e.get("tokens_est", 0) for e in entries)
+    W = 62  # ancho interior de la caja
 
-    # ── Cabecera ─────────────────────────────────────────────────────────────
+    def row(text: str) -> None:
+        print(f"║  {text:<{W}}║")
+
+    def sep() -> None:
+        print("╠" + "═" * (W + 2) + "╣")
+
     print()
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print(f"║  MÉTRICAS DE SESIÓN — {total} turnos analizados{' ' * (23 - len(str(total)))}║")
-    print("╠══════════════════════════════════════════════════════════════╣")
+    print("╔" + "═" * (W + 2) + "╗")
+    row(f"MÉTRICAS DE SESIÓN — {total} turnos analizados")
+    sep()
 
-    # ── Tiempos globales ─────────────────────────────────────────────────────
-    print("║  TIEMPOS PROMEDIO                                            ║")
-    print(f"║    Total   : {_fmt_ms(avg_total):<49}║")
-    print(f"║    LLM     : {_fmt_ms(avg_llm):<49}║")
-    print(f"║    Retrieval: {_fmt_ms(avg_ret):<48}║")
-    print(f"║    Tokens estimados (total): {total_tokens:<33}║")
-    print(f"║    Respuestas desde caché  : {cached_count}/{total} ({pct_cached:.0f}%){' ' * (27 - len(str(cached_count)) - len(str(total)))  }║")
-    print("╠══════════════════════════════════════════════════════════════╣")
+    row("TIEMPOS PROMEDIO")
+    row(f"  Total    : {_fmt_ms(avg_total)}")
+    row(f"  LLM      : {_fmt_ms(avg_llm)}")
+    row(f"  Retrieval: {_fmt_ms(avg_ret)}")
+    row(f"  Tokens estimados (total): {total_tokens}")
+    row(f"  Desde caché: {cached_count}/{total} ({pct_cached:.0f}%)")
+    sep()
 
-    # ── Distribución por carril ──────────────────────────────────────────────
-    print("║  DISTRIBUCIÓN POR CARRIL                                     ║")
+    row("DISTRIBUCIÓN POR CARRIL")
     for ruta, cnt in sorted(by_route.items(), key=lambda x: -x[1]):
         pct = cnt / total * 100
-        bar = "█" * int(pct / 5)  # 1 bloque = 5%
-        line = f"    {ruta:<25} {cnt:>3}  ({pct:4.0f}%)  {bar}"
-        print(f"║  {line:<60}║")
-    print("╠══════════════════════════════════════════════════════════════╣")
+        bar = "█" * int(pct / 5)
+        row(f"  {ruta:<26} {cnt:>3}  ({pct:4.0f}%)  {bar}")
+    sep()
 
-    # ── Top 3 más lentos ─────────────────────────────────────────────────────
-    print("║  TOP 3 TURNOS MÁS LENTOS                                     ║")
+    row("TOP 3 TURNOS MÁS LENTOS")
     for i, e in enumerate(slowest, 1):
         ts = e.get("timestamp", "")[:19].replace("T", " ")
-        line = f"    {i}. {e.get('route','?'):<20} {_fmt_ms(e.get('total_ms',0)):<10} {ts}"
-        print(f"║  {line:<60}║")
-    print("╚══════════════════════════════════════════════════════════════╝")
+        row(f"  {i}. {e.get('route','?'):<22} {_fmt_ms(e.get('total_ms',0)):<10} {ts}")
+
+    # ── Sección caché (7D) ───────────────────────────────────────────────────
+    if show_cache:
+        stats = _get_cache_stats()
+        if stats is not None:
+            sep()
+            row("ESTADO DE CACHÉ SEMÁNTICA")
+            row(f"  Entradas : {stats['entries']}/{stats['max_size']}  "
+                f"(TTL: {stats['ttl_hours']}h | umbral: {stats['threshold']})")
+            if stats["entries"] > 0:
+                row(f"  Edad prom: {_fmt_hours(stats['avg_age_hours'])}  "
+                    f"| más vieja: {_fmt_hours(stats['oldest_hours'])}  "
+                    f"| más nueva: {_fmt_hours(stats['newest_hours'])}")
+                if stats["near_expiry_count"] > 0:
+                    row(f"  ⚠  {stats['near_expiry_count']} entrada(s) expirarán en < 4h")
+            else:
+                row("  Caché vacía — se llenará en los próximos turnos RAG")
+
+    print("╚" + "═" * (W + 2) + "╝")
     print()
 
 
 def _show_json(entries: list[dict[str, Any]]) -> None:
-    """Imprime entradas como JSON array."""
     print(json.dumps(entries, ensure_ascii=False, indent=2))
 
 
@@ -129,18 +158,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Visor de métricas de sesión — storage/metrics.jsonl"
     )
-    parser.add_argument(
-        "--last", type=int, default=_DEFAULT_LAST,
-        metavar="N", help=f"Mostrar últimas N entradas (default: {_DEFAULT_LAST})"
-    )
-    parser.add_argument(
-        "--route", type=str, default=None,
-        metavar="CARRIL", help="Filtrar por carril (ej: rag, memory, tool_list_files)"
-    )
-    parser.add_argument(
-        "--json", action="store_true",
-        help="Salida en JSON raw en vez de tabla ASCII"
-    )
+    parser.add_argument("--last", type=int, default=_DEFAULT_LAST,
+                        metavar="N", help=f"Últimas N entradas (default: {_DEFAULT_LAST})")
+    parser.add_argument("--route", type=str, default=None,
+                        metavar="CARRIL", help="Filtrar por carril")
+    parser.add_argument("--json", action="store_true",
+                        help="Salida JSON raw")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Omitir sección de estado de caché")
     args = parser.parse_args()
 
     if not _METRICS_FILE.exists():
@@ -158,7 +183,7 @@ def main() -> None:
     if args.json:
         _show_json(entries)
     else:
-        _show_table(entries)
+        _show_table(entries, show_cache=not args.no_cache)
 
 
 if __name__ == "__main__":
