@@ -1,22 +1,26 @@
-"""Capa de indexación episódica en Chroma.
+"""Capa de indexación episódica en Chroma — experience_index.
 
 Responsabilidades:
-  - Indexar episodios individuales en la colección 'episodios' de Chroma
+  - Indexar episodios en la colección 'experience_index' de Chroma
     (namespace SEPARADO de la colección de documentos RAG).
   - Proveer búsqueda semántica sobre episodios pasados.
   - Permitir re-indexación completa desde episodic_memory.json.
 
 Flujo de uso normal:
   1. memory_store.save_episode()  llama  index_episode()  al guardar.
-  2. intelligence.py              llama  search_episodes() en el carril 'episode'.
-  3. (8C) memory_manager.py       llama  consolidate_old_episodes() periódicamente.
+  2. intelligence.py carril 'episode' llama search_episodes() para responder
+     preguntas directas sobre sesiones pasadas.
+  3. intelligence.py _decide_rag() llama experience_lookup() para inyectar
+     contexto episódico relevante (score > 0.80) en todos los carriles RAG.
+  4. (8C) al cerrar sesión, se marca exitoso=True/False con mark_episode().
 
 Convenciones:
-  - Colección Chroma: EPISODE_COLLECTION = 'episodios'
+  - Colección Chroma: EPISODE_COLLECTION = 'experience_index'
   - ID de cada documento: ISO timestamp del episodio (ej: '2026-05-19T10:30')
-  - Metadatos almacenados: date, time, turns, source='episode'
+  - Metadatos almacenados: date, time, turns, source, carril_dominante,
+    tareas_completadas, exitoso
   - Namespace físico: storage/chroma  (misma instancia que documentos,
-    colección diferente — Chroma las aísla automáticamente)
+    colección diferente — Chroma las aísl a automáticamente)
 
 Never raises: todos los métodos públicos capturan excepciones y loggean.
 """
@@ -24,7 +28,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from app.logger import get_logger
 
@@ -37,9 +41,15 @@ log = get_logger("episode_store")
 # Constantes
 # ─────────────────────────────────────────────
 
-EPISODE_COLLECTION   = "episodios"
+EPISODE_COLLECTION   = "experience_index"          # renombrado de 'episodios' (8A-v2)
 EPISODIC_MEMORY_FILE = Path("storage") / "episodic_memory.json"
 CHROMA_DIR           = Path("storage") / "chroma"
+
+# Score mínimo para que search_episodes() lo considere relevante en búsqueda directa.
+_MIN_RELEVANCE_SCORE = 0.20
+
+# Score para inyección automática en contexto RAG (experience_lookup).
+EXPERIENCE_INJECT_THRESHOLD = 0.80
 
 # ─────────────────────────────────────────────
 # Inicialización lazy del cliente Chroma
@@ -49,7 +59,7 @@ _collection = None  # instancia lazy: se crea al primer uso
 
 
 def _get_collection():
-    """Devuelve (creando si no existe) la colección 'episodios' en Chroma.
+    """Devuelve (creando si no existe) la colección 'experience_index' en Chroma.
 
     Usa OllamaEmbeddings con el mismo modelo que el RAG de documentos
     para que los vectores sean comparables semánticamente.
@@ -89,27 +99,48 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
 
     El `id` es 'YYYY-MM-DDTHH:MM' para garantizar unicidad y orden.
 
+    Metadatos enriquecidos (8A-v2):
+      - carril_dominante:   carril más usado en la sesión (str, default 'unknown')
+      - tareas_completadas: número de tareas marcadas done en la sesión (int)
+      - exitoso:            True/False/None (None = sin marcar aún)
+
     Args:
-        episode: dict con keys date, time, turns, summary.
+        episode: dict con keys date, time, turns, summary y opcionales
+                 carril_dominante, tareas_completadas, exitoso.
 
     Returns:
         Tupla (doc_id, metadata, text_content).
     """
     date    = episode.get("date", "unknown")
-    time    = episode.get("time", "00:00")
+    time_   = episode.get("time", "00:00")
     turns   = episode.get("turns", 0)
     summary = episode.get("summary", "").strip()
 
-    doc_id   = f"{date}T{time}"
+    # Metadatos enriquecidos — valores por defecto si no están en el episodio
+    carril_dominante   = episode.get("carril_dominante", "unknown")
+    tareas_completadas = episode.get("tareas_completadas", 0)
+    # Chroma no almacena None como metadato — se convierte a string sentinel
+    exitoso_raw = episode.get("exitoso", None)
+    if exitoso_raw is True:
+        exitoso_str = "true"
+    elif exitoso_raw is False:
+        exitoso_str = "false"
+    else:
+        exitoso_str = "unmarked"   # valor sentinel — sin marcar aún
+
+    doc_id   = f"{date}T{time_}"
     metadata = {
-        "date":   date,
-        "time":   time,
-        "turns":  turns,
-        "source": "episode",
+        "date":               date,
+        "time":               time_,
+        "turns":              turns,
+        "source":             "episode",
+        "carril_dominante":   carril_dominante,
+        "tareas_completadas": tareas_completadas,
+        "exitoso":            exitoso_str,
     }
     # El texto indexado combina fecha + resumen para que
     # preguntas como '¿qué pasó el 18 de mayo?' también funcionen.
-    content = f"[{date} {time}] ({turns} turnos)\n{summary}"
+    content = f"[{date} {time_}] ({turns} turnos)\n{summary}"
     return doc_id, metadata, content
 
 
@@ -118,14 +149,14 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
 # ─────────────────────────────────────────────
 
 def index_episode(episode: dict) -> bool:
-    """Indexa un único episodio en Chroma.
+    """Indexa un único episodio en Chroma (experience_index).
 
     Idempotente: si el episodio ya existe (mismo ID), Chroma lo actualiza
     sin duplicar.
 
     Args:
-        episode: dict con keys date, time, turns, summary
-                 (formato EpisodeItem de schemas.py).
+        episode: dict con keys date, time, turns, summary y opcionales
+                 carril_dominante, tareas_completadas, exitoso.
 
     Returns:
         True si se indexó correctamente, False si Chroma no está disponible.
@@ -152,12 +183,16 @@ def index_episode(episode: dict) -> bool:
 def search_episodes(query: str, k: int = 3) -> list[dict]:
     """Busca los k episodios más relevantes para la consulta.
 
+    Devuelve también los metadatos enriquecidos (exitoso, carril_dominante)
+    para que intelligence.py pueda filtrar por calidad.
+
     Args:
-        query: Texto de búsqueda (ej: 'bug con Chroma', 'embeddings', 'semana pasada').
+        query: Texto de búsqueda.
         k:     Número de resultados a devolver. Default 3.
 
     Returns:
-        Lista de dicts con keys: summary, date, time, turns, score.
+        Lista de dicts con keys: summary, date, time, turns, score,
+        exitoso, carril_dominante.
         Lista vacía si Chroma no está disponible o no hay resultados.
 
     Never raises.
@@ -169,12 +204,22 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
         results = col.similarity_search_with_relevance_scores(query, k=k)
         episodes_found = []
         for doc, score in results:
+            meta = doc.metadata
+            exitoso_str = meta.get("exitoso", "unmarked")
+            if exitoso_str == "true":
+                exitoso = True
+            elif exitoso_str == "false":
+                exitoso = False
+            else:
+                exitoso = None  # sin marcar
             episodes_found.append({
-                "summary": doc.page_content,
-                "date":    doc.metadata.get("date", "?"),
-                "time":    doc.metadata.get("time", "?"),
-                "turns":   doc.metadata.get("turns", 0),
-                "score":   round(score, 3),
+                "summary":          doc.page_content,
+                "date":             meta.get("date", "?"),
+                "time":             meta.get("time", "?"),
+                "turns":            meta.get("turns", 0),
+                "score":            round(score, 3),
+                "exitoso":          exitoso,
+                "carril_dominante": meta.get("carril_dominante", "unknown"),
             })
         log.info(f"[episode_store] search '{query[:40]}' → {len(episodes_found)} resultados")
         return episodes_found
@@ -183,13 +228,134 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
         return []
 
 
+def experience_lookup(query: str) -> str | None:
+    """Busca experiencias previas relevantes para inyectar en contexto RAG.
+
+    Diseñada para ser llamada desde _decide_rag() en intelligence.py.
+    Solo devuelve resultado si score >= EXPERIENCE_INJECT_THRESHOLD (0.80).
+
+    Prioriza episodios marcados como exitosos sobre los no marcados.
+    Ignora episodios marcados como fallidos (exitoso=False) si hay
+    alternativos con score >= 0.65.
+
+    Args:
+        query: pregunta actual del usuario.
+
+    Returns:
+        Texto de contexto listo para concatenar al prompt RAG, o None
+        si no hay experiencias suficientemente relevantes.
+
+    Never raises.
+    """
+    col = _get_collection()
+    if col is None:
+        return None
+    try:
+        results = col.similarity_search_with_relevance_scores(query, k=5)
+        # Filtrar por umbral de inyección
+        candidates = [
+            (doc, score) for doc, score in results
+            if score >= EXPERIENCE_INJECT_THRESHOLD
+        ]
+        if not candidates:
+            return None
+
+        # Separar exitosos de fallidos
+        successful = [
+            (doc, score) for doc, score in candidates
+            if doc.metadata.get("exitoso") == "true"
+        ]
+        failed = [
+            (doc, score) for doc, score in candidates
+            if doc.metadata.get("exitoso") == "false"
+        ]
+        unmarked = [
+            (doc, score) for doc, score in candidates
+            if doc.metadata.get("exitoso", "unmarked") == "unmarked"
+        ]
+
+        # Preferencia: exitosos > sin marcar > fallidos (solo si no hay alternativas)
+        if successful:
+            selected = successful
+        elif unmarked:
+            selected = unmarked
+        else:
+            # Solo fallidos disponibles — incluir con advertencia
+            selected = failed
+
+        if not selected:
+            return None
+
+        # Tomar el mejor resultado
+        best_doc, best_score = max(selected, key=lambda x: x[1])
+        date = best_doc.metadata.get("date", "?")
+        time_ = best_doc.metadata.get("time", "?")
+        summary_text = best_doc.page_content
+        # Limpiar encabezado [fecha hora] si está incluido en el content
+        if summary_text.startswith("["):
+            nl = summary_text.find("\n")
+            summary_text = summary_text[nl + 1:].strip() if nl != -1 else summary_text
+
+        log.debug(
+            "[episode_store] experience_lookup: hit en %sT%s (score=%.3f)",
+            date, time_, best_score,
+        )
+        return (
+            f"[Experiencia previa relevante — {date} {time_}, score={best_score:.2f}]\n"
+            f"{summary_text}"
+        )
+    except Exception as exc:
+        log.warning(f"[episode_store] experience_lookup error: {exc}")
+        return None
+
+
+def mark_episode(doc_id: str, exitoso: bool) -> bool:
+    """Actualiza el metadato 'exitoso' de un episodio ya indexado.
+
+    Usado por 8C al final de la sesión cuando el usuario responde s/n.
+    Como Chroma no soporta update in-place de metadatos, re-indexamos
+    el documento con los metadatos actualizados.
+
+    Args:
+        doc_id:  ID del episodio (ej: '2026-05-19T10:30').
+        exitoso: True si la sesión fue productiva, False si no.
+
+    Returns:
+        True si se actualizó, False si fallo.
+
+    Never raises.
+    """
+    col = _get_collection()
+    if col is None:
+        return False
+    try:
+        # Recuperar el documento existente
+        result = col.get(ids=[doc_id], include=["documents", "metadatas"])
+        if not result["ids"]:
+            log.warning("[episode_store] mark_episode: ID '%s' no encontrado", doc_id)
+            return False
+
+        content  = result["documents"][0]
+        metadata = result["metadatas"][0]
+        metadata["exitoso"] = "true" if exitoso else "false"
+
+        # Reemplazar el documento con metadatos actualizados
+        col.delete(ids=[doc_id])
+        col.add_texts(texts=[content], metadatas=[metadata], ids=[doc_id])
+        log.info("[episode_store] mark_episode: %s marcado como exitoso=%s", doc_id, exitoso)
+        return True
+    except Exception as exc:
+        log.warning("[episode_store] mark_episode error: %s", exc)
+        return False
+
+
 def reindex_all() -> int:
     """Re-indexa TODOS los episodios de episodic_memory.json desde cero.
 
     Útil cuando:
     - Se cambia el formato del episodio.
     - Se quiere reconstruir el índice tras una corrupción.
-    - Se migra desde la versión sin índice.
+    - Se migra desde la versión sin índice (o con colección 'episodios' antigua).
 
     Elimina la colección existente y la reconstruye.
 
@@ -222,7 +388,10 @@ def reindex_all() -> int:
             existing_ids = col.get()["ids"]
             if existing_ids:
                 col.delete(ids=existing_ids)
-                log.info(f"[episode_store] reindex_all: eliminados {len(existing_ids)} docs previos")
+                log.info(
+                    "[episode_store] reindex_all: eliminados %d docs previos",
+                    len(existing_ids),
+                )
         except Exception:
             pass  # colección vacía: no hay nada que borrar
 
@@ -232,10 +401,10 @@ def reindex_all() -> int:
             if index_episode(ep):
                 count += 1
 
-        log.info(f"[episode_store] reindex_all: {count}/{len(episodes)} episodios indexados")
+        log.info("[episode_store] reindex_all: %d/%d episodios indexados", count, len(episodes))
         return count
     except Exception as exc:
-        log.warning(f"[episode_store] reindex_all error: {exc}")
+        log.warning("[episode_store] reindex_all error: %s", exc)
         return 0
 
 
@@ -268,7 +437,7 @@ def episode_index_stats() -> dict:
             "available":     True,
         }
     except Exception as exc:
-        log.warning(f"[episode_store] stats error: {exc}")
+        log.warning("[episode_store] stats error: %s", exc)
         return {
             "indexed_count": 0,
             "collection":    EPISODE_COLLECTION,
