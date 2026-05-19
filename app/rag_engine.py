@@ -71,7 +71,6 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
         "objetivo actual", "objetivo de esta etapa",
         "estado del proyecto",
     ],
-    # ── Tipos nuevos — docs indexados el 10/05/2026 ──────────────────
     "adr": [
         "adr", "decisión arquitectural", "decision arquitectural",
         "por qué se eligió", "por que se eligio",
@@ -83,7 +82,30 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
         "qué falta", "que falta", "qué queda", "que queda",
         "plan del proyecto", "próxima sesión", "proxima sesion",
     ],
+    # Paso 3 — papers de investigación indexados el 17/05/2026
+    # Cubre: SLM-First, MoA, MemGPT, LightMem y conceptos relacionados.
+    # fetch_k sube a 30 para estos docs (más candidatos antes de MMR)
+    # porque son documentos nuevos con menos co-ocurrencias en el índice.
+    "paper": [
+        "slm-first", "slm first", "small language model first",
+        "moa", "mixture of agents", "mixture-of-agents",
+        "memgpt", "lightmem",
+        "phi3", "phi3:mini", "phi-3", "por qué falló", "por que falló",
+        "falló phi", "fallo phi",
+        "auto-refinamiento", "auto refinamiento", "self-refinement",
+        "modelos en paralelo", "modelo paralelo",
+        "qué dice el paper", "que dice el paper",
+        "paper de", "según el paper", "segun el paper",
+        "investigación sobre", "investigacion sobre",
+    ],
 }
+
+# fetch_k diferenciado por tipo: los papers son nuevos en el índice y
+# necesitan más candidatos iniciales antes de que MMR los descarte.
+_FETCH_K_BY_TYPE: dict[str, int] = {
+    "paper": 30,
+}
+_DEFAULT_FETCH_K = 20
 
 
 def _infer_doc_types(question: str) -> list[str]:
@@ -99,18 +121,24 @@ def build_retriever(vectordb: Chroma, question: str):
     """Construye el retriever con MMR y filtro opcional por tipo de documento.
 
     MMR (Maximal Marginal Relevance) balancea relevancia y diversidad:
-    - fetch_k=20: candidatos iniciales que Chroma evalúa
-    - lambda_mult=0.6: 0=diversidad pura, 1=similitud pura. 0.6 prioriza
-      levemente la relevancia manteniendo diversidad entre las fuentes.
-    - k=5: chunks finales devueltos (sin cambio)
+    - fetch_k: candidatos iniciales. 20 por defecto, 30 para papers nuevos.
+    - lambda_mult=0.6: 0=diversidad pura, 1=similitud pura.
+    - k=5: chunks finales devueltos al LLM.
 
-    Si lambda_mult=0.6 empeora fidelity_check en preguntas muy específicas,
-    ajustar a lambda_mult=0.7 (más relevancia, menos diversidad).
+    Paso 3: tipo 'paper' usa fetch_k=30 para compensar que son documentos
+    indexados recientemente con menos co-ocurrencias en el vector store.
     """
     doc_types = _infer_doc_types(question)
+
+    # Determinar fetch_k: si alguno de los tipos usa fetch_k diferenciado, tomarlo.
+    fetch_k = max(
+        (_FETCH_K_BY_TYPE.get(dt, _DEFAULT_FETCH_K) for dt in doc_types),
+        default=_DEFAULT_FETCH_K,
+    )
+
     search_kwargs: dict = {
         "k": 5,
-        "fetch_k": 20,
+        "fetch_k": fetch_k,
         "lambda_mult": 0.6,
     }
     if len(doc_types) == 1:
