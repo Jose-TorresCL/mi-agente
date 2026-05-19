@@ -38,6 +38,11 @@ Fix Paso 2 (cache condicional):
   - Evita que respuestas genéricas/inventadas queden en caché entre sesiones.
   - Las respuestas que pasan el bloqueo de fidelidad pero con score bajo
     se recalculan en cada sesión en vez de propagarse como respuesta "oficial".
+
+Fix carril unsupported:
+  - process_turn: agrega elif para route == 'unsupported'.
+  - Antes caía a _decide_rag disparando LLM + Chroma innecesariamente.
+  - Ahora devuelve mensaje directo sin tocar el vectorstore ni el modelo.
 """
 from __future__ import annotations
 
@@ -89,6 +94,13 @@ _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuá
 # que respuestas de sesiones anteriores contaminen la respuesta.
 _IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                       "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
+
+# Mensaje estándar para consultas fuera del alcance del agente.
+_UNSUPPORTED_MSG = (
+    "Esa consulta está fuera del alcance de lo que puedo hacer por ahora. "
+    "Puedo responder preguntas sobre el proyecto, buscar en la documentación, "
+    "consultar tareas y estado de trabajo."
+)
 
 
 # ─────────────────────────────────────────────
@@ -395,6 +407,7 @@ def process_turn(
         tool            → dispatch_tool
         tool_list_files → _handle_list_files (con detección de conteo)
         memory          → _decide_memory (fallback a RAG si no resuelve)
+        unsupported     → mensaje directo (sin LLM ni vectorstore)
         resto           → _decide_rag
     """
     if route == "exit":
@@ -414,5 +427,11 @@ def process_turn(
             return answer, []
         log.debug("memory no resolvió, fallback a RAG")
         return _decide_rag(user_input, vectordb, chat_history, route="memory")
+
+    # Carril unsupported: consulta fuera del alcance del agente.
+    # No se toca el vectorstore ni el LLM — respuesta instantánea.
+    if route == "unsupported":
+        log.debug("Carril unsupported — respondiendo sin LLM")
+        return _UNSUPPORTED_MSG, []
 
     return _decide_rag(user_input, vectordb, chat_history, route=route)
