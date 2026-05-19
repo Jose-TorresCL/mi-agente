@@ -38,15 +38,23 @@ CHROMA_DIR  = Path(_CHROMA_DIR_STR)
 # ─────────────────────────────────────────────────────────────────────────────
 # Archivos excluidos del índice RAG
 # Razones de exclusión:
-#   ollama-api.md      → 55 KB, genera ~110 chunks de código sin contexto;
-#                        el agente nunca recibe preguntas sobre la API interna
-#   hardware-modelos.md → muy pequeño y genérico; el LLM ya conoce este info
+#   ollama-api.md        → 55 KB, genera ~110 chunks de código sin contexto;
+#                          el agente nunca recibe preguntas sobre la API interna
+#   hardware-modelos.md  → muy pequeño y genérico; el LLM ya conoce este info
 #   chroma-introduccion.md → genérico; chroma-queries.md lo cubre mejor
+#   estado_proyecto.md   → documento vivo; se actualiza cada sesión.
+#                          El estado actual se sirve desde memory_store
+#                          (work_state.json + tareas_pendientes.json).
+#                          Indexarlo introduce riesgo de respuestas desactualizadas.
+#   roadmap.md           → mismo motivo que estado_proyecto.md; es un plan
+#                          en evolución constante, no una referencia estable.
 # ─────────────────────────────────────────────────────────────────────────────
 EXCLUDED_FILENAMES: set[str] = {
     "ollama-api.md",
     "hardware-modelos.md",
     "chroma-introduccion.md",
+    "estado_proyecto.md",
+    "roadmap.md",
 }
 
 
