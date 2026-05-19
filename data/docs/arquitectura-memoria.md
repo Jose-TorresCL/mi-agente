@@ -1,6 +1,8 @@
 # Mapa de Arquitectura de Memoria — mi-agente
 
-Este documento describe en detalle las **4 capas de memoria** del asistente,
+> Última actualización: 19/05/2026 — Fases 6, 7A y 8 completas.
+
+Este documento describe las **5 capas de memoria** del asistente,
 con ejemplos reales de datos en cada capa.
 
 > Decisión arquitectural de referencia: [ADR-002](adr/ADR-002-memoria-en-capas.md)
@@ -14,27 +16,38 @@ con ejemplos reales de datos en cada capa.
                    │         CONSULTA DEL USUARIO      │
                    └─────────────┬────────────────────┘
                                  │
-              ┌──────────────────▼──────────────────┐
-              │           memory_manager.py          │
-              │     (fachada única de acceso)        │
-              └──┬──────────┬──────────┬────────────┘
-                 │          │          │
-         ┌───────▼──┐  ┌────▼────┐  ┌─▼──────────┐
-         │  Capa 1  │  │ Capa 2  │  │  Capa 3    │
-         │ Working  │  │  Short  │  │ Semántica  │
-         │  (RAM)   │  │  Term   │  │ (Chroma)   │
-         └──────────┘  └─────────┘  └────────────┘
-                              │
-                       ┌──────▼──────┐
-                       │   Capa 4   │
-                       │ Long-Term  │
-                       │(memory.json│
-                       └────────────┘
+              ┌─────────────────▼─────────────────┐
+              │      intelligence.py / router          │
+              │   get_context_for(intent_type)         │
+              └──┬────────┬────────┬────────┬────────┘
+                 │          │          │          │
+           ┌────▼──┐  ┌────▼──┐  ┌────▼──┐  ┌────▼──┐
+           │WORKING │  │SEMANT. │  │EPISOD. │  │EPISOD. │
+           │Capa 1-2│  │Capa 3  │  │Capa 4  │  │Capa 5  │
+           │  JSON  │  │  JSON  │  │  JSON  │  │ Chroma │
+           └────────┘  └────────┘  └────────┘  └────────┘
+```
+
+Todas las capas son accedidas únicamente a través de `memory_manager.py`.
+Ninguna capa superior importa `memory_store.py` directamente.
+
+---
+
+## MemoryType enum (schemas.py)
+
+Cada capa tiene un tipo formal definido en `app/schemas.py`:
+
+```python
+class MemoryType(str, Enum):
+    WORKING    = "working"     # RAM + work_state + tasks
+    SEMANTIC   = "semantic"    # profile + project_facts
+    EPISODIC   = "episodic"    # episodic_memory.json + experience_index
+    PROCEDURAL = "procedural"  # reservado para reglas futuras
 ```
 
 ---
 
-## Capa 1 — Memoria de Trabajo (Working Memory)
+## Capa 1 — Memoria de Trabajo en RAM (WORKING)
 
 **¿Qué es?** La información activa en el turno actual.  
 **Duración:** Un solo intercambio usuario → asistente.  
@@ -42,7 +55,6 @@ con ejemplos reales de datos en cada capa.
 **Quién la maneja:** `chat_core.py`
 
 ```python
-# Ejemplo de estado de chat_history durante un turno:
 [
     HumanMessage(content="¿qué hace el módulo router.py?"),
     AIMessage(content="El router clasifica la intención del usuario..."),
@@ -54,147 +66,157 @@ con ejemplos reales de datos en cada capa.
 
 ---
 
-## Capa 2 — Memoria Episódica Corta (Short-Term)
+## Capa 2 — Memoria Operacional (WORKING)
 
-**¿Qué es?** Resumen de sesiones anteriores completas.  
-**Duración:** Permanente (se acumula entre sesiones).  
-**Dónde vive:** `storage/memory.json` → clave `"episodes"`  
-**Quién la maneja:** `memory_manager.record_episode()`
+**¿Qué es?** Estado dinámico del proyecto: foco, tareas, siguiente paso.  
+**Duración:** Persistente entre sesiones.  
+**Dónde vive:** `storage/work_state.json` + `storage/tasks.json`  
+**Quién la maneja:** `tool_update_work_state`, `tool_create_task`, `tool_complete_task`
+
+```json
+// work_state.json
+{
+  "current_focus": "Fase 7 — Observabilidad",
+  "last_completed": "Fase 8D — MemoryType enum",
+  "next_step": "show_metrics.py (Fase 7B)",
+  "current_blockers": []
+}
+
+// tasks.json (extracto)
+{
+  "tasks": [
+    {"id": "T-042", "title": "show_metrics.py", "priority": "alta", "status": "pending"}
+  ]
+}
+```
+
+---
+
+## Capa 3 — Memoria Semántica (SEMANTIC)
+
+**¿Qué es?** Perfil del usuario y hechos estables del proyecto.  
+**Duración:** Permanente.  
+**Dónde vive:** `storage/profile.json` + `storage/project_facts.json`  
+**Quién la maneja:** `tool_save_fact`, actualización manual
+
+```json
+// profile.json
+{
+  "user_name": "Jose",
+  "user_level": "junior",
+  "project_type": "asistente IA local",
+  "preferred_style": ["didáctico", "paso a paso"]
+}
+
+// project_facts.json
+{
+  "modelo_base": "llama3.2",
+  "fase_actual": "Fase 7 — Observabilidad",
+  "stack": "Python, LangChain, Chroma, Ollama",
+  "tests_pasando": "67+"
+}
+```
+
+---
+
+## Capa 4 — Memoria Episódica JSON (EPISODIC)
+
+**¿Qué es?** Resúmenes de sesiones pasadas en texto plano.  
+**Duración:** Permanente, se acumula entre sesiones.  
+**Dónde vive:** `storage/episodic_memory.json`  
+**Quién la maneja:** `memory_manager.record_episode()` al cerrar sesión
 
 ```json
 {
   "episodes": [
     {
-      "timestamp": "2026-05-07T22:31:00",
-      "turns": 12,
-      "summary": "Se implementó el router híbrido de 3 capas.\nSe decidió usar umbral 0.70 para embeddings.\nPróximo paso: agregar tests de la capa 2."
+      "timestamp": "2026-05-19T11:00:00",
+      "turns": 24,
+      "exitoso": true,
+      "summary": "Se implementó experience_index en Chroma.\nSe añadió boost +0.15 para episodios exitosos.\nSiguiente: show_metrics.py"
     }
   ]
 }
 ```
 
 **Generación:** Al cerrar sesión (`salir`/`exit`), el LLM resume
-automáticamente los últimos `MAX_TURNS` turnos en 3 líneas.
+automáticamente los últimos turnos. Se pregunta s/n si la sesión fue exitosa.
 
 ---
 
-## Capa 3 — Memoria Semántica / RAG
+## Capa 5 — Experience Index Chroma (EPISODIC)
 
-**¿Qué es?** Documentos del proyecto indexados como vectores.  
-**Duración:** Permanente.  
-**Dónde vive:** `storage/chroma_db/` (base de datos vectorial Chroma)  
-**Quién la maneja:** `app/rag_engine.py` + `indexacion.py`
+**¿Qué es?** Los episodios de la Capa 4 indexados como vectores para
+recuperación semántica. Permite encontrar episodios relevantes por *tema*,
+no solo el más reciente.  
+**Duración:** Permanente, se reconstruye con `indexacion.py`.  
+**Dónde vive:** `storage/experience_index/` (Chroma)  
+**Quién la maneja:** `episode_store.experience_lookup()`
+
+```python
+# En carril RAG, antes de construir el prompt:
+experience = experience_lookup(user_input, score_threshold=0.80)
+if experience:
+    context_text = f"[Experiencia previa relevante]\n{experience}\n\n" + context_text
+```
+
+Episodios con `exitoso=True` reciben boost `+0.15` en el score.
+
+---
+
+## Los 3 índices Chroma del proyecto
 
 ```
 storage/
-└── chroma_db/
-    ├── chroma.sqlite3
-    └── <colección de embeddings>
+  chroma/              ← documentos del proyecto (269 chunks, estático)
+  intent_index/        ← 96 ejemplos de intención para el router
+  experience_index/    ← episodios de sesión (dinámico, crece con cada sesión)
 ```
-
-**Cómo se usa:**
-1. `indexacion.py` trocea los `.md`/`.txt` de `data/` en chunks.
-2. Genera embeddings con `nomic-embed-text` vía Ollama.
-3. En cada consulta RAG, se recuperan los `TOP_K` chunks más similares.
-4. El LLM responde usando esos chunks como contexto.
-
-**Diferencia con Capa 4:** Capa 3 contiene conocimiento *documental*
-(cómo funciona algo). Capa 4 contiene datos *operacionales* (qué hice, qué falta).
 
 ---
 
-## Capa 4 — Memoria Declarativa Larga (Long-Term)
+## Cómo fluye el contexto en cada carril
 
-**¿Qué es?** Datos estructurados que persisten indefinidamente.  
-**Duración:** Permanente.  
-**Dónde vive:** `storage/memory.json` (múltiples secciones)  
-**Quién la maneja:** `app/memory_manager.py` (vía `app/memory_store.py`)
-
-### Estructura de `storage/memory.json`
-
-```json
-{
-  "profile": {
-    "user_name": "Jose",
-    "user_level": "junior",
-    "project_type": "asistente IA local",
-    "preferred_style": ["didáctico", "paso a paso"],
-    "preferred_workflow": ["planificar", "implementar", "testear"]
-  },
-
-  "project_facts": {
-    "modelo base": "llama3.2",
-    "fase actual": "Fase 3B — router híbrido",
-    "stack": "Python, LangChain, Chroma, Ollama"
-  },
-
-  "work_state": {
-    "current_focus": "refactorizar memoria en capas",
-    "last_completed": "implementar memory_manager",
-    "next_step": "actualizar chat_core para usar memory_manager",
-    "current_blockers": []
-  },
-
-  "tasks": {
-    "tasks": [
-      {
-        "id": "T-001",
-        "title": "Agregar ADRs al repositorio",
-        "priority": "alta",
-        "status": "done"
-      }
-    ]
-  },
-
-  "episodes": [
-    {
-      "timestamp": "2026-05-07T22:31:00",
-      "turns": 12,
-      "summary": "Resumen generado por el LLM al cerrar sesión."
-    }
-  ],
-
-  "messages": [
-    {"role": "human", "content": "último mensaje de la sesión anterior"},
-    {"role": "ai",    "content": "última respuesta de la sesión anterior"}
-  ]
-}
 ```
+Carril rag:
+  get_context_for("rag")
+      └── get_semantic_context()  ← profile + project_facts
+      + chunks de Chroma (MMR, k=5)
+      + experience_lookup() si score ≥ 0.80
 
-### Sub-secciones y su propósito
+Carril memory (TERMINAL):
+  get_context_for("work_state")
+      └── get_working_context()   ← work_state + tasks
+      # NO pasa por caché semántico
 
-| Sección | Qué guarda | Quién la escribe |
-|---------|-----------|------------------|
-| `profile` | Preferencias y nivel del usuario | Manual / `save_fact` |
-| `project_facts` | Hechos técnicos del proyecto | `tool_save_fact` |
-| `work_state` | Foco actual, siguiente paso, bloqueos | `tool_update_work_state` |
-| `tasks` | Lista de tareas con estado | `tool_create_task`, `tool_complete_task` |
-| `episodes` | Resúmenes de sesiones pasadas | Automático al cerrar |
-| `messages` | Historial reciente (ventana) | Automático en cada turno |
+Carril episode:
+  search_episodes(query)
+      └── experience_index Chroma  ← búsqueda semántica
+      + boost si exitoso=True
+```
 
 ---
 
-## Flujo de contexto en cada consulta
+## Resumen de archivos de storage
 
-```
-Consulta RAG:
-  memory_manager.get_full_context()
-      │
-      ├── get_working_context()  → foco + siguiente paso
-      ├── get_semantic_context() → perfil + hechos del proyecto  
-      └── get_episodic_context() → último episodio de sesión
-
-Ese contexto se inyecta en el system prompt del LLM
-como "memoria del asistente" antes de la pregunta.
-```
+| Archivo | Capa | MemoryType | Quién escribe |
+|---|---|---|---|
+| RAM (`chat_history`) | 1 | WORKING | `chat_core.py` |
+| `storage/work_state.json` | 2 | WORKING | `tool_update_work_state` |
+| `storage/tasks.json` | 2 | WORKING | `tool_create_task`, `tool_complete_task` |
+| `storage/profile.json` | 3 | SEMANTIC | Manual / tool futura |
+| `storage/project_facts.json` | 3 | SEMANTIC | `tool_save_fact` |
+| `storage/episodic_memory.json` | 4 | EPISODIC | `record_episode()` al salir |
+| `storage/experience_index/` | 5 | EPISODIC | `indexacion.py` post-sesión |
+| `storage/metrics.jsonl` | — | — | `metrics.py` por turno |
 
 ---
 
 ## Evolución futura
 
 | Mejora | Cuándo considerarla |
-|--------|--------------------|
-| Migrar `memory.json` a SQLite | Cuando los datos superen ~1000 entradas |
-| Memoria episódica con embeddings | Para recuperar episodios por similitud semántica |
-| Separar `chroma_db` por colecciones | Cuando haya múltiples proyectos |
+|---|---|
+| Migrar JSON a SQLite | Cuando episodios superen ~500 entradas |
+| Separar chroma por proyectos | Cuando haya múltiples proyectos activos |
 | TTL en hechos del proyecto | Cuando algunos hechos queden obsoletos |
+| Planner con memoria procedural | Fase 9+ — requiere base estable |

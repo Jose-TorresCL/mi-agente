@@ -4,6 +4,8 @@
 > Cada etapa puede reordenarse, acelerarse o pausarse según lo que aprendas.
 > Lo que no cambia: la dirección.
 
+*Última actualización: 19/05/2026*
+
 ---
 
 ## La idea central
@@ -15,84 +17,93 @@ para cada situación y se lo entrega siempre al mismo modelo.
 ```
 Consulta del usuario
        ↓
-   [ROUTER]  ← decide el modo
+   [ROUTER]  ← 3 capas: keywords → embeddings → LLM fallback
        ↓
-┌─────────────────────────────────────────┐
-│  MODO: conversación  → contexto liviano │
-│  MODO: rag           → recupera docs    │
-│  MODO: código        → lee archivos     │
-│  MODO: reflexión     → consolida hechos │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────┐
+│  CARRIL: rag       → Chroma + experience_lookup  │
+│  CARRIL: memory    → JSON estructurado (TERMINAL)  │
+│  CARRIL: episode   → experience_index Chroma       │
+│  CARRIL: tool_*    → acciones controladas          │
+│  CARRIL: unsupport → respuesta directa, sin LLM    │
+└───────────────────────────────────────────┘
        ↓
-   [LLM]  ← genera la respuesta con el contexto del modo
+   [LLM]  ← llama3.2 vía Ollama
+       ↓
+   metrics.py → metrics.jsonl
 ```
 
 Esto es esencialmente lo que hacen MemGPT y Cursor AI.
-Tu router híbrido actual es la semilla de esta arquitectura.
+El router híbrido actual ya implementa esta arquitectura completamente.
 
 ---
 
-## Etapas orientativas
+## Etapas
 
 ### ✅ Etapa 1 — Base funcional (completada)
 **Nivel:** Fundamental
 
-- RAG con Chroma + LangChain
-- Router híbrido (keyword + embedding)
-- Memoria en 4 capas (conversación, perfil, episodios, reglas)
-- Fidelity check contra alucinaciones
-- Caché semántica
-- Memory manager unificado
-- Workstate: retoma el contexto al arrancar
+- RAG con Chroma + LangChain (269 chunks, MMR, fidelity_check)
+- Router híbrido 3 capas (keywords → embeddings → LLM fallback)
+- Memoria en 5 capas (WORKING, SEMANTIC, EPISODIC ×2, RAM)
+- MemoryType enum formal en `schemas.py`
+- memory_manager como guardián único + get_context_for()
+- Caché semántica (solo carril rag, TERMINAL para memory)
+- 9 carriles de ejecución estables
+- 67+ tests pasando (incluye test_architecture.py)
+- Experience Index en Chroma + boost de calidad + señal s/n
+- Métricas por turno en `storage/metrics.jsonl`
 
 ---
 
-### 🎯 Etapa 2 — Modo código (próxima)
+### ✅ Etapa 2 — Acceso al código propio (completada)
 **Nivel:** Intermedio
 
-El agente puede leer archivos de su propio proyecto y razonar sobre ellos.
+El agente puede leer y listar archivos de su propio proyecto.
 
-**Qué implica:**
-- Una `Tool` en LangChain que hace `open(archivo).read()`
-- El router detecta preguntas sobre código (`"¿qué hace app/router.py?"`, `"revisa este archivo"`)
-- El LLM recibe el contenido del archivo como contexto adicional
-- Las respuestas incluyen observaciones sobre el código, no solo sobre documentos
+- `tool_list_files` — lista archivos del proyecto
+- `tool_read_file` — lee contenido de cualquier archivo por ruta
+- El router detecta preguntas sobre archivos y rutas
+- Carriles `tool_list_files` y `tool_read_file` operativos
 
-**Prerequisito recomendado:** modelo con buen razonamiento de código
-(`qwen2.5-coder:7b` o `llama3.1:8b`)
+> **Nota:** La variante "proponer diffs" (auto-mejora) sigue siendo Etapa 3.
 
 ---
 
-### 🔭 Etapa 3 — Auto-mejora con diffs
+### 🎯 Etapa 3 — Observabilidad y evaluación (en curso — Fase 7)
+**Nivel:** Intermedio
+
+Tener números que digan si el sistema mejora o empeora con cada cambio.
+
+- **7A ✅** — Logger de métricas por turno (`metrics.jsonl`)
+- **7B 🔄** — `show_metrics.py`: tabla en terminal con tiempos y carriles
+- **7C 🔲** — Batería RAG ampliada de 9 a 20 preguntas
+- **7D 🔲** — Caché con aging: entradas > 7 días se recalculan
+
+---
+
+### 🔭 Etapa 4 — Auto-mejora con diffs
 **Nivel:** Avanzado
 
 El agente propone cambios concretos al código en formato diff.
 Tú revisas y apruebas. Se aplican con `git apply`.
 
-**Qué implica:**
-- El modo código evoluciona: ahora no solo lee sino que propone
 - El agente genera bloques `diff` o `patch` válidos
 - Flujo: propuesta → revisión humana → `git apply` → commit
 - Nunca auto-aplica sin aprobación explícita
 
-**Por qué el humano siempre revisa:**
-El agente puede equivocarse. La revisión humana es la red de seguridad.
+**Prerequisito:** Etapa 3 completa (métricas para validar que un diff mejora).
 
 ---
 
-### 🌌 Etapa 4 — Memoria reflexiva
+### 🌌 Etapa 5 — Memoria reflexiva
 **Nivel:** Avanzado
 
-El agente consolida aprendizajes propios sobre sí mismo.
+El agente consolida aprendizajes propios sobre sí mismo usando
+*self-editing memory* (concepto de MemGPT).
 
-**Ejemplos de lo que podría registrar:**
-- `"Cuando pregunto sobre X, el retriever trae chunks de Y que no son relevantes"`
-- `"El fidelity check bloquea respuestas correctas sobre temas cortos"`
-- `"El usuario prefiere respuestas con ejemplos de código"`
-
-Esto es lo que MemGPT llama *self-editing memory*.
-Requiere la Etapa 3 como base — el agente necesita poder leer y modificar
-sus propios archivos de memoria.
+- Detecta patrones en sus propias métricas
+- Registra observaciones como hechos semánticos
+- Requiere Etapa 4 como base
 
 ---
 
@@ -110,8 +121,3 @@ sus propios archivos de memoria.
 ThinkPad · Intel Core i7 8th gen · 16 GB DDR4 · Sin GPU dedicada
 
 Ver `docs/hardware-modelos.md` para la tabla de modelos compatibles.
-
----
-
-*Última actualización: 11/05/2026*
-*Este archivo vive en el repo y se actualiza cuando la visión evoluciona.*
