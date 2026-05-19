@@ -61,6 +61,15 @@ Fix 7A — metrics.jsonl logger:
   - process_turn() mide tiempos con time.perf_counter() por carril.
   - Al final de cada turno llama metrics.record_turn() con route, tiempos
     y estimación de tokens. Never raises — errores van a WARNING.
+
+Feat 8B — carril episode con búsqueda semántica real:
+  - _decide_memory (kind='episode') ahora llama search_episodes(question)
+    desde episode_store en vez del fallback JSON.
+  - Si search_episodes devuelve resultados: los formatea y sintetiza con LLM.
+  - Si Chroma no está disponible o devuelve vacío: fallback a
+    get_context_for('episode') (último episodio del JSON).
+  - Las respuestas del carril episode NO se cachean (son personales y cambian
+    con cada nueva sesión).
 """
 from __future__ import annotations
 
@@ -193,6 +202,78 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
     return fallback
 
 
+def _format_episodes_context(episodes: list[dict]) -> str:
+    """Formatea una lista de episodios recuperados de Chroma en texto legible.
+
+    Args:
+        episodes: lista de dicts con keys summary, date, time, turns, score.
+
+    Returns:
+        Texto multilínea listo para pasar al LLM como contexto.
+    """
+    lines = []
+    for i, ep in enumerate(episodes, 1):
+        lines.append(
+            f"Sesión {i} ({ep.get('date', '?')} {ep.get('time', '')}, "
+            f"{ep.get('turns', 0)} turnos, relevancia: {ep.get('score', 0):.2f}):"
+        )
+        # El summary ya incluye el encabezado [fecha hora] del _episode_to_doc,
+        # así que lo limpiamos para no repetir la fecha.
+        summary = ep.get("summary", "").strip()
+        # Quitar el encabezado [YYYY-MM-DD HH:MM] (N turnos) si está incluido
+        if summary.startswith("["):
+            newline_pos = summary.find("\n")
+            summary = summary[newline_pos + 1:].strip() if newline_pos != -1 else summary
+        lines.append(f"  {summary}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _decide_episode(question: str) -> str:
+    """Responde preguntas sobre sesiones pasadas usando búsqueda semántica (8B).
+
+    Flujo:
+      1. Intenta search_episodes(question) desde Chroma.
+      2. Si hay resultados con resúmenes reales → sintetiza con LLM.
+      3. Si Chroma no está disponible o todos los resúmenes están vacíos
+         → fallback a get_context_for('episode') (último episodio del JSON).
+
+    Returns:
+        Respuesta en texto natural. Nunca lanza excepciones.
+    """
+    # ── Paso 1: búsqueda semántica ──────────────────────────────────────────
+    episodes: list[dict] = []
+    try:
+        from app.episode_store import search_episodes
+        episodes = search_episodes(question, k=3)
+    except Exception as exc:
+        log.warning("[8B] search_episodes falló, usando fallback JSON: %s", exc)
+
+    # ── Paso 2: filtrar episodios con resumen real ──────────────────────────
+    # Un resumen "vacío" es el placeholder que se guarda cuando la sesión
+    # termina abruptamente sin tiempo para generar el resumen real.
+    _EMPTY_SUMMARY_MARKER = "Resumen no disponible"
+    episodes_with_content = [
+        ep for ep in episodes
+        if _EMPTY_SUMMARY_MARKER not in ep.get("summary", "")
+    ]
+
+    if episodes_with_content:
+        log.debug("[8B] %d episodio(s) con contenido real encontrados en Chroma",
+                  len(episodes_with_content))
+        context_text = _format_episodes_context(episodes_with_content)
+        fallback_text = f"Sesiones encontradas:\n{context_text}"
+        return _synthesize_memory_answer(question, context_text, fallback_text)
+
+    # ── Paso 3: fallback a JSON ─────────────────────────────────────────────
+    log.debug("[8B] Sin episodios con contenido en Chroma — fallback a JSON")
+    json_context = get_context_for("episode")
+    if json_context:
+        return json_context
+
+    return "No encontré sesiones anteriores registradas con información relevante."
+
+
 # ─────────────────────────────────────────────
 # Helpers — carril tool_list_files
 # ─────────────────────────────────────────────
@@ -226,14 +307,15 @@ def _decide_memory(question: str) -> str:
 
     Fix 6A: ya no devuelve None. Siempre retorna un string.
     Fix 6B: usa get_context_for(kind) para recuperación selectiva real.
-            El carril 'episode' ya no necesita try/except de importación.
+    8B: el carril 'episode' ahora delega a _decide_episode() para
+        recuperación semántica real desde Chroma.
 
     Tipos reconocidos:
       'profile'       → formato de lista estructurada
       'tasks'         → formato de lista estructurada
       'project_facts' → síntesis LLM (fallback: formato bruto)
       'work_state'    → síntesis LLM (fallback: formato bruto)
-      'episode'       → get_context_for('episode') → get_episodic_context()
+      'episode'       → _decide_episode() con búsqueda semántica en Chroma
       None/desconocido → _MEMORY_NOT_FOUND_MSG
     """
     kind = classify_memory_query(question)
@@ -275,11 +357,8 @@ def _decide_memory(question: str) -> str:
         return _synthesize_memory_answer(question, context_text, fallback)
 
     if kind == "episode":
-        # Fix 6B: get_context_for() ya existe — llamada directa sin try/except.
-        episodes = get_context_for("episode")
-        if not episodes:
-            return "No encontré episodios de sesiones anteriores registrados."
-        return episodes
+        # 8B: recuperación semántica real desde Chroma, con fallback a JSON.
+        return _decide_episode(question)
 
     # Fix 6A: tipo no reconocido → respuesta explícita, NO caída a RAG.
     log.debug("memory: tipo no reconocido para '%s' — devolviendo not-found", question[:60])
