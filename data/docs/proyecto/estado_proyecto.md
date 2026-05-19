@@ -1,5 +1,9 @@
 # Estado del proyecto
 
+> ⚠️ **Documento vivo** — se desactualiza con cada sesión.
+> Última actualización: 17/05/2026. No usar como referencia de arquitectura estable;
+> para eso consultar `arquitectura_actual.md` y los ADRs.
+
 ## Objetivo general
 
 Construir un asistente local con Ollama, LangChain y Chroma para
