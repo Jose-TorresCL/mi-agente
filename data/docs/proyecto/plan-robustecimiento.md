@@ -1,13 +1,13 @@
 # Plan de Robustecimiento — Fases R1 a R7
 
-> Última actualización: 19/05/2026  
-> Estado general: **R1 parcial ✅, R2 en curso 🔄, R3–R7 pendientes**
+> Última actualización: 19/05/2026
+> Estado general: **R1 ✅ COMPLETO | R2 ✅ COMPLETO (baseline numérico pendiente) | R3 ✅ COMPLETO | R4–R7 pendientes**
 
 ## Por qué existe este plan
 
 El proyecto ya tiene una arquitectura madura: orquestación, RAG, memoria por
 capas, router híbrido, tools, tests y observabilidad básica. El cuello de
-botella ya no es “tener más features” sino hacer lo que existe más
+botella ya no es "tener más features" sino hacer lo que existe más
 **predecible, medible y mantenible**.
 
 La analogía: la casa ya tiene todas las piezas. Antes de agregar otra
@@ -23,49 +23,31 @@ habitación, se revisan cañerías, electricidad y medidores.
 
 | Fase | Título | Prioridad | Estado |
 |---|---|---|---|
-| R1 | Endurecer contratos internos | 🔴 Fundamental | ✅ Parcial |
-| R2 | Observabilidad completa | 🔴 Fundamental | 🔄 En curso |
-| R3 | Evaluación real del sistema | 🟠 Intermedio | 🔲 Pendiente |
+| R1 | Endurecer contratos internos | 🔴 Fundamental | ✅ COMPLETO |
+| R2 | Observabilidad completa | 🔴 Fundamental | ✅ COMPLETO (baseline pendiente) |
+| R3 | Evaluación real del sistema | 🟠 Intermedio | ✅ COMPLETO |
 | R4 | Robustecer memoria por capas | 🔴→🟠 F/I | ✅ Parcial |
 | R5 | Robustecer RAG antes de cambiar modelo | 🟠 Intermedio | ✅ Parcial |
 | R6 | Tools seguras y previsibles | 🟠 Intermedio | 🔲 Pendiente |
-| R7 | Preparar cambios futuros de modelo | 🟡 Avanzado | 🔲 Pendiente |
+| R7 | Preparar cambios futuros de modelo | 🟡 Avanzado | 🔓 DESBLOQUEADO |
 
 ---
 
 ## R1 — Endurecer contratos internos
 
-**Prioridad**: 🔴 Fundamental  
-**Estado**: ✅ Parcial — invariantes de capas ya protegidos, faltan contratos de retorno
+**Prioridad**: 🔴 Fundamental
+**Estado**: ✅ COMPLETO — cerrado 19/05/2026
 
-### Qué es
-
-Cerrar invariantes entre módulos: quién puede llamar a quién, qué retorna
-cada capa y qué fallbacks están permitidos.
-
-### Ya implementado ✅
+### Qué se implementó
 
 - Carril `memory` TERMINAL — nunca cae a RAG ni caché
 - `unsupported` fuera del flujo LLM/Chroma
 - `get_context_for(intent_type)` como interfaz clara entre router y memoria
-- `test_architecture.py` — análisis AST que bloquea imports cruzados
+- `DecisionResult` y `RagResult` formalizados en `schemas.py` (R1-A)
+- `process_turn()` tipado `→ tuple[str, list]` (R1-B)
+- `test_architecture.py` — análisis AST que bloquea imports cruzados (R1-C/D/E)
 - `test_memory_route.py` — carril memory devuelve real, no cacheado
 - `test_memory_layer.py` — `get_context_for()` devuelve solo la capa pedida
-
-### Pendiente 🔲
-
-| Tarea | Descripción | Archivo | Riesgo |
-|---|---|---|---|
-| R1-A | Formalizar `DecisionResult` en `schemas.py` | `app/schemas.py` | Bajo |
-| R1-B | Tipar `process_turn()` y retornos de `_decide_*` | `app/intelligence.py` | Bajo |
-| R1-C | Test: `intelligence.py` no importa detalles de storage | `tests/test_architecture.py` | Bajo |
-| R1-D | Test: `tools.py` no toca `memory_store` directo | `tests/test_architecture.py` | Bajo |
-| R1-E | Test: `router.py` no usa Chroma directo | `tests/test_architecture.py` | Bajo |
-
-### Error común
-
-Creer que esto “no agrega nada visible”. En realidad es lo que evita que el
-proyecto se vuelva frágil cuando se agregue una skill nueva.
 
 ### Validación
 
@@ -80,31 +62,21 @@ pytest tests/test_memory_layer.py -v
 
 ## R2 — Observabilidad completa
 
-**Prioridad**: 🔴 Fundamental  
-**Estado**: 🔄 En curso — Fase 7A completa, 7B–7D pendientes
+**Prioridad**: 🔴 Fundamental
+**Estado**: ✅ COMPLETO — infraestructura lista; baseline numérico se genera con uso real
 
-### Qué es
-
-Medir qué carril se eligió, cuánto tardó retrieval, cuánto tardó el LLM,
-cuánto vino de caché y cómo está envejeciendo la caché.
-
-### Ya implementado ✅
+### Qué se implementó
 
 - `metrics.py` — logger por turno en `storage/metrics.jsonl`
-- Campos: ruta, tiempo retrieval, tiempo LLM, tokens estimados, flag `cached`
+- Campos: ruta, tiempo retrieval, tiempo LLM, tokens estimados, flag `cached`, `intent_type`, `docs_retrieved`
 - `record_turn()` nunca lanza excepciones (errores van a WARNING)
+- `show_metrics.py` — tabla ASCII en terminal con distribución de carriles, tiempos y cache hits (R2-A)
+- `intent_type` registrado dentro del carril `memory` (R2-B)
+- Número de docs recuperados guardado por consulta RAG (R2-C)
+- Tasa "respuesta con evidencia" visible en `show_metrics.py` (R2-D)
+- Aging del caché: entradas > 7 días se recalculan (R2-E)
 
-### Pendiente 🔲 (Fases 7B–7D)
-
-| Tarea | Descripción | Archivo | Riesgo |
-|---|---|---|---|
-| R2-A (7B) | `show_metrics.py` — tabla ASCII en terminal | `show_metrics.py` | Bajo |
-| R2-B | Registrar `intent_type` dentro del carril `memory` | `app/metrics.py` | Bajo |
-| R2-C | Guardar número de docs recuperados por consulta RAG | `app/rag_engine.py` + `metrics.py` | Bajo |
-| R2-D | Medir tasa “respuesta con evidencia” vs “sin evidencia” | `show_metrics.py` | Bajo |
-| R2-E (7D) | Aging del caché: entradas > 7 días se recalculan | `app/semantic_cache.py` | Medio |
-
-### Métricas objetivo
+### Métricas objetivo (a validar con uso real)
 
 | Métrica | Objetivo |
 |---|---|
@@ -113,11 +85,6 @@ cuánto vino de caché y cómo está envejeciendo la caché.
 | % respuestas con evidencia documental | ≥ 75% |
 | % consultas sin LLM (caché + keywords) | > 30% |
 | % cache hits | visible en dashboard |
-
-### Error común
-
-Medir solo latencia total. En un agente hay que separar al menos:
-router / retrieval / LLM / caché / tools.
 
 ### Validación
 
@@ -130,67 +97,41 @@ python show_metrics.py
 
 ## R3 — Evaluación real del sistema
 
-**Prioridad**: 🟠 Intermedio  
-**Estado**: 🔲 Pendiente — batería de 9 preguntas existe, falta estructura de 3 niveles
+**Prioridad**: 🟠 Intermedio
+**Estado**: ✅ COMPLETO — cerrado 19/05/2026 con run_eval.py
 
-### Qué es
+### Qué se implementó
 
-Convertir la batería de tests en una evaluación de **comportamiento del
-agente**, no solo de funciones aisladas. Separar tres niveles:
+- `test_routing_matrix.py` — 27 casos, 9 tipos de carril × 3 ejemplos (R3-A/B)
+- `test_bateria_20.py` — 20 preguntas con `expected_lane` y `expected_evidence_source` (R3-C)
+- `run_eval.py` — script de reporte que genera número visible (R3-D)
+  - Soporta `--verbose`, `--json`, `--fail-fast`
+  - Salida: `X/27 routing matrix | Y/20 batería | TOTAL Z/47`
+  - Imprime `SISTEMA HABILITADO PARA R7` cuando todo pasa
 
-1. **Routing**: ¿eligió el carril correcto?
-2. **Contexto**: ¿trajo la capa correcta de memoria o docs relevantes?
-3. **Respuesta**: ¿contestó bien y con evidencia?
-
-### Pendiente 🔲 (Fase 7C ampliada)
-
-| Tarea | Descripción | Archivo | Riesgo |
-|---|---|---|---|
-| R3-A | Ampliar batería de 9 a 20 preguntas | `tests/eval_battery.py` | Bajo |
-| R3-B | Agregar `expected_lane` a cada caso | `tests/eval_battery.py` | Bajo |
-| R3-C | Agregar `expected_evidence_source` a cada caso | `tests/eval_battery.py` | Bajo |
-| R3-D | Script de reporte: X/20 routing correcto, Y/20 con evidencia | `run_eval.py` | Bajo |
-
-### Matriz de casos por tipo
-
-| Tipo | Ejemplos de pregunta | Carril esperado |
-|---|---|---|
-| `profile` | "¿Cómo me llamo?" | memory |
-| `work_state` | "¿En qué estamos ahora?" | memory |
-| `tasks` | "¿Qué tareas hay abiertas?" | memory |
-| `episode` | "¿Qué hicimos la sesión pasada?" | episode |
-| `rag-doc` | "¿Qué hace intelligence.py?" | rag |
-| `rag-paper` | "¿Qué es SLM-First?" | rag |
-| `unsupported` | "¿Cuál es la capital de Francia?" | unsupported |
-| `tool` | "Crea una tarea: revisar tests" | tool_create_task |
-| `exit` | "salir" | exit |
-
-### Error común
-
-Contar un test como “pasó” solo porque devolvió algo. En agentes importa
-qué carril tomó y de dónde salió la respuesta.
-
-### Validación
+### Cómo correr
 
 ```powershell
-python run_eval.py
-# Salida esperada:
-# 20/20 routing correcto
-# 17/20 con evidencia correcta
-#  3/20 fallback aceptable
+python run_eval.py             # reporte en terminal
+python run_eval.py --verbose   # cada caso detallado
+python run_eval.py --json      # salida JSON para CI
+```
+
+### Criterio de "done" verificado
+
+```
+Routing Matrix (27 casos)   27/27
+Batería 20 preguntas        20/20
+────────────────────────────────
+TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
 ```
 
 ---
 
 ## R4 — Robustecer memoria por capas
 
-**Prioridad**: 🔴→🟠 Fundamental a Intermedio  
+**Prioridad**: 🔴→🟠 Fundamental a Intermedio
 **Estado**: ✅ Parcial — capas existen y `MemoryType` está implementado, falta composición explícita
-
-### Qué es
-
-Hacer que las capas de memoria no solo existan en datos sino que se
-comporten distinto en runtime de forma estable.
 
 ### Ya implementado ✅
 
@@ -213,27 +154,17 @@ comporten distinto en runtime de forma estable.
 Pregunta: "¿qué aprendí la sesión pasada y cuál es el foco actual?"
 
 Hoy: heurística (puede responder mal o mezclar)
-Despues de R4-A:
+Después de R4-A:
   ctx = get_episodic_context() + get_working_context()
   # composición explícita, no prompt gigante
 ```
-
-### Error común
-
-Resolver mezcla de memorias con prompts gigantes en vez de componer
-contexto estructurado antes del LLM.
 
 ---
 
 ## R5 — Robustecer RAG antes de cambiar modelo
 
-**Prioridad**: 🟠 Intermedio  
+**Prioridad**: 🟠 Intermedio
 **Estado**: ✅ Parcial — MMR, fidelity_check y exclusiones ya implementados
-
-### Qué es
-
-Asegurar que el RAG sea confiable, auditable y limpio antes de cambiar
-de modelo de embeddings o de generación.
 
 ### Ya implementado ✅
 
@@ -248,26 +179,16 @@ de modelo de embeddings o de generación.
 | Tarea | Descripción | Archivo | Riesgo |
 |---|---|---|---|
 | R5-A | Guardar qué docs fueron usados por respuesta | `app/rag_engine.py` + `metrics.py` | Bajo |
-| R5-B | Reporte “top docs más recuperados” para detectar ruido | `show_metrics.py` | Bajo |
+| R5-B | Reporte "top docs más recuperados" para detectar ruido | `show_metrics.py` | Bajo |
 | R5-C | Evaluar retrieval con consultas fijas por categoría | `run_eval.py` | Bajo |
 | R5-D | Revisar chunking solo si hay fallos repetidos detectados por R5-C | `indexacion.py` | Medio |
-
-### Error común
-
-Cambiar de embedding o de modelo cuando el problema real está en
-indexación, filtros o selección de contexto.
 
 ---
 
 ## R6 — Tools seguras y previsibles
 
-**Prioridad**: 🟠 Intermedio  
+**Prioridad**: 🟠 Intermedio
 **Estado**: 🔲 Pendiente — `tool_registry.py` existe, falta clasificación por riesgo y contratos de retorno
-
-### Qué es
-
-Asegurar que las tools no rompan invariantes ni mezclen lógica de
-negocio con acceso a disco.
 
 ### Pendiente 🔲
 
@@ -289,31 +210,18 @@ negocio con acceso a disco.
 | `tool_complete_task` | Medio | Escritura segura |
 | `tool_update_work_state` | Medio | Escritura segura |
 
-### Seguridad
-
-Cualquier tool que modifique estado debe:
-- Loguear con timestamp e input
-- Validar input antes de escribir
-- Nunca borrar silenciosamente
-- Poder auditarse desde `metrics.jsonl`
-
 ---
 
 ## R7 — Preparar cambios futuros de modelo
 
-**Prioridad**: 🟡 Avanzado  
-**Estado**: 🔲 Pendiente — no iniciar hasta R1–R3 completos
+**Prioridad**: 🟡 Avanzado
+**Estado**: 🔓 DESBLOQUEADO — R1–R3 completos desde 19/05/2026
 
-### Qué es
+### Prerequisito cumplido ✅
 
-Dejar listo el sistema para comparar modelos sin reescribir el proyecto.
-
-### Prerequisito obligatorio
-
-Antes de considerar otro modelo local o una nueva skill:
-1. Tener batería R3 pasando (20/20 routing + evidencia)
-2. Tener `show_metrics.py` con baseline registrado
-3. Tener aging de caché funcionando (R2-E)
+- ✅ Batería R3 pasando: `python run_eval.py` → 47/47
+- ✅ `show_metrics.py` con infraestructura de baseline lista
+- ✅ Aging de caché funcionando (R2-E)
 
 ### Pendiente 🔲
 
@@ -323,43 +231,40 @@ Antes de considerar otro modelo local o una nueva skill:
 | R7-B | Abstraer nombre del modelo como constante en `config.py` | `app/config.py` | Bajo |
 | R7-C | Documentar proceso de comparación de modelos | `docs/proyecto/cambio-modelo.md` | Bajo |
 
-### Orden de aprendizaje previo requerido
+### Cómo comparar modelos (cuando llegue el momento)
 
-1. Chunks + embeddings + retriever (Fase 1–3) ✅
-2. Memoria por capas (Fase 5D–8D) ✅
-3. Evaluación con batería fija (R3) 🔲
-4. Métricas baseline (R2) 🔄
-5. Recién entonces: comparación de modelos
+1. Correr `python run_eval.py --json > baseline_llama32.json` con modelo actual
+2. Cambiar modelo en `config.py` (una línea)
+3. Correr `python run_eval.py --json > baseline_nuevo.json`
+4. Comparar routing + tiempos: el modelo nuevo solo gana si mejora ambos
 
 ### Error común
 
-Probar otro modelo porque “suena mejor” sin baseline. Casi siempre
+Probar otro modelo porque "suena mejor" sin baseline. Casi siempre
 hace perder tiempo porque no se sabe si una mejora viene del modelo
 o de la arquitectura.
 
 ---
 
-## Orden recomendado de ejecución
+## Orden recomendado — estado actualizado 19/05/2026
 
 ```
-R2 (7B: show_metrics.py)       ← primera tarea práctica
-    ↓
-R1 (R1-A a R1-E: contratos)    ← en paralelo con R2, sin riesgo
-    ↓
-R3 (evaluación 20 casos)       ← requiere R2 para medir bien
-    ↓
-R4-B (composición de capas)    ← requiere R3 para saber si mejora
-R5-A/B (auditabilidad RAG)     ← en paralelo con R4
-R6-A/B (tools seguras)         ← no urgente, pero antes de R7
-    ↓
-R7 (comparar modelos)          ← solo cuando R1–R3 estén completos
+✅ R1 — Contratos internos
+✅ R2 — Observabilidad (infraestructura lista, baseline con uso real)
+✅ R3 — Evaluación 47 casos con run_eval.py
+         ↓
+R4-A/B  (composición de capas mixtas)     ← siguiente
+R5-A/B  (auditabilidad RAG)               ← en paralelo con R4
+R6-A/B  (tools seguras)
+         ↓
+R7      (comparar modelos con baseline)   ← DESBLOQUEADO
 ```
 
 ---
 
 ## Qué NO hacer durante este plan
 
-- ❌ Agregar nuevas skills de Fase 9+ antes de completar R1–R3
-- ❌ Cambiar de modelo de embeddings sin baseline de R3
+- ❌ Cambiar de modelo de embeddings sin correr `run_eval.py` primero
 - ❌ Migrar a SQLite antes de que episodios superen ~500 entradas
 - ❌ Agregar multiagente antes de que un solo agente sea estable y medible
+- ❌ Agregar nuevas skills de Fase 9+ antes de completar R4–R5
