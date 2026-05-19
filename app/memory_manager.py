@@ -26,6 +26,10 @@ Interfaces públicas:
     get_semantic_context()            → solo project_facts + perfil
     get_episodic_context()            → solo episodio anterior
 
+  Composición multi-capa (R4-B):
+    detect_memory_intents(question)   → lista de tipos detectados en la pregunta
+    get_composed_context(intents)     → contexto combinado de múltiples capas
+
   Lectura directa:
     get_profile()           → dict del perfil
     get_project_facts()     → dict de hechos
@@ -62,6 +66,122 @@ from app.memory_store import (
 from app.memory_context import build_memory_context
 
 log = get_logger(__name__)
+
+
+# ─────────────────────────────────────────────
+# R4-B: Señales de co-ocurrencia por tipo
+# Cada tipo tiene sus propias señales de detección.
+# Se evalúan de forma independiente para detectar intenciones múltiples.
+# ─────────────────────────────────────────────
+
+_INTENT_SIGNALS: dict[str, list[str]] = {
+    "profile": [
+        "mi perfil", "cómo soy", "como soy", "quién soy", "quien soy",
+        "mi nombre", "mi nivel", "mi estilo",
+    ],
+    "work_state": [
+        "foco actual", "foco", "siguiente paso", "en qué estoy", "en que estoy",
+        "qué estoy haciendo", "que estoy haciendo", "estado actual",
+        "qué hago", "que hago", "en qué vamos", "en que vamos",
+        "qué sigue", "que sigue", "en qué quedamos", "en que quedamos",
+    ],
+    "tasks": [
+        "tareas", "pendientes", "tarea", "qué tengo", "que tengo",
+        "qué debo", "que debo",
+    ],
+    "project_facts": [
+        "fase del proyecto", "fase actual", "hechos del proyecto",
+        "nombre del proyecto", "datos del proyecto",
+    ],
+    "episode": [
+        "sesión anterior", "sesion anterior", "última sesión", "ultima sesion",
+        "qué aprendí", "que aprendi", "qué trabajamos", "que trabajamos",
+        "qué avancé", "que avance", "la semana pasada", "ayer",
+        "antes", "historial", "aprendimos",
+    ],
+}
+
+# Orden de presentación cuando se componen múltiples tipos.
+# Define qué capa va primero en el contexto combinado.
+_INTENT_ORDER = ["episode", "work_state", "tasks", "project_facts", "profile"]
+
+
+def detect_memory_intents(question: str) -> list[str]:
+    """Detecta todos los tipos de memoria relevantes para una pregunta.
+
+    R4-B: Implementación del paso de 'reactivo' a 'adaptativo'.
+    En vez de devolver UN tipo (como classify_memory_query), detecta
+    TODOS los tipos cuyas señales aparecen en la pregunta.
+
+    Ejemplo:
+        '¿qué aprendí la sesión pasada y cuál es el foco actual?'
+        → ['episode', 'work_state']
+
+        '¿cuál es mi foco?'
+        → ['work_state']
+
+        '¿cuál es mi nombre?'
+        → ['profile']
+
+    El orden de la lista respeta _INTENT_ORDER para consistencia
+    en la composición del contexto.
+
+    Args:
+        question: Pregunta del usuario en lenguaje natural.
+
+    Returns:
+        Lista de tipos detectados (puede estar vacía si ninguno aplica).
+        Nunca lanza excepciones.
+    """
+    q = question.lower().strip()
+    detected = set()
+    for intent_type, signals in _INTENT_SIGNALS.items():
+        if any(signal in q for signal in signals):
+            detected.add(intent_type)
+
+    # Devolver en orden canónico para reproducibilidad
+    return [t for t in _INTENT_ORDER if t in detected]
+
+
+def get_composed_context(intents: list[str]) -> str:
+    """Compone contexto de múltiples capas de memoria.
+
+    R4-B: Ensamblador de contexto multi-capa.
+    Cada capa se separa con un divisor legible para el LLM.
+
+    Ejemplo con intents=['episode', 'work_state']:
+        === Sesiones anteriores ===
+        Sesión anterior (2026-05-18, 12 turnos): ...
+
+        === Estado de trabajo ===
+        Foco actual: implementar R4
+        Siguiente paso: agregar tests
+
+    Args:
+        intents: Lista de tipos de memoria a componer.
+                 Se respeta el orden recibido.
+
+    Returns:
+        String de contexto listo para inyectar en prompt.
+        Secciones con contenido vacío se omiten.
+        Nunca lanza excepciones.
+    """
+    _LABELS = {
+        "profile":       "Perfil del usuario",
+        "work_state":    "Estado de trabajo",
+        "tasks":         "Tareas pendientes",
+        "project_facts": "Hechos del proyecto",
+        "episode":       "Sesiones anteriores",
+    }
+
+    sections: list[str] = []
+    for intent_type in intents:
+        content = get_context_for(intent_type)
+        if content and content.strip():
+            label = _LABELS.get(intent_type, intent_type)
+            sections.append(f"=== {label} ===\n{content.strip()}")
+
+    return "\n\n".join(sections)
 
 
 # ─────────────────────────────────────────────
@@ -135,7 +255,6 @@ def get_selective_context(route: str) -> str:  # MemoryType: dispatch (WORKING |
     Never raises.
     """
     if route == "rag":
-        # Solo perfil mínimo — el contexto RAG ya aporta los chunks relevantes
         profile = load_profile()
         if not profile:
             return ""
@@ -152,16 +271,12 @@ def get_selective_context(route: str) -> str:  # MemoryType: dispatch (WORKING |
         return "\n".join(lines)
 
     if route == "estado":
-        # Estado operacional: qué se hace y qué sigue
         return get_working_context()
 
     if route == "memoria":
-        # Conocimiento estable + resumen de sesión anterior
         parts = [get_semantic_context(), get_episodic_context()]
         return "\n".join(p for p in parts if p)
 
-    # Fallback: contexto completo para cualquier otro carril
-    # (herramientas, general, memory, etc.)
     return get_full_context()
 
 
@@ -186,7 +301,7 @@ def get_working_context() -> str:  # MemoryType: WORKING
         if siguiente:
             lines.append(f"Siguiente paso: {siguiente}")
         if ultimo:
-            lines.append(f"\u00daltimo completado: {ultimo}")
+            lines.append(f"Último completado: {ultimo}")
         blockers = ws.get("current_blockers", [])
         if blockers:
             lines.append(f"Bloqueos: {', '.join(blockers)}")
@@ -281,32 +396,23 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
     1. key y value deben ser no-vacíos.
     2. Guardia anti-duplicado semántico: si ya existe algún hecho con
        exactamente el mismo valor (ignorando la key), no escribe y retorna False.
-       Esto previene triplicados como hecho_20260510_XXXXXX con el mismo dato.
-    3. Si la key ya existe con un valor distinto, actualiza (comportamiento previo).
-
-    Args:
-        key:   Nombre del hecho (ej: 'modelo_base').
-        value: Valor del hecho (ej: 'llama3.2').
+    3. Si la key ya existe con un valor distinto, actualiza.
 
     Returns:
         True si se guardó correctamente.
-        False si key o value están vacíos, o si el valor ya existe en otro hecho.
-
+        False si key o value están vacíos, o si el valor ya existe.
     Never raises.
     """
     if not key.strip() or not value.strip():
         log.warning("save_fact rechazado: key=%r value=%r", key, value)
         return False
 
-    # Guardia anti-duplicado semántico
     existing_facts = load_project_facts()
     value_normalized = value.strip().lower()
     for existing_key, existing_value in existing_facts.items():
         if existing_value.strip().lower() == value_normalized:
             if existing_key == key.strip():
-                log.debug(
-                    "save_fact omitido (ya existe igual): %s = %s", key, value
-                )
+                log.debug("save_fact omitido (ya existe igual): %s = %s", key, value)
             else:
                 log.info(
                     "save_fact omitido (valor duplicado en '%s'): %s = %s",
@@ -320,14 +426,7 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
 
 
 def update_state(field: str, value: str) -> None:  # MemoryType: WORKING
-    """Actualiza un campo de work_state.
-
-    Args:
-        field: Campo a actualizar (ej: 'current_focus', 'next_step').
-        value: Nuevo valor del campo.
-
-    Never raises.
-    """
+    """Actualiza un campo de work_state. Never raises."""
     if not field.strip() or not value.strip():
         log.warning("update_state ignorado: field=%r value=%r", field, value)
         return
@@ -340,18 +439,10 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:  
 
     Reglas:
     1. title debe ser no-vacío. priority inválido → 'medium'.
-    2. Guardia anti-duplicado: si ya existe una tarea pendiente con el
-       mismo título (comparación case-insensitive, sin espacios extras),
-       retorna el ID de la tarea existente sin crear una nueva.
-
-    Args:
-        title:    Título de la tarea.
-        priority: 'low' | 'medium' | 'high'. Default 'medium'.
-        notes:    Notas adicionales. Default ''.
+    2. Guardia anti-duplicado: mismo título pendiente → devuelve ID existente.
 
     Returns:
-        str con el ID generado (ej: 'T-0510123456') o el ID existente si duplicado.
-
+        str con el ID generado o el ID existente si duplicado.
     Never raises.
     """
     title = title.strip()
@@ -385,13 +476,7 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:  
 
 
 def complete_task(task_id: str) -> None:  # MemoryType: WORKING
-    """Marca una tarea como completada.
-
-    Args:
-        task_id: ID de la tarea (ej: 'T-0510123456').
-
-    Never raises.
-    """
+    """Marca una tarea como completada. Never raises."""
     if not task_id.strip():
         log.warning("complete_task ignorado: task_id vacío")
         return
@@ -400,14 +485,7 @@ def complete_task(task_id: str) -> None:  # MemoryType: WORKING
 
 
 def record_episode(summary: str, turns: int) -> None:  # MemoryType: EPISODIC
-    """Guarda el resumen de la sesión actual como episodio.
-
-    Args:
-        summary: Resumen textual de la sesión.
-        turns:   Número de turnos de la sesión.
-
-    Never raises.
-    """
+    """Guarda el resumen de la sesión actual como episodio. Never raises."""
     if not summary.strip():
         log.warning("record_episode ignorado: summary vacío")
         return

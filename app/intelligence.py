@@ -28,83 +28,18 @@ R1 — contratos internos (CERRADO):
   Verificar con: pytest tests/test_architecture.py -v
 
 R2-connect — intent_type y num_docs en record_turn() (CERRADO):
-  process_turn() pasa intent_type a _record_metric() en todos los carriles:
-    exit            → intent_type="exit"
-    tool_list_files → intent_type="tool_list_files"
-    tool (TOOLS)    → intent_type=route
-    memory          → intent_type=classify_memory_query(user_input) or "memory_query"
-    unsupported     → intent_type="unsupported"
-    RAG             → intent_type=route, num_docs=len(source_docs)
+  process_turn() pasa intent_type a _record_metric() en todos los carriles.
   metrics.jsonl registra ambos campos desde este commit.
 
-Cambios Día 3:
-  _decide_exit():
-    - El episodio se guarda SIEMPRE, incluso si el resumen falla.
-    - Historial comprimido: se pasa al LLM solo la última línea de cada turno
-      (máx. 80 chars). Menos tokens → respuesta más rápida → menos timeouts.
-    - Timeout reducido de 30s a 20s.
-    - num_predict reducido de 120 a 80 tokens.
+R4-B — composición multi-capa de memoria (CERRADO):
+  _decide_memory() ahora usa detect_memory_intents() en vez de classify_memory_query().
+  Cuando la pregunta cruza dos tipos (ej: episode + work_state), ambas capas se
+  abren y se compone el contexto antes de pasarlo al LLM.
+  Modelo 'reactivo' (1 cajón) → modelo 'adaptativo' (N cajones).
+  Basado en: A-Mem NeurIPS 2025 — 34% mejora en tareas multi-step con
+  memoria organizada por tipo vs acumulación flat.
 
-Cambios Día 4:
-  _decide_memory():
-    - Ya no hace dump crudo de project_facts/work_state al usuario.
-    - Para preguntas de tipo 'project_facts' y 'work_state', el contexto se
-      pasa al LLM para que genere una respuesta sintetizada y natural.
-    - 'profile' y 'tasks' siguen con formato estructurado.
-    - Timeout 10s para la llamada de síntesis (bajado de 25s).
-
-Fix Tarea 1 (post-pruebas):
-  - _MEMORY_SYNTHESIS_TIMEOUT: 25s → 10s.
-  - tool_list_files: detecta 'cuántos/cuántas' y devuelve conteo.
-  - _decide_rag: bypass de caché para preguntas de identidad.
-
-Fix Paso 2 (cache condicional):
-  - _CACHE_MIN_SCORE = 0.55: solo se cachea si fidelity_score >= umbral.
-  - Evita que respuestas genéricas/inventadas queden en caché entre sesiones.
-  - Las respuestas que pasan el bloqueo de fidelidad pero con score bajo
-    se recalculan en cada sesión en vez de propagarse como respuesta "oficial".
-
-Fix carril unsupported:
-  - process_turn: agrega elif para route == 'unsupported'.
-  - Antes caía a _decide_rag disparando LLM + Chroma innecesariamente.
-  - Ahora devuelve mensaje directo sin tocar el vectorstore ni el modelo.
-
-Fix 6A — _decide_memory terminal:
-  - _decide_memory ya no devuelve None cuando route=memory.
-  - Si el tipo de consulta no es reconocido por classify_memory_query,
-    devuelve mensaje explícito en lugar de caer silenciosamente a RAG.
-  - Evita que preguntas de memoria mal clasificadas activen la caché
-    semántica del carril RAG.
-  - El fallback a RAG desde memory queda como safety net explícito y logueado.
-
-Fix 6B — get_context_for() en memory_manager:
-  - _decide_memory usa get_context_for(kind) para recuperación selectiva real.
-  - Elimina el try/except de importación que esperaba la función.
-  - El carril 'episode' ahora llama get_context_for('episode') directamente.
-
-Fix 7A — metrics.jsonl logger:
-  - process_turn() mide tiempos con time.perf_counter() por carril.
-  - Al final de cada turno llama metrics.record_turn() con route, tiempos
-    y estimación de tokens. Never raises — errores van a WARNING.
-
-Feat 8B — carril episode con búsqueda semántica real:
-  - _decide_memory (kind='episode') ahora llama search_episodes(question)
-    desde episode_store en vez del fallback JSON.
-  - Si search_episodes devuelve resultados: los formatea y sintetiza con LLM.
-  - Si Chroma no está disponible o devuelve vacío: fallback a
-    get_context_for('episode') (último episodio del JSON).
-  - Las respuestas del carril episode NO se cachean (son personales y cambian
-    con cada nueva sesión).
-
-Feat 8B-v2 — inyección de experiencias previas en carril RAG:
-  - _decide_rag() llama experience_lookup(user_input) desde episode_store
-    antes de invocar el LLM.
-  - Si score >= 0.80 (EXPERIENCE_INJECT_THRESHOLD), el resumen del episodio
-    más relevante se prepend al context_text como bloque separado.
-  - Prioriza episodios marcados exitoso=True sobre no marcados.
-  - Episodios exitoso=False solo se inyectan si no hay alternativos mejores.
-  - La inyección NO afecta el caché semántico — las respuestas con contexto
-    episódico no se cachean para evitar respuestas obsoletas.
+Cambios anteriores documentados en versiones previas del archivo.
 """
 from __future__ import annotations
 
@@ -123,6 +58,8 @@ from app.memory_manager import (
     get_tasks,
     get_work_state,
     record_episode,
+    detect_memory_intents,
+    get_composed_context,
 )
 from app.metrics import record_turn as _record_metric
 from app.rag_engine import retrieve_context, build_chain
@@ -318,15 +255,44 @@ def _handle_list_files(question: str) -> str:
 def _decide_memory(question: str) -> str:
     """Responde desde memoria estructurada.
 
-    Tipos reconocidos:
+    R4-B: modelo 'adaptativo' — detecta todos los tipos de memoria
+    relevantes y compone contexto multi-capa antes de llamar al LLM.
+
+    Flujo:
+      1. detect_memory_intents(question) → lista de tipos (puede ser >1)
+      2. Si 0 tipos → _MEMORY_NOT_FOUND_MSG
+      3. Si 1 tipo → lógica específica por tipo (igual que antes)
+      4. Si >1 tipos → get_composed_context() + síntesis LLM
+
+    Tipos con lógica específica (1 tipo):
       'profile'       → formato de lista estructurada
       'tasks'         → formato de lista estructurada
-      'project_facts' → síntesis LLM (fallback: formato bruto)
-      'work_state'    → síntesis LLM (fallback: formato bruto)
+      'project_facts' → síntesis LLM
+      'work_state'    → síntesis LLM
       'episode'       → _decide_episode() con búsqueda semántica en Chroma
-      None/desconocido → _MEMORY_NOT_FOUND_MSG
+
+    Multi-tipo (>1 tipos):
+      Todos los tipos detectados → get_composed_context() → síntesis LLM
     """
-    kind = classify_memory_query(question)
+    intents = detect_memory_intents(question)
+    log.debug("R4-B: intents detectados=%s para '%s'", intents, question[:60])
+
+    # ── 0 tipos detectados ────────────────────────────────────────────
+    if not intents:
+        log.debug("memory: ningún tipo detectado — devolviendo not-found")
+        return _MEMORY_NOT_FOUND_MSG
+
+    # ── Más de 1 tipo → composición multi-capa ────────────────────────
+    if len(intents) > 1:
+        log.debug("R4-B: composición multi-capa con %d tipos: %s", len(intents), intents)
+        composed = get_composed_context(intents)
+        if not composed.strip():
+            return _MEMORY_NOT_FOUND_MSG
+        fallback = f"Información de memoria:\n{composed}"
+        return _synthesize_memory_answer(question, composed, fallback)
+
+    # ── 1 tipo → lógica específica (comportamiento anterior preservado) ─
+    kind = intents[0]
     log.debug("Carril memory clasificado como: %s", kind)
 
     if kind == "profile":
@@ -367,7 +333,7 @@ def _decide_memory(question: str) -> str:
     if kind == "episode":
         return _decide_episode(question)
 
-    log.debug("memory: tipo no reconocido para '%s' — devolviendo not-found", question[:60])
+    log.debug("memory: tipo no reconocido '%s' — devolviendo not-found", kind)
     return _MEMORY_NOT_FOUND_MSG
 
 
@@ -439,8 +405,6 @@ def _decide_rag(
       1. Caché semántica (bypass para preguntas de identidad).
       2. Retrieval: memoria estructurada + documentos RAG.
       3. Experience injection: busca en experience_index con score >= 0.80.
-         Si hay hit, se añade como bloque de contexto adicional al prompt.
-         Las respuestas con experiencia inyectada NO se cachean.
       4. LLM con contexto completo.
       5. Verificación de fidelidad.
       6. Caché save (solo si score >= _CACHE_MIN_SCORE y sin inyección episódica).
@@ -448,7 +412,6 @@ def _decide_rag(
     Returns:
         tuple[str, list, int, int, bool]:
             (answer, source_docs, retrieval_ms, llm_ms, cached)
-        Ver RagResult en schemas.py para la semántica de cada campo.
     """
     input_lower = user_input.lower()
     is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
@@ -533,13 +496,12 @@ def process_turn(
 
     Returns:
         tuple[str, list]: (respuesta_texto, lista_de_documentos_fuente)
-        Ver DecisionResult en schemas.py para la semántica de cada campo.
 
     Flujo:
         exit            → _decide_exit
         tool_list_files → _handle_list_files
         tool            → dispatch_tool
-        memory          → _decide_memory (TERMINAL)
+        memory          → _decide_memory (TERMINAL) — R4-B multi-capa
         unsupported     → mensaje directo
         resto           → _decide_rag (con experience injection 8B-v2)
     """
@@ -567,12 +529,16 @@ def process_turn(
 
     if route == "memory":
         t0 = time.perf_counter()
-        # Clasificamos la intención de memoria para pasarla a métricas
-        memory_intent = classify_memory_query(user_input) or "memory_query"
+        # R4-B: detect_memory_intents devuelve lista; para métricas usamos
+        # el primer intent o 'memory_query' si la lista está vacía.
+        intents = detect_memory_intents(user_input)
+        memory_intent = intents[0] if intents else "memory_query"
+        if len(intents) > 1:
+            memory_intent = "multi:" + "+".join(intents)  # ej: "multi:episode+work_state"
         answer = _decide_memory(user_input)
         _record_metric(
             route=route,
-            intent_type=memory_intent,
+        intent_type=memory_intent,
             llm_ms=int((time.perf_counter() - t0) * 1000),
             tokens_est=int(len(answer.split()) * 1.3),
         )
@@ -589,11 +555,11 @@ def process_turn(
     )
     _record_metric(
         route=route,
-        intent_type=route,                    # ← conectado (R2-connect)
+        intent_type=route,
         retrieval_ms=retrieval_ms,
         llm_ms=llm_ms,
         tokens_est=int(len(answer.split()) * 1.3),
         cached=cached,
-        num_docs=len(source_docs),            # ← conectado (R2-connect)
+        num_docs=len(source_docs),
     )
     return answer, source_docs
