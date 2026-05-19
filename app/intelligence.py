@@ -10,7 +10,13 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 
 Contrato público
 ─────────────────
-    process_turn(route, user_input, vectordb, chat_history) -> (str, list)
+    process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]
+
+R1-B (contratos internos):
+  - process_turn() tiene tipo de retorno explícito: tuple[str, list]
+  - _decide_rag() tiene tipo de retorno explícito: tuple[str, list, int, int, bool]
+  - Los tipos semánticos de cada campo están documentados en schemas.py
+    como DecisionResult y RagResult.
 
 Cambios Día 3:
   _decide_exit():
@@ -144,9 +150,9 @@ _MEMORY_NOT_FOUND_MSG = (
 )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Helpers de formato — carril memory
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _format_profile_answer(profile: dict) -> str:
     lines = ["**Perfil del usuario:**"]
@@ -193,7 +199,8 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
     )
 
     try:
-        response = requests.post(
+        import requests as _req
+        response = _req.post(
             f"{OLLAMA_URL}/api/generate",
             json={
                 "model": MODEL_NAME,
@@ -261,9 +268,9 @@ def _decide_episode(question: str) -> str:
     return "No encontré sesiones anteriores registradas con información relevante."
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Helpers — carril tool_list_files
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _handle_list_files(question: str) -> str:
     files = list_project_files()
@@ -285,9 +292,9 @@ def _handle_list_files(question: str) -> str:
     return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Decisores internos por carril
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _decide_memory(question: str) -> str:
     """Responde desde memoria estructurada.
@@ -350,13 +357,17 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     for m in chat_history[-(MAX_TURNS * 2):]:
         role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
         content = m.content.strip().replace("\n", " ")
-        truncated = content[:max_line] + ("…" if len(content) > max_line else "")
+        truncated = content[:max_line] + ("\u2026" if len(content) > max_line else "")
         lines.append(f"{role}: {truncated}")
     return "\n".join(lines)
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión."""
+    """Genera resumen episódico y señala cierre de sesión.
+
+    Returns:
+        tuple[str, list]: ("__EXIT__", []) siempre.
+    """
     import requests
 
     turns = len(chat_history) // 2
@@ -415,27 +426,28 @@ def _decide_rag(
       5. Verificación de fidelidad.
       6. Caché save (solo si score >= _CACHE_MIN_SCORE y sin inyección episódica).
 
-    Devuelve (answer, source_docs, retrieval_ms, llm_ms, cached).
+    Returns:
+        tuple[str, list, int, int, bool]:
+            (answer, source_docs, retrieval_ms, llm_ms, cached)
+        Ver RagResult en schemas.py para la semántica de cada campo.
     """
     input_lower = user_input.lower()
     is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
 
-    # ── 1. Caché semántica ────────────────────────────────────────
+    # ── 1. Caché semántica ────────────────────────────────────────────
     if not is_identity:
         cached = cache_lookup(user_input)
         if cached is not None:
             log.debug("Respuesta servida desde caché semántica")
             return cached, [], 0, 0, True
 
-    # ── 2. Retrieval ──────────────────────────────────────────
+    # ── 2. Retrieval ──────────────────────────────────────────────
     t_ret_start = time.perf_counter()
     memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
     retrieval_ms = int((time.perf_counter() - t_ret_start) * 1000)
 
-    # ── 3. Experience injection (8B-v2) ───────────────────────────
-    # Busca en experience_index si hay experiencias previas relevantes
-    # (score >= 0.80). Si las hay, se añaden al contexto antes del LLM.
+    # ── 3. Experience injection (8B-v2) ───────────────────────────────
     experience_injected = False
     try:
         from app.episode_store import experience_lookup
@@ -447,7 +459,7 @@ def _decide_rag(
     except Exception as exc:
         log.warning("[8B-v2] experience_lookup falló (no bloquea): %s", exc)
 
-    # ── 4. LLM ─────────────────────────────────────────────
+    # ── 4. LLM ────────────────────────────────────────────────────
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
@@ -462,7 +474,7 @@ def _decide_rag(
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
-    # ── 5. Verificación de fidelidad ──────────────────────────────
+    # ── 5. Verificación de fidelidad ───────────────────────────────────
     is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
         log.warning(
@@ -471,9 +483,7 @@ def _decide_rag(
         )
         return NO_EVIDENCE_MSG, source_docs, retrieval_ms, llm_ms, False
 
-    # ── 6. Caché save ──────────────────────────────────────────
-    # No cachear si se inyectó contexto episódico — la experiencia previa
-    # puede cambiar en futuras sesiones y la respuesta quedaría obsoleta.
+    # ── 6. Caché save ────────────────────────────────────────────────
     can_cache = not is_identity and not experience_injected and score >= _CACHE_MIN_SCORE
     if can_cache:
         log.debug("Guardando en caché (score=%.3f >= %.2f)", score, _CACHE_MIN_SCORE)
@@ -485,9 +495,9 @@ def _decide_rag(
     return answer, source_docs, retrieval_ms, llm_ms, False
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Contrato público de la capa de inteligencia
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def process_turn(
     route: str,
@@ -500,6 +510,10 @@ def process_turn(
     Recibe el carril ya clasificado y devuelve (respuesta, source_docs).
     No persiste historial — esa responsabilidad pertenece a chat_core.
     Registra métricas en storage/metrics.jsonl al final de cada turno (7A).
+
+    Returns:
+        tuple[str, list]: (respuesta_texto, lista_de_documentos_fuente)
+        Ver DecisionResult en schemas.py para la semántica de cada campo.
 
     Flujo:
         exit            → _decide_exit

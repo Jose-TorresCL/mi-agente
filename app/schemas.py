@@ -26,6 +26,11 @@ Archivos JSON y sus schemas:
   storage/project_facts.json   →  dict[str, str]  (clave libre = valor str)
   storage/episodic_memory.json →  EpisodicMemory  (contiene lista de EpisodeItem)
 
+Contratos de retorno internos (R1-A):
+  process_turn()    →  tuple[str, list]  (ver DecisionResult para estructura semántica)
+  _decide_rag()     →  RagResult
+  DecisionResult    →  TypedDict con los campos semánticos de cada respuesta interna
+
 Nota sobre TypedDict y total=False:
   Los campos marcados como opcional (con total=False en la subclase)
   pueden estar ausentes en el JSON. Los campos en la clase base con
@@ -36,12 +41,12 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # MemoryType — clasificación de capas de memoria (8D)
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class MemoryType(str, Enum):
     """Clasificación de capas de memoria del agente.
@@ -75,9 +80,71 @@ class MemoryType(str, Enum):
     PROCEDURAL = "procedural"
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
+# DecisionResult — contrato de retorno interno (R1-A)
+# ───────────────────────────────────────────────
+
+class DecisionResult(TypedDict, total=False):
+    """Contrato semántico del retorno de process_turn().
+
+    process_turn() sigue devolviendo tuple[str, list] en runtime para no
+    romper el contrato público actual. Este TypedDict documenta la
+    semántica de cada respuesta y se usará para tipar diccionarios de
+    metadatos internos cuando se necesite pasar más información entre capas.
+
+    Campos:
+        route:       Carril elegido por el router.
+                     Valores: "rag", "memory", "tool_*", "episode",
+                               "unsupported", "exit"
+        response:    Texto final generado para el usuario.
+        cached:      True si la respuesta se sirvió desde caché semántica.
+        source:      Origen de la respuesta:
+                       "cache"   — caché semántica
+                       "chroma"  — recuperación RAG
+                       "json"    — memoria estructurada (JSON)
+                       "tool"    — tool registrada
+                       "llm"     — LLM sin RAG
+                       "direct"  — respuesta directa sin modelo
+        source_docs: Lista de documentos recuperados (puede estar vacía).
+        retrieval_ms: Tiempo de recuperación en milisegundos.
+        llm_ms:      Tiempo de generación LLM en milisegundos.
+        tokens_est:  Estimación de tokens generados.
+        metadata:    Diccionario opcional para datos adicionales.
+    """
+    route:        str
+    response:     str
+    cached:       bool
+    source:       str
+    source_docs:  list
+    retrieval_ms: int
+    llm_ms:       int
+    tokens_est:   int
+    metadata:     dict[str, Any]
+
+
+class RagResult(TypedDict):
+    """Contrato de retorno de _decide_rag() en intelligence.py.
+
+    Permite tipar el retorno de la función interna RAG sin cambiar
+    su firma pública hasta que se haga una refactorización mayor.
+
+    Campos:
+        answer:       Texto generado por el LLM (o mensaje de error de fidelidad).
+        source_docs:  Lista de documentos recuperados de Chroma.
+        retrieval_ms: Tiempo de recuperación Chroma en milisegundos.
+        llm_ms:       Tiempo de generación LLM en milisegundos.
+        cached:       True si la respuesta vino del caché semántico.
+    """
+    answer:       str
+    source_docs:  list
+    retrieval_ms: int
+    llm_ms:       int
+    cached:       bool
+
+
+# ───────────────────────────────────────────────
 # storage/work_state.json
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class WorkStateRequired(TypedDict, total=True):
     """Campos obligatorios de work_state.json."""
@@ -125,9 +192,9 @@ def validate_work_state(data: dict) -> list[str]:
     return warnings
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # storage/tasks.json
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class TaskItemRequired(TypedDict, total=True):
     """Campos obligatorios de cada tarea."""
@@ -152,9 +219,9 @@ class TasksFile(TypedDict):
 _TASK_KNOWN_KEYS = {"id", "title", "status", "priority", "created_at", "notes", "completed_at"}
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # storage/profile.json
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class ProfileData(TypedDict, total=False):
     """Schema de storage/profile.json (todo opcional — crece con el uso)."""
@@ -165,9 +232,9 @@ class ProfileData(TypedDict, total=False):
     preferred_flow: str
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # storage/memory.json
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class Message(TypedDict):
     """Schema de cada mensaje en storage/memory.json."""
@@ -181,9 +248,9 @@ class MemoryFile(TypedDict):
     messages: list[Message]
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # storage/episodic_memory.json
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class EpisodeItem(TypedDict):
     """Schema de cada episodio en storage/episodic_memory.json."""
@@ -198,18 +265,18 @@ class EpisodicMemory(TypedDict):
     episodes: list[EpisodeItem]
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # project_facts.json — no necesita TypedDict
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # project_facts.json tiene claves libres (el usuario inventa el nombre del hecho).
 # Por eso su tipo es simplemente:  dict[str, str]
 # No hay TypedDict para él — eso es correcto y no es un bug.
 ProjectFacts = dict  # dict[str, str] en runtime
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # validate_storage() — test de arranque
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 _STORAGE_DIR = Path("storage")
 
@@ -251,7 +318,7 @@ def validate_storage() -> list[str]:
     """
     warnings: list[str] = []
 
-    # ─ work_state.json ──────────────────────────────────────
+    # ─ work_state.json ──────────────────────────────────────────────
     ws = _load_json_safe(_STORAGE_DIR / "work_state.json")
     if ws is None:
         warnings.append("[storage] work_state.json no existe aún (normal en primera ejecución)")
@@ -260,7 +327,7 @@ def validate_storage() -> list[str]:
     else:
         warnings.append("[storage:error] work_state.json no es un objeto JSON válido")
 
-    # ─ tasks.json ──────────────────────────────────────────
+    # ─ tasks.json ────────────────────────────────────────────────
     tasks_file = _load_json_safe(_STORAGE_DIR / "tasks.json")
     if tasks_file is None:
         warnings.append("[storage] tasks.json no existe aún (normal en primera ejecución)")
@@ -275,7 +342,7 @@ def validate_storage() -> list[str]:
     else:
         warnings.append("[storage:error] tasks.json no es un objeto JSON válido")
 
-    # ─ memory.json ─────────────────────────────────────────
+    # ─ memory.json ───────────────────────────────────────────────
     memory_file = _load_json_safe(_STORAGE_DIR / "memory.json")
     _MSG_KNOWN_KEYS = {"role", "content", "timestamp"}
     if memory_file is None:
@@ -291,7 +358,7 @@ def validate_storage() -> list[str]:
     else:
         warnings.append("[storage:error] memory.json no es un objeto JSON válido")
 
-    # ─ episodic_memory.json ───────────────────────────────
+    # ─ episodic_memory.json ───────────────────────────────────────
     _EP_KNOWN_KEYS = {"date", "time", "turns", "summary"}
     ep_file = _load_json_safe(_STORAGE_DIR / "episodic_memory.json")
     if ep_file is None:
@@ -307,14 +374,14 @@ def validate_storage() -> list[str]:
     else:
         warnings.append("[storage:error] episodic_memory.json no es un objeto JSON válido")
 
-    # ─ profile.json ─────────────────────────────────────────
+    # ─ profile.json ───────────────────────────────────────────────
     profile = _load_json_safe(_STORAGE_DIR / "profile.json")
     if profile is None:
         warnings.append("[storage] profile.json no existe aún (normal en primera ejecución)")
     elif not isinstance(profile, dict):
         warnings.append("[storage:error] profile.json no es un objeto JSON válido")
 
-    # ─ Reporte final ────────────────────────────────────────
+    # ─ Reporte final ──────────────────────────────────────────────
     if warnings:
         for w in warnings:
             print(w)
