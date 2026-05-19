@@ -70,6 +70,16 @@ Feat 8B — carril episode con búsqueda semántica real:
     get_context_for('episode') (último episodio del JSON).
   - Las respuestas del carril episode NO se cachean (son personales y cambian
     con cada nueva sesión).
+
+Feat 8B-v2 — inyección de experiencias previas en carril RAG:
+  - _decide_rag() llama experience_lookup(user_input) desde episode_store
+    antes de invocar el LLM.
+  - Si score >= 0.80 (EXPERIENCE_INJECT_THRESHOLD), el resumen del episodio
+    más relevante se prepend al context_text como bloque separado.
+  - Prioriza episodios marcados exitoso=True sobre no marcados.
+  - Episodios exitoso=False solo se inyectan si no hay alternativos mejores.
+  - La inyección NO afecta el caché semántico — las respuestas con contexto
+    episódico no se cachean para evitar respuestas obsoletas.
 """
 from __future__ import annotations
 
@@ -203,24 +213,14 @@ def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -
 
 
 def _format_episodes_context(episodes: list[dict]) -> str:
-    """Formatea una lista de episodios recuperados de Chroma en texto legible.
-
-    Args:
-        episodes: lista de dicts con keys summary, date, time, turns, score.
-
-    Returns:
-        Texto multilínea listo para pasar al LLM como contexto.
-    """
+    """Formatea una lista de episodios recuperados de Chroma en texto legible."""
     lines = []
     for i, ep in enumerate(episodes, 1):
         lines.append(
             f"Sesión {i} ({ep.get('date', '?')} {ep.get('time', '')}, "
             f"{ep.get('turns', 0)} turnos, relevancia: {ep.get('score', 0):.2f}):"
         )
-        # El summary ya incluye el encabezado [fecha hora] del _episode_to_doc,
-        # así que lo limpiamos para no repetir la fecha.
         summary = ep.get("summary", "").strip()
-        # Quitar el encabezado [YYYY-MM-DD HH:MM] (N turnos) si está incluido
         if summary.startswith("["):
             newline_pos = summary.find("\n")
             summary = summary[newline_pos + 1:].strip() if newline_pos != -1 else summary
@@ -230,47 +230,34 @@ def _format_episodes_context(episodes: list[dict]) -> str:
 
 
 def _decide_episode(question: str) -> str:
-    """Responde preguntas sobre sesiones pasadas usando búsqueda semántica (8B).
+    """Responde preguntas directas sobre sesiones pasadas (carril episode).
 
     Flujo:
-      1. Intenta search_episodes(question) desde Chroma.
-      2. Si hay resultados con resúmenes reales → sintetiza con LLM.
-      3. Si Chroma no está disponible o todos los resúmenes están vacíos
-         → fallback a get_context_for('episode') (último episodio del JSON).
-
-    Returns:
-        Respuesta en texto natural. Nunca lanza excepciones.
+      1. search_episodes(question) en Chroma.
+      2. Si hay resultados con resumen real → sintetiza con LLM.
+      3. Si Chroma vacío o sin resumen → fallback a JSON.
     """
-    # ── Paso 1: búsqueda semántica ──────────────────────────────────────────
     episodes: list[dict] = []
     try:
         from app.episode_store import search_episodes
         episodes = search_episodes(question, k=3)
     except Exception as exc:
-        log.warning("[8B] search_episodes falló, usando fallback JSON: %s", exc)
+        log.warning("[episode] search_episodes falló, usando fallback JSON: %s", exc)
 
-    # ── Paso 2: filtrar episodios con resumen real ──────────────────────────
-    # Un resumen "vacío" es el placeholder que se guarda cuando la sesión
-    # termina abruptamente sin tiempo para generar el resumen real.
-    _EMPTY_SUMMARY_MARKER = "Resumen no disponible"
+    _EMPTY_MARKER = "Resumen no disponible"
     episodes_with_content = [
         ep for ep in episodes
-        if _EMPTY_SUMMARY_MARKER not in ep.get("summary", "")
+        if _EMPTY_MARKER not in ep.get("summary", "")
     ]
 
     if episodes_with_content:
-        log.debug("[8B] %d episodio(s) con contenido real encontrados en Chroma",
-                  len(episodes_with_content))
         context_text = _format_episodes_context(episodes_with_content)
-        fallback_text = f"Sesiones encontradas:\n{context_text}"
-        return _synthesize_memory_answer(question, context_text, fallback_text)
+        return _synthesize_memory_answer(question, context_text,
+                                         f"Sesiones encontradas:\n{context_text}")
 
-    # ── Paso 3: fallback a JSON ─────────────────────────────────────────────
-    log.debug("[8B] Sin episodios con contenido en Chroma — fallback a JSON")
     json_context = get_context_for("episode")
     if json_context:
         return json_context
-
     return "No encontré sesiones anteriores registradas con información relevante."
 
 
@@ -304,11 +291,6 @@ def _handle_list_files(question: str) -> str:
 
 def _decide_memory(question: str) -> str:
     """Responde desde memoria estructurada.
-
-    Fix 6A: ya no devuelve None. Siempre retorna un string.
-    Fix 6B: usa get_context_for(kind) para recuperación selectiva real.
-    8B: el carril 'episode' ahora delega a _decide_episode() para
-        recuperación semántica real desde Chroma.
 
     Tipos reconocidos:
       'profile'       → formato de lista estructurada
@@ -357,10 +339,8 @@ def _decide_memory(question: str) -> str:
         return _synthesize_memory_answer(question, context_text, fallback)
 
     if kind == "episode":
-        # 8B: recuperación semántica real desde Chroma, con fallback a JSON.
         return _decide_episode(question)
 
-    # Fix 6A: tipo no reconocido → respuesta explícita, NO caída a RAG.
     log.debug("memory: tipo no reconocido para '%s' — devolviendo not-found", question[:60])
     return _MEMORY_NOT_FOUND_MSG
 
@@ -423,33 +403,56 @@ def _decide_rag(
     chat_history: list,
     route: str,
 ) -> tuple[str, list, int, int, bool]:
-    """Recupera contexto RAG, invoca LLM y verifica fidelidad.
+    """Recupera contexto RAG, inyecta experiencias previas y llama al LLM.
+
+    Flujo (8B-v2):
+      1. Caché semántica (bypass para preguntas de identidad).
+      2. Retrieval: memoria estructurada + documentos RAG.
+      3. Experience injection: busca en experience_index con score >= 0.80.
+         Si hay hit, se añade como bloque de contexto adicional al prompt.
+         Las respuestas con experiencia inyectada NO se cachean.
+      4. LLM con contexto completo.
+      5. Verificación de fidelidad.
+      6. Caché save (solo si score >= _CACHE_MIN_SCORE y sin inyección episódica).
 
     Devuelve (answer, source_docs, retrieval_ms, llm_ms, cached).
     """
     input_lower = user_input.lower()
     is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
 
-    # — intento de caché —
+    # ── 1. Caché semántica ────────────────────────────────────────
     if not is_identity:
-        t0 = time.perf_counter()
         cached = cache_lookup(user_input)
         if cached is not None:
             log.debug("Respuesta servida desde caché semántica")
             return cached, [], 0, 0, True
 
-    # — retrieval —
+    # ── 2. Retrieval ──────────────────────────────────────────
     t_ret_start = time.perf_counter()
     memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
     retrieval_ms = int((time.perf_counter() - t_ret_start) * 1000)
 
+    # ── 3. Experience injection (8B-v2) ───────────────────────────
+    # Busca en experience_index si hay experiencias previas relevantes
+    # (score >= 0.80). Si las hay, se añaden al contexto antes del LLM.
+    experience_injected = False
+    try:
+        from app.episode_store import experience_lookup
+        experience_snippet = experience_lookup(user_input)
+        if experience_snippet:
+            context_text = experience_snippet + "\n\n---\n\n" + context_text
+            experience_injected = True
+            log.debug("[8B-v2] Experiencia previa inyectada en contexto RAG")
+    except Exception as exc:
+        log.warning("[8B-v2] experience_lookup falló (no bloquea): %s", exc)
+
+    # ── 4. LLM ─────────────────────────────────────────────
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
     ) or "(sin historial previo)"
 
-    # — LLM —
     t_llm_start = time.perf_counter()
     chain = build_chain(QA_SYSTEM_PROMPT, memory_context)
     answer = chain.invoke({
@@ -459,6 +462,7 @@ def _decide_rag(
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
+    # ── 5. Verificación de fidelidad ──────────────────────────────
     is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
         log.warning(
@@ -467,11 +471,16 @@ def _decide_rag(
         )
         return NO_EVIDENCE_MSG, source_docs, retrieval_ms, llm_ms, False
 
-    if not is_identity and score >= _CACHE_MIN_SCORE:
+    # ── 6. Caché save ──────────────────────────────────────────
+    # No cachear si se inyectó contexto episódico — la experiencia previa
+    # puede cambiar en futuras sesiones y la respuesta quedaría obsoleta.
+    can_cache = not is_identity and not experience_injected and score >= _CACHE_MIN_SCORE
+    if can_cache:
         log.debug("Guardando en caché (score=%.3f >= %.2f)", score, _CACHE_MIN_SCORE)
         cache_save(user_input, answer)
     elif not is_identity:
-        log.debug("Respuesta NO cacheada (score=%.3f < %.2f)", score, _CACHE_MIN_SCORE)
+        reason = "con inyección episódica" if experience_injected else f"score={score:.3f} < {_CACHE_MIN_SCORE}"
+        log.debug("Respuesta NO cacheada (%s)", reason)
 
     return answer, source_docs, retrieval_ms, llm_ms, False
 
@@ -498,7 +507,7 @@ def process_turn(
         tool            → dispatch_tool
         memory          → _decide_memory (TERMINAL)
         unsupported     → mensaje directo
-        resto           → _decide_rag
+        resto           → _decide_rag (con experience injection 8B-v2)
     """
     t_start = time.perf_counter()
 
@@ -533,7 +542,7 @@ def process_turn(
         _record_metric(route=route)
         return _UNSUPPORTED_MSG, []
 
-    # Carril RAG (y cualquier otro)
+    # Carril RAG (y cualquier otro) — incluye experience injection (8B-v2)
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route=route
     )
