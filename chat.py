@@ -5,6 +5,10 @@ y delega cada turno a chat_core.handle_query().
 
 Auto-reindex: al arrancar detecta si hay docs más nuevos que el índice
 y re-indexa automáticamente antes de abrir el chat.
+
+8C: al cerrar sesión (exit normal o Ctrl+C) llama a
+    episode_store.close_session_episode() para preguntar al usuario si
+    la sesión fue productiva y marcar el episodio en experience_index.
 """
 from __future__ import annotations
 
@@ -53,6 +57,24 @@ def _boot_vectorstore() -> Chroma:
     return db
 
 
+def _session_close() -> None:
+    """Hook de cierre de sesión (8C).
+
+    Llama a close_session_episode() que:
+    - Actualiza metadatos del episodio activo (carril_dominante, tareas_completadas)
+    - Pregunta al usuario '¿Fue productiva esta sesión? (s/n)'
+    - Marca el episodio en experience_index según la respuesta
+
+    Se llama tanto en exit normal (__EXIT__) como en KeyboardInterrupt/EOFError.
+    Silencioso si no hay episodios indexados todavía.
+    """
+    try:
+        from app.episode_store import close_session_episode
+        close_session_episode()
+    except Exception as exc:
+        log.debug("[chat] _session_close: %s", exc)  # nunca bloquea el cierre
+
+
 def main() -> None:
     print_welcome()
 
@@ -63,6 +85,7 @@ def main() -> None:
         try:
             user_input = input("Tú: ").strip()
         except (EOFError, KeyboardInterrupt):
+            _session_close()
             print("\n👋 ¡Hasta luego!")
             break
 
@@ -72,6 +95,7 @@ def main() -> None:
         answer, source_docs = handle_query(user_input, vectordb, chat_history)
 
         if answer == "__EXIT__":
+            _session_close()
             print("\n👋 ¡Hasta luego!")
             break
 

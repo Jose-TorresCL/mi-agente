@@ -12,7 +12,8 @@ Flujo de uso normal:
      preguntas directas sobre sesiones pasadas.
   3. intelligence.py _decide_rag() llama experience_lookup() para inyectar
      contexto episódico relevante (score > 0.80) en todos los carriles RAG.
-  4. (8C) al cerrar sesión, se marca exitoso=True/False con mark_episode().
+  4. (8C) al cerrar sesión, close_session_episode() pregunta al usuario y
+     llama mark_episode() para marcar exitoso=True/False.
 
 Convenciones:
   - Colección Chroma: EPISODE_COLLECTION = 'experience_index'
@@ -20,7 +21,7 @@ Convenciones:
   - Metadatos almacenados: date, time, turns, source, carril_dominante,
     tareas_completadas, exitoso
   - Namespace físico: storage/chroma  (misma instancia que documentos,
-    colección diferente — Chroma las aísl a automáticamente)
+    colección diferente — Chroma las aísla automáticamente)
 
 Never raises: todos los métodos públicos capturan excepciones y loggean.
 """
@@ -347,6 +348,99 @@ def mark_episode(doc_id: str, exitoso: bool) -> bool:
     except Exception as exc:
         log.warning("[episode_store] mark_episode error: %s", exc)
         return False
+
+
+def close_session_episode() -> None:
+    """Cierre de sesión: actualiza metadatos del episodio activo y pregunta al usuario.
+
+    Flujo (8C):
+      1. Obtiene el doc_id del episodio activo desde session_state.
+      2. Actualiza carril_dominante y tareas_completadas en Chroma.
+      3. Pregunta '¿Fue productiva esta sesión? (s/n)' con timeout 15s.
+      4. Llama mark_episode() con el resultado.
+
+    Si el usuario no responde en 15 segundos → cierre silencioso (unmarked).
+    Si el episodio no existe en Chroma todavía → solo loggea y continúa.
+
+    Never raises.
+    """
+    try:
+        from app.session_state import (
+            get_session_doc_id,
+            get_carril_dominante,
+            get_tareas_completadas,
+        )
+
+        doc_id             = get_session_doc_id()
+        carril_dominante   = get_carril_dominante()
+        tareas_completadas = get_tareas_completadas()
+
+        col = _get_collection()
+        if col is None:
+            return
+
+        # Intentar actualizar carril_dominante y tareas_completadas
+        result = col.get(ids=[doc_id], include=["documents", "metadatas"])
+        if result["ids"]:
+            content  = result["documents"][0]
+            metadata = result["metadatas"][0]
+            metadata["carril_dominante"]   = carril_dominante
+            metadata["tareas_completadas"] = tareas_completadas
+            col.delete(ids=[doc_id])
+            col.add_texts(texts=[content], metadatas=[metadata], ids=[doc_id])
+            log.info(
+                "[episode_store] close_session: %s actualizado (carril=%s, tareas=%d)",
+                doc_id, carril_dominante, tareas_completadas,
+            )
+        else:
+            log.info(
+                "[episode_store] close_session: episodio %s no encontrado en índice — "
+                "probablemente sesión sin turnos completados.",
+                doc_id,
+            )
+            return
+
+        # Preguntar al usuario con timeout
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError
+
+        try:
+            # En Windows signal.SIGALRM no existe — usar threading como fallback
+            import threading
+            answered = threading.Event()
+            respuesta = [None]
+
+            def _ask():
+                try:
+                    r = input("\n❓ ¿Fue productiva esta sesión? (s/n): ").strip().lower()
+                    respuesta[0] = r
+                finally:
+                    answered.set()
+
+            t = threading.Thread(target=_ask, daemon=True)
+            t.start()
+            t.join(timeout=15)
+
+            if not answered.is_set() or respuesta[0] is None:
+                log.info("[episode_store] close_session: sin respuesta en 15s — episodio sin marcar")
+                return
+
+            if respuesta[0] in ("s", "si", "sí", "y", "yes"):
+                mark_episode(doc_id, exitoso=True)
+                print("✅ Sesión marcada como productiva.")
+            elif respuesta[0] in ("n", "no"):
+                mark_episode(doc_id, exitoso=False)
+                print("📝 Sesión marcada para revisión.")
+            else:
+                log.info("[episode_store] close_session: respuesta '%s' no reconocida — sin marcar", respuesta[0])
+
+        except Exception as exc:
+            log.warning("[episode_store] close_session: error al preguntar — %s", exc)
+
+    except Exception as exc:
+        log.warning("[episode_store] close_session_episode error: %s", exc)
 
 
 def reindex_all() -> int:
