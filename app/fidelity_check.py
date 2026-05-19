@@ -31,8 +31,8 @@ Umbral dinámico (ADR-004):
   Preguntas largas (>12 tokens): 0.60
 
 Limitaciones conocidas:
-  - Respuestas muy cortas (<7 palabras): bypass de similitud (pero NO de
-    verificación numérica si hay cifras).
+  - Respuestas muy cortas (<7 palabras) con chunks: bypass de similitud.
+  - Respuestas muy cortas (<7 palabras) SIN chunks: bloqueadas (fix 6C).
   - Si Ollama está caído: retorna (True, 1.0) para no bloquear al usuario.
 
 Contrato de retorno:
@@ -190,7 +190,8 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
       1. Sin chunks → bloquear.
       2. Verificación numérica literal (0 llamadas HTTP).
          Si la respuesta contiene números que no aparecen en los chunks, bloquear.
-      3. Bypass de similitud para respuestas muy cortas (<7 palabras).
+      3. Bypass de similitud para respuestas muy cortas (<7 palabras) CON chunks.
+         Fix 6C: si no hay chunks_texts, también se bloquea aquí.
       4. Similitud semántica (2 llamadas HTTP): embed(respuesta) vs embed(contexto).
 
     Args:
@@ -231,10 +232,13 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
         log_fidelity_failure(question or answer, 0.0, threshold)
         return False, 0.0
 
-    # ── 3. Bypass para respuestas muy cortas ────────────────────
+    # ── 3. Bypass para respuestas muy cortas (fix 6C) ───────────
+    # Requiere chunks con contenido para permitir el bypass.
+    # Una respuesta genérica como 'No lo sé' sin evidencia queda bloqueada.
     word_count = len(answer.split())
     if word_count < SHORT_ANSWER_WORDS:
-        print(f"[fidelity:skip] respuesta corta ({word_count} palabras), se pasa")
+        # chunks_texts ya está validado arriba — si llegamos aquí hay evidencia
+        print(f"[fidelity:skip] respuesta corta con chunks ({word_count} palabras), se pasa")
         return True, 1.0
 
     # ── 4. Similitud semántica (2 HTTP) ────────────────────────

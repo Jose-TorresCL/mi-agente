@@ -43,6 +43,17 @@ Fix carril unsupported:
   - process_turn: agrega elif para route == 'unsupported'.
   - Antes caía a _decide_rag disparando LLM + Chroma innecesariamente.
   - Ahora devuelve mensaje directo sin tocar el vectorstore ni el modelo.
+
+Fix 6A — _decide_memory terminal:
+  - _decide_memory ya no devuelve None cuando route=memory.
+  - Si el tipo de consulta no es reconocido por classify_memory_query,
+    devuelve mensaje explícito en lugar de caer silenciosamente a RAG.
+  - Evita que preguntas de memoria mal clasificadas activen la caché
+    semántica del carril RAG.
+  - El fallback a RAG desde memory queda como safety net explícito y logueado.
+
+Fix 6B — tipo 'episode' en classify_memory_query (ver router.py):
+  - _decide_memory maneja el nuevo tipo 'episode' con get_episodic_context().
 """
 from __future__ import annotations
 
@@ -100,6 +111,15 @@ _UNSUPPORTED_MSG = (
     "Esa consulta está fuera del alcance de lo que puedo hacer por ahora. "
     "Puedo responder preguntas sobre el proyecto, buscar en la documentación, "
     "consultar tareas y estado de trabajo."
+)
+
+# Fix 6A: mensaje cuando route=memory pero el tipo no es reconocido.
+# En lugar de caer silenciosamente a RAG (y potencialmente activar la caché),
+# se responde con un mensaje honesto y se loguea para diagnóstico.
+_MEMORY_NOT_FOUND_MSG = (
+    "No encontré información relevante en la memoria para esa pregunta. "
+    "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
+    "'¿qué tareas tengo pendientes?' o '¿cuál es mi perfil?'."
 )
 
 
@@ -217,13 +237,20 @@ def _handle_list_files(question: str) -> str:
 # Decisores internos por carril
 # ─────────────────────────────────────────────
 
-def _decide_memory(question: str) -> str | None:
-    """Responde desde memoria estructurada. Devuelve None si no aplica.
+def _decide_memory(question: str) -> str:
+    """Responde desde memoria estructurada.
 
-    Día 4:
-    - 'profile' y 'tasks' mantienen formato de lista.
-    - 'project_facts' y 'work_state' pasan por síntesis LLM.
-      Si la síntesis falla, se muestra el formato estructurado como fallback.
+    Fix 6A: ya no devuelve None. Siempre retorna un string.
+    Si el tipo no es reconocido, devuelve _MEMORY_NOT_FOUND_MSG en lugar
+    de caer silenciosamente al carril RAG (y potencialmente a la caché).
+
+    Tipos reconocidos:
+      'profile'       → formato de lista estructurada
+      'tasks'         → formato de lista estructurada
+      'project_facts' → síntesis LLM (fallback: formato bruto)
+      'work_state'    → síntesis LLM (fallback: formato bruto)
+      'episode'       → episodios de sesiones anteriores (fix 6B)
+      None            → _MEMORY_NOT_FOUND_MSG (nunca cae a RAG)
     """
     kind = classify_memory_query(question)
     log.debug("Carril memory clasificado como: %s", kind)
@@ -263,7 +290,26 @@ def _decide_memory(question: str) -> str | None:
         fallback = "**Estado de trabajo:**\n" + context_text
         return _synthesize_memory_answer(question, context_text, fallback)
 
-    return None
+    if kind == "episode":
+        # Fix 6B: conectar a get_episodic_context() cuando esté disponible.
+        # Por ahora, intento importar la función y caigo a mensaje informativo si no existe.
+        try:
+            from app.memory_manager import get_episodic_context
+            episodes = get_episodic_context()
+            if not episodes:
+                return "No encontré episodios de sesiones anteriores registrados."
+            return episodes
+        except (ImportError, AttributeError):
+            log.debug("get_episodic_context() no disponible aún — fix 6B-2 pendiente")
+            return (
+                "Los episodios de sesiones anteriores estarán disponibles pronto. "
+                "Por ahora, el historial se guarda en storage/memory/episodes.json "
+                "pero aún no tiene recuperación semántica activa."
+            )
+
+    # Fix 6A: tipo no reconocido → respuesta explícita, NO caída a RAG.
+    log.debug("memory: tipo no reconocido para '%s' — devolviendo not-found", question[:60])
+    return _MEMORY_NOT_FOUND_MSG
 
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
@@ -404,9 +450,9 @@ def process_turn(
 
     Flujo:
         exit            → _decide_exit
-        tool            → dispatch_tool
         tool_list_files → _handle_list_files (con detección de conteo)
-        memory          → _decide_memory (fallback a RAG si no resuelve)
+        tool            → dispatch_tool
+        memory          → _decide_memory (TERMINAL — fix 6A: nunca cae a RAG)
         unsupported     → mensaje directo (sin LLM ni vectorstore)
         resto           → _decide_rag
     """
@@ -422,11 +468,11 @@ def process_turn(
         return dispatch_tool(route, user_input), []
 
     if route == "memory":
+        # Fix 6A: _decide_memory siempre retorna str — carril memory es terminal.
+        # No hay fallback a RAG desde aquí: si la pregunta llega con route=memory,
+        # memory responde (aunque sea con 'no encontré').
         answer = _decide_memory(user_input)
-        if answer is not None:
-            return answer, []
-        log.debug("memory no resolvió, fallback a RAG")
-        return _decide_rag(user_input, vectordb, chat_history, route="memory")
+        return answer, []
 
     # Carril unsupported: consulta fuera del alcance del agente.
     # No se toca el vectorstore ni el LLM — respuesta instantánea.

@@ -23,6 +23,11 @@ Logging diferenciado:
 Requisito previo para la Capa 2:
   Ejecutar python build_intent_index.py una vez para crear storage/intent_index.
   Si el índice no existe, la Capa 2 se salta silenciosamente.
+
+Fix 6B:
+  classify_memory_query: añadido tipo 'episode' para preguntas sobre
+  sesiones anteriores, aprendizajes pasados y episodios de trabajo.
+  Se conecta a memory_manager.get_episodic_context() en la fase 6B-2.
 """
 from __future__ import annotations
 
@@ -173,6 +178,19 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "en qué fase", "en que fase", "nombre del proyecto",
 ]
 
+# Fix 6B: keywords para preguntas episódicas (sesiones anteriores, aprendizajes).
+# Se conectan a memory_manager.get_episodic_context() en la fase 6B-2.
+MEMORY_EPISODE_KEYWORDS = [
+    "qué aprendí", "que aprendi", "qué aprendimos", "que aprendimos",
+    "sesión anterior", "sesion anterior", "última sesión", "ultima sesion",
+    "sesiones anteriores", "la semana pasada", "ayer trabajamos",
+    "qué hicimos antes", "que hicimos antes",
+    "qué trabajamos", "que trabajamos",
+    "historial de sesiones", "episodios anteriores",
+    "qué avancé", "que avance", "qué avanzamos", "que avanzamos",
+    "última vez que", "ultima vez que",
+]
+
 TOOL_SAVE_FACT_KEYWORDS = [
     "guarda como hecho", "guardar hecho", "registra que", "anota que",
     "guarda el hecho", "registra el hecho", "guarda esto como hecho",
@@ -251,12 +269,24 @@ def _has_task_suggestion_signal(q: str) -> bool:
 
 
 def classify_memory_query(question: str) -> str | None:
+    """Clasifica el tipo de consulta de memoria.
+
+    Tipos reconocidos:
+      'profile'       → datos del usuario (nombre, estilo, nivel)
+      'work_state'    → foco actual, siguiente paso, bloqueos
+      'tasks'         → tareas pendientes
+      'project_facts' → hechos del proyecto (fase, nombre, etc.)
+      'episode'       → sesiones anteriores, aprendizajes, historial (fix 6B)
+
+    Retorna None si la pregunta no encaja en ningún tipo conocido.
+    """
     q = question.lower().strip()
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) \
             and not _has_task_suggestion_signal(q):         return "tasks"
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
+    if any(k in q for k in MEMORY_EPISODE_KEYWORDS):       return "episode"
     return None
 
 
