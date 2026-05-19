@@ -455,21 +455,22 @@ def update_work_state(field: str, value: str) -> None:
 
 
 # ─────────────────────────────────────────────
-# Memoria episódica (SimpleMem)
+# Memoria episódica (8A: con indexación en Chroma)
 # ─────────────────────────────────────────────
 
 MAX_EPISODES = 10  # guardamos los últimos 10 episodios; el más viejo se descarta
 
 
 def save_episode(summary: str, turns: int) -> None:
-    """Guarda un resumen de sesión en episodic_memory.json.
+    """Guarda un resumen de sesión en episodic_memory.json e indexa en Chroma.
 
     Args:
         summary: Texto del resumen generado por el LLM.
         turns:   Número de turnos de la sesión.
 
     Estructura de cada episodio: EpisodeItem (ver schemas.py).
-    Mantiene solo los últimos MAX_EPISODES episodios.
+    Mantiene solo los últimos MAX_EPISODES episodios en JSON.
+    Chroma conserva TODOS los episodios indexados (sin límite de 10).
 
     Never raises.
     """
@@ -477,15 +478,24 @@ def save_episode(summary: str, turns: int) -> None:
     episodes = data.get("episodes", [])
 
     now = datetime.now()
-    episodes.append({
+    new_episode: dict = {
         "date":    now.strftime("%Y-%m-%d"),
         "time":    now.strftime("%H:%M"),
         "turns":   turns,
         "summary": summary.strip(),
-    })
+    }
+    episodes.append(new_episode)
 
     data["episodes"] = episodes[-MAX_EPISODES:]
     _write_json(EPISODIC_MEMORY_FILE, data)
+
+    # 8A: indexar en Chroma de forma no bloqueante
+    # Si Chroma falla, el episodio ya está guardado en JSON — no se pierde nada.
+    try:
+        from app.episode_store import index_episode
+        index_episode(new_episode)
+    except Exception:
+        pass  # episodio guardado en JSON aunque Chroma falle
 
 
 def load_last_episode() -> EpisodeItem | None:
