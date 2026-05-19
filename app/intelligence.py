@@ -27,6 +27,16 @@ R1 — contratos internos (CERRADO):
     - router.py NO importa chromadb ni langchain_chroma directamente.
   Verificar con: pytest tests/test_architecture.py -v
 
+R2-connect — intent_type y num_docs en record_turn() (CERRADO):
+  process_turn() pasa intent_type a _record_metric() en todos los carriles:
+    exit            → intent_type="exit"
+    tool_list_files → intent_type="tool_list_files"
+    tool (TOOLS)    → intent_type=route
+    memory          → intent_type=classify_memory_query(user_input) or "memory_query"
+    unsupported     → intent_type="unsupported"
+    RAG             → intent_type=route, num_docs=len(source_docs)
+  metrics.jsonl registra ambos campos desde este commit.
+
 Cambios Día 3:
   _decide_exit():
     - El episodio se guarda SIEMPRE, incluso si el resumen falla.
@@ -366,7 +376,7 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     for m in chat_history[-(MAX_TURNS * 2):]:
         role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
         content = m.content.strip().replace("\n", " ")
-        truncated = content[:max_line] + ("\u2026" if len(content) > max_line else "")
+        truncated = content[:max_line] + ("…" if len(content) > max_line else "")
         lines.append(f"{role}: {truncated}")
     return "\n".join(lines)
 
@@ -519,6 +529,7 @@ def process_turn(
     Recibe el carril ya clasificado y devuelve (respuesta, source_docs).
     No persiste historial — esa responsabilidad pertenece a chat_core.
     Registra métricas en storage/metrics.jsonl al final de cada turno (7A).
+    Desde R2-connect: pasa intent_type y num_docs a record_turn().
 
     Returns:
         tuple[str, list]: (respuesta_texto, lista_de_documentos_fuente)
@@ -536,25 +547,32 @@ def process_turn(
 
     if route == "exit":
         result = _decide_exit(chat_history)
-        _record_metric(route="exit", retrieval_ms=0, llm_ms=0)
+        _record_metric(route="exit", intent_type="exit")
         return result
 
     if route == "tool_list_files":
         answer = _handle_list_files(user_input)
-        _record_metric(route=route)
+        _record_metric(route=route, intent_type="tool_list_files")
         return answer, []
 
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool(route, user_input)
-        _record_metric(route=route, llm_ms=int((time.perf_counter() - t0) * 1000))
+        _record_metric(
+            route=route,
+            intent_type=route,
+            llm_ms=int((time.perf_counter() - t0) * 1000),
+        )
         return answer, []
 
     if route == "memory":
         t0 = time.perf_counter()
+        # Clasificamos la intención de memoria para pasarla a métricas
+        memory_intent = classify_memory_query(user_input) or "memory_query"
         answer = _decide_memory(user_input)
         _record_metric(
             route=route,
+            intent_type=memory_intent,
             llm_ms=int((time.perf_counter() - t0) * 1000),
             tokens_est=int(len(answer.split()) * 1.3),
         )
@@ -562,7 +580,7 @@ def process_turn(
 
     if route == "unsupported":
         log.debug("Carril unsupported — respondiendo sin LLM")
-        _record_metric(route=route)
+        _record_metric(route=route, intent_type="unsupported")
         return _UNSUPPORTED_MSG, []
 
     # Carril RAG (y cualquier otro) — incluye experience injection (8B-v2)
@@ -571,9 +589,11 @@ def process_turn(
     )
     _record_metric(
         route=route,
+        intent_type=route,                    # ← conectado (R2-connect)
         retrieval_ms=retrieval_ms,
         llm_ms=llm_ms,
         tokens_est=int(len(answer.split()) * 1.3),
         cached=cached,
+        num_docs=len(source_docs),            # ← conectado (R2-connect)
     )
     return answer, source_docs
