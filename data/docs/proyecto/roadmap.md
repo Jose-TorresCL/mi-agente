@@ -1,19 +1,20 @@
 # Roadmap del proyecto
 
-> ⚠️ **Documento vivo** — última actualización: 17/05/2026  
+> ⚠️ **Documento vivo** — última actualización: 19/05/2026  
 > Las fases completadas son registro histórico permanente.  
-> Solo la sección "Prioridades actuales" describe el estado real hoy.
+> Solo la sección "Fase actual" describe el estado real hoy.
 
-Fase actual: **Fase 6 — Memory Manager y recuperación selectiva**
+Fase actual: **Fase 6 — Cerrar invariantes arquitecturales**
 
 ---
 
-## Principio de priorización
+## Principio rector
 
-> Antes de agregar, consolida.
-> Antes de crecer, limpia las fronteras.
+> Antes de agregar, consolida.  
+> Antes de crecer, limpia las fronteras.  
+> Sin métricas, no puedes mejorar.
 
-Cada prioridad se clasifica como:
+Cada tarea se clasifica como:
 - 🔴 Crítico — bloquea el crecimiento sano del sistema
 - 🟠 Importante — mejora significativa sin riesgo alto
 - 🟡 Útil — genera valor sin urgencia
@@ -21,84 +22,101 @@ Cada prioridad se clasifica como:
 
 ---
 
-## Prioridades actuales (Fase 6)
+## Fase 6 — Cerrar invariantes (en curso)
 
-### 🔴 1. Fix estructural del caché semántico
+**Objetivo**: el sistema nunca toma decisiones incorrectas por problemas
+de plomería interna. Cada invariante tiene un test que lo protege.
 
-**Qué es**: El caché semántico está actuando como cortocircuito global
-que se activa antes de que el carril `memory` llegue a su lógica real.
-El caché solo debe existir en el carril `rag`, nunca en `memory`.
+| Subtarea | Descripción | Prioridad | Estado |
+|---|---|---|---|
+| 6A | Fix estructural caché semántico | 🔴 | 🔄 En curso |
+| 6B | Recuperación selectiva real por tipo de memoria | 🟠 | 🔲 Pendiente |
+| 6C | fidelity_check endurecido (docs vacíos, respuesta corta) | 🟠 | 🔲 Pendiente |
+| 6D | Tests de arquitectura (imports prohibidos entre capas) | 🟡 | 🔲 Pendiente |
 
-**Por qué ahora**: Sin este fix, el agente puede responder con entradas
-cacheadas obsoletas incluso para preguntas de estado actual.
-
-**Cómo medirlo**: Preguntar "¿en qué fase estamos?" siempre devuelve
-el estado real desde `work_state.json`, nunca desde el caché.
-
----
-
-### 🟠 2. Recuperación selectiva de contexto
-
-**Qué es**: Elegir qué tipo de memoria es relevante para cada pregunta,
-en lugar de inyectar siempre toda la memoria disponible.
-
-**Por qué ahora**: `memory_manager.py` ya existe. Este es el siguiente
-paso natural para que la recuperación sea inteligente.
-
-**Mapa de tipos de memoria**:
-
-| Tipo | Cuándo recuperar |
-|---|---|
-| Working memory | Preguntas sobre foco actual o estado |
-| Semántica | Preguntas sobre proyecto, arquitectura, decisiones |
-| Episódica | Preguntas sobre sesiones anteriores, "¿en qué quedamos?" |
-| Procedimental | Se activa automáticamente vía router y prompts |
+Detalle completo en `fase6-tareas.md`.
 
 ---
 
-### 🟡 3. Tests por capa aislada
+## Fase 7 — Observabilidad y evaluación continua
 
-**Qué es**: Tests que validan una capa sin depender de las otras.
+**Objetivo**: tener números que digan si el sistema mejora o empeora
+con cada cambio. Sin métricas no se puede decidir si un cambio vale la pena.
 
-**Tests mínimos**:
-- `test_memory_layer.py`: cambiar work_state no toca chat_ui
-- `test_intelligence_layer.py`: router clasifica sin LLM
-- `test_rag_engine.py`: RAG retorna respuesta con evidencia real
-
----
-
-### 🟡 4. Distinción formal de 4 tipos de memoria en código
-
-**Qué es**: Implementar interfaces separadas para working, semántica,
-episódica y procedimental dentro de `memory_manager.py`.
-
-**Por qué**: Hoy `memory_manager` es un guardián que centraliza —
-el siguiente nivel es que distinga activamente qué tipo de memoria
-corresponde a cada operación.
-
----
-
-## Test arquitectural de referencia
-
-Dos preguntas para saber si la arquitectura mejora:
-
-1. Si cambias cómo se guarda `work_state.json`, ¿tienes que tocar
-   `chat_ui.py`? → Si sí, las capas siguen pegadas.
-
-2. Si mañana cambias JSON por SQLite, ¿puede sobrevivir `router.py`
-   sin enterarse? → Ese debería ser el objetivo.
-
----
-
-## Métricas de progreso arquitectural
-
-| Métrica | Hoy (17/05) | Objetivo |
+| Subtarea | Descripción | Prioridad |
 |---|---|---|
-| Imports cruzados entre capas | Mínimos | Cero |
-| Módulos que escriben JSON directo | Solo memory_manager | Solo memory_manager |
-| Archivos tocados por cambio de memoria | 1–2 | 1 |
-| Tests por capa aislada | 0 | 3 mínimos |
-| Docs de baja calidad en el índice | 0 (excluidos) | 0 |
+| 7A | Logger de métricas por turno → `storage/metrics.jsonl` | 🔴 |
+| 7B | Script `show_metrics.py` — tabla terminal con tiempos y carriles | 🟠 |
+| 7C | Evaluación RAG end-to-end: ampliar batería de 9 a 20 preguntas | 🟠 |
+| 7D | Umbral adaptativo de caché — entradas > 7 días se recalculan | 🟡 |
+
+### Métricas objetivo (Fase 7)
+
+| Métrica | Objetivo |
+|---|---|
+| Tiempo de retrieval Chroma | < 200ms por consulta |
+| Tiempo de respuesta LLM | < 8s en ThinkPad i7 8ª gen |
+| % respuestas con evidencia documental | ≥ 75% |
+| % consultas resueltas sin LLM (caché + keywords) | > 30% |
+| Distribución de carriles | visible en dashboard |
+
+---
+
+## Fase 8 — Experience Index (memoria agentic)
+
+**Objetivo**: el agente aprende de lo que ya hizo. Cuando una situación
+nueva es similar a una pasada, recupera qué funcionó — sin fine-tuning,
+solo con Chroma y los episodios que ya guardas.
+
+Inspiración conceptual: ExpRAG (indexar trayectorias como documentos)
+y A-Mem (marcar experiencias como exitosas/problemáticas).
+
+| Subtarea | Descripción | Prioridad |
+|---|---|---|
+| 8A | Indexar episodios de sesión en `experience_index` (Chroma separado) | 🟠 |
+| 8B | Recuperar experiencias relevantes en carril `memory` | 🟠 |
+| 8C | Marcado de calidad de episodios (exitoso / fallido) | 🟡 |
+| 8D | `MemoryType` enum formal en `schemas.py` (WORKING, SEMANTIC, EPISODIC, PROCEDURAL) | 🟡 |
+
+### Cómo funciona el Experience Index
+
+```
+Fin de sesión → save_episode() guarda resumen en memory_store
+                         ↓
+             indexacion.py --only-episodes
+                         ↓
+          experience_index en Chroma (índice separado)
+                         ↓
+Nueva pregunta → búsqueda en experience_index (score > 0.80)
+                         ↓
+      Episodio relevante se añade al contexto del prompt
+```
+
+**Criterio de éxito**: pregunta "¿cómo resolví el problema de encoding?"
+recupera el episodio correcto sin que lo hayas programado explícitamente.
+
+---
+
+## Prioridad de aprendizaje
+
+| Fase | Concepto clave | Nivel |
+|---|---|---|
+| 6A–6B | Context routing selectivo | Fundamental |
+| 6C–6D | Defensive programming + tests de arquitectura | Intermedio |
+| 7A–7B | Observabilidad con jsonl | Fundamental |
+| 7C–7D | Evaluación RAG y cache aging | Intermedio |
+| 8A–8B | Experience index con Chroma | Avanzado |
+| 8C–8D | Feedback loop + tipos formales de memoria | Avanzado |
+
+---
+
+## Cuándo migrar de JSON a SQLite
+
+No antes de Fase 8C. La migración solo vale la pena cuando:
+- Los episodios superen ~500 entradas, O
+- Los tiempos de lectura de `memory_store` superen 200ms
+
+Hasta entonces: JSON + Chroma es perfecto para el hardware actual.
 
 ---
 
@@ -111,6 +129,13 @@ Dos preguntas para saber si la arquitectura mejora:
 | Fase 3A | Router híbrido keywords + LLM | ✅ Completa |
 | Fase 3B | Clasificador embeddings + intent_index | ✅ Completa |
 | Fase 4 | Caché, fidelity check, episodios, anti-alucinación | ✅ Completa |
-| Fase 5 | Refactor modular, 3 capas limpias, memory_manager, 67+ tests | ✅ Completa |
-| Fase 6 | Fix caché + recuperación selectiva + tests por capa | 🔄 En curso |
-| Fase 7 | 4 tipos de memoria con interfaces separadas | 🔲 Pendiente |
+| Fase 5A | Refactor modular completo | ✅ Completa |
+| Fase 5B | Suite 67+ tests pasando | ✅ Completa |
+| Fase 5C | Deduplicación project_facts + inyección automática | ✅ Completa |
+| Fase 5D | memory_manager como guardián único | ✅ Completa |
+| Fase 5E | Batería evaluación fija (9 preguntas) | ✅ Completa |
+| Fase 5F | Papers indexados (SLM-First, MoA) | ✅ Completa |
+| Fase 5G | Exclusión docs baja calidad del índice | ✅ Completa |
+| Fase 6 | Cerrar invariantes arquitecturales | 🔄 En curso |
+| Fase 7 | Observabilidad y evaluación continua | 🔲 Pendiente |
+| Fase 8 | Experience Index — memoria agentic | 🔲 Pendiente |
