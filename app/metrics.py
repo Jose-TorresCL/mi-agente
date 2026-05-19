@@ -1,22 +1,31 @@
-"""Módulo de métricas de sesión — Fase 7A.
+"""Módulo de métricas de sesión — Fase 7A / R1.
 
 Escribe una entrada JSON por turno en storage/metrics.jsonl (append-only).
 Nunca lanza excepciones — errores de I/O se loguean como WARNING.
 
 Esquema de cada línea:
   {
-    "timestamp": "2026-05-19T10:00:00.123456",  # ISO 8601
-    "route":        "rag",                        # carril elegido
-    "retrieval_ms": 320,                          # tiempo de retrieval (0 si no aplica)
-    "llm_ms":       1840,                         # tiempo de llamada LLM (0 si no aplica)
-    "total_ms":     2160,                         # retrieval_ms + llm_ms
-    "tokens_est":   210,                          # estimación simple por palabras
-    "cached":        false                         # True si vino del caché semántico
+    "timestamp":   "2026-05-19T10:00:00.123456",  # ISO 8601
+    "route":        "rag",                          # carril elegido
+    "intent_type":  "technical_question",           # tipo de intención clasificado
+    "retrieval_ms": 320,                            # tiempo de retrieval (0 si no aplica)
+    "llm_ms":       1840,                           # tiempo de llamada LLM (0 si no aplica)
+    "total_ms":     2160,                           # retrieval_ms + llm_ms
+    "tokens_est":   210,                            # estimación simple por palabras
+    "cached":       false,                          # True si vino del caché semántico
+    "num_docs":     3                               # docs recuperados del retriever (solo RAG)
   }
 
 Uso:
     from app.metrics import record_turn
-    record_turn(route="rag", retrieval_ms=320, llm_ms=1840, tokens_est=210)
+    record_turn(
+        route="rag",
+        intent_type="technical_question",
+        retrieval_ms=320,
+        llm_ms=1840,
+        tokens_est=210,
+        num_docs=3,
+    )
 """
 from __future__ import annotations
 
@@ -35,38 +44,47 @@ _METRICS_FILE = _METRICS_DIR / "metrics.jsonl"
 
 def record_turn(
     route: str,
+    intent_type: str = "unknown",
     retrieval_ms: int = 0,
     llm_ms: int = 0,
     tokens_est: int = 0,
     cached: bool = False,
+    num_docs: int = 0,
 ) -> None:
     """Escribe una entrada de métricas en storage/metrics.jsonl.
 
     Args:
         route:        Carril del router (ej: 'rag', 'memory', 'tool_list_files').
+        intent_type:  Tipo de intención clasificado por el router
+                      (ej: 'technical_question', 'memory_query', 'greeting').
+                      Usar 'unknown' si el carril no clasifica intenciones.
         retrieval_ms: Tiempo de retrieval vectorial en milisegundos.
         llm_ms:       Tiempo de llamada al LLM en milisegundos.
         tokens_est:   Estimación de tokens en la respuesta (palabras * 1.3).
         cached:       True si la respuesta vino del caché semántico.
+        num_docs:     Número de documentos recuperados del retriever.
+                      Solo es significativo en el carril 'rag'.
 
     Never raises.
     """
     try:
         _METRICS_DIR.mkdir(parents=True, exist_ok=True)
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "route": route,
+            "timestamp":   datetime.now(timezone.utc).isoformat(),
+            "route":       route,
+            "intent_type": intent_type,
             "retrieval_ms": retrieval_ms,
-            "llm_ms": llm_ms,
-            "total_ms": retrieval_ms + llm_ms,
-            "tokens_est": tokens_est,
-            "cached": cached,
+            "llm_ms":      llm_ms,
+            "total_ms":    retrieval_ms + llm_ms,
+            "tokens_est":  tokens_est,
+            "cached":      cached,
+            "num_docs":    num_docs,
         }
         with _METRICS_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         log.debug(
-            "[metrics] route=%s total_ms=%d cached=%s",
-            route, entry["total_ms"], cached,
+            "[metrics] route=%s intent=%s total_ms=%d num_docs=%d cached=%s",
+            route, intent_type, entry["total_ms"], num_docs, cached,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("[metrics] No se pudo escribir entrada: %s", exc)
