@@ -1,33 +1,21 @@
-# Registro de Decisiones Arquitecturales (ADR)
+# Architecture Decision Records (ADR)
 
-Este directorio contiene los ADRs del proyecto **mi-agente**.
-Cada archivo documenta una decisión técnica importante: por qué se tomó,
-qué alternativas se consideraron y cuáles son sus consecuencias.
+Este directorio documenta las decisiones de arquitectura importantes del proyecto.
+
+Un ADR es un registro corto que explica **qué decidimos**, **por qué lo decidimos** y **qué alternativas descartamos**. Sirve para que en el futuro (o cualquier colaborador) entienda el razonamiento sin tener que leer todo el código.
 
 ## Índice
 
-| ID | Título | Estado |
-|----|--------|--------|
+| # | Título | Estado |
+|---|---|---|
 | [ADR-001](ADR-001-router-hibrido.md) | Router híbrido de 3 capas | ✅ Aceptado |
-| [ADR-002](ADR-002-memoria-en-capas.md) | Arquitectura de memoria en capas y tipos formales | ✅ Aceptado |
-| [ADR-003](ADR-003-memory-manager.md) | `memory_manager` como guardián único | ✅ Aceptado |
-| [ADR-004](ADR-004-calidad-rag.md) | Calidad RAG: caché semántica, fidelity check y exclusiones | ✅ Aceptado |
-| [ADR-005](ADR-005-arquitectura-inteligencia.md) | Arquitectura de inteligencia: carriles, orquestador y tests | ✅ Aceptado |
-| [ADR-006](ADR-006-experience-index.md) | Experience Index: feedback loop de calidad entre sesiones | ✅ Aceptado |
+| [ADR-002](ADR-002-separacion-memory-manager.md) | Separación R1 — acceso a memoria vía memory_manager | ✅ Aceptado |
+| [ADR-003](ADR-003-fidelity-check.md) | Fidelity check con umbral 0.55 | ✅ Aceptado |
+| [ADR-004](ADR-004-cache-semantica.md) | Caché semántica con nomic-embed-text | ✅ Aceptado |
 
-## Cómo leer un ADR
+## Cómo agregar un ADR nuevo
 
-Cada documento sigue esta estructura:
-- **Contexto** — qué problema existía
-- **Decisión** — qué se eligió
-- **Alternativas consideradas** — qué más se evaluó
-- **Consecuencias** — beneficios y trade-offs
-- **Estado** — Propuesto / Aceptado / Obsoleto
-
-## Notas sobre versiones antiguas
-
-- `ADR-004-cache-semantica.md` fue reemplazado por `ADR-004-calidad-rag.md`
-  que integra caché semántica, fidelity check y lista de exclusiones.
-- `ADR-005-intent-index-capa2.md` fue absorbido por `ADR-001-router-hibrido.md`
-  (la Capa 2 de embeddings ya es parte del router) y `ADR-005-arquitectura-inteligencia.md`
-  documenta el modelo de carriles completo.
+1. Copia la plantilla de cualquier ADR existente.
+2. Nómbralo `ADR-00N-titulo-corto.md`.
+3. Rellena las secciones: Contexto, Decisión, Consecuencias, Alternativas descartadas.
+4. Agrégalo al índice de este README.
