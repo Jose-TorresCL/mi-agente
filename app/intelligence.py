@@ -36,10 +36,12 @@ R4-B — composición multi-capa de memoria (CERRADO):
   Cuando la pregunta cruza dos tipos (ej: episode + work_state), ambas capas se
   abren y se compone el contexto antes de pasarlo al LLM.
   Modelo 'reactivo' (1 cajón) → modelo 'adaptativo' (N cajones).
-  Basado en: A-Mem NeurIPS 2025 — 34% mejora en tareas multi-step con
-  memoria organizada por tipo vs acumulación flat.
 
-Cambios anteriores documentados en versiones previas del archivo.
+Fix B3 — timeout síntesis subido de 10s a 30s:
+  Evita WARNING 'Síntesis de memoria falló' cuando Ollama está ocupado.
+
+Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes:
+  'lista todas las tareas hechas' ya no devuelve pendientes.
 """
 from __future__ import annotations
 
@@ -75,8 +77,9 @@ log = get_logger(__name__)
 # Timeout para la llamada de resumen episódico (en segundos).
 _EPISODE_TIMEOUT = 20
 
-# Timeout para la síntesis del carril memory (en segundos).
-_MEMORY_SYNTHESIS_TIMEOUT = 10
+# Fix B3: timeout de síntesis subido de 10s a 30s para evitar timeouts
+# cuando Ollama está ocupado generando otra respuesta simultáneamente.
+_MEMORY_SYNTHESIS_TIMEOUT = 30
 
 # Longitud máxima por línea de historial comprimido (chars).
 _HISTORY_LINE_MAX = 80
@@ -90,6 +93,13 @@ _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuá
 # Preguntas de identidad — bypass del caché semántico.
 _IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                       "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
+
+# Fix B4: palabras que indican que el usuario quiere ver tareas COMPLETADAS.
+_DONE_TASK_KEYWORDS = {
+    "hechas", "hecho", "completadas", "completada", "completado",
+    "cerradas", "cerrada", "terminadas", "terminada", "listas", "lista",
+    "done",
+}
 
 # Mensaje estándar para consultas fuera del alcance del agente.
 _UNSUPPORTED_MSG = (
@@ -124,8 +134,29 @@ def _format_profile_answer(profile: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_tasks_answer(tasks_data: dict) -> str:
+def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
+    """Formatea tareas según lo que pide el usuario.
+
+    Fix B4: si la pregunta menciona tareas 'hechas/completadas',
+    muestra solo las completadas. Si no, muestra solo las pendientes.
+    """
     tasks = tasks_data.get("tasks", [])
+    q_lower = question.lower()
+    wants_done = any(kw in q_lower for kw in _DONE_TASK_KEYWORDS)
+
+    if wants_done:
+        filtered = [t for t in tasks if t.get("status") in ("done", "completed")]
+        if not filtered:
+            return "No hay tareas completadas registradas."
+        lines = ["**Tareas completadas:**"]
+        for t in filtered:
+            lines.append(
+                f"- [{t.get('id', '?')}] {t.get('title', '')} "
+                f"(prioridad: {t.get('priority', 'media')})"
+            )
+        return "\n".join(lines)
+
+    # Default: pendientes
     pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
     if not pending:
         return "No hay tareas pendientes registradas."
@@ -193,13 +224,7 @@ def _format_episodes_context(episodes: list[dict]) -> str:
 
 
 def _decide_episode(question: str) -> str:
-    """Responde preguntas directas sobre sesiones pasadas (carril episode).
-
-    Flujo:
-      1. search_episodes(question) en Chroma.
-      2. Si hay resultados con resumen real → sintetiza con LLM.
-      3. Si Chroma vacío o sin resumen → fallback a JSON.
-    """
+    """Responde preguntas directas sobre sesiones pasadas (carril episode)."""
     episodes: list[dict] = []
     try:
         from app.episode_store import search_episodes
@@ -253,36 +278,14 @@ def _handle_list_files(question: str) -> str:
 # ───────────────────────────────────────────────
 
 def _decide_memory(question: str) -> str:
-    """Responde desde memoria estructurada.
-
-    R4-B: modelo 'adaptativo' — detecta todos los tipos de memoria
-    relevantes y compone contexto multi-capa antes de llamar al LLM.
-
-    Flujo:
-      1. detect_memory_intents(question) → lista de tipos (puede ser >1)
-      2. Si 0 tipos → _MEMORY_NOT_FOUND_MSG
-      3. Si 1 tipo → lógica específica por tipo (igual que antes)
-      4. Si >1 tipos → get_composed_context() + síntesis LLM
-
-    Tipos con lógica específica (1 tipo):
-      'profile'       → formato de lista estructurada
-      'tasks'         → formato de lista estructurada
-      'project_facts' → síntesis LLM
-      'work_state'    → síntesis LLM
-      'episode'       → _decide_episode() con búsqueda semántica en Chroma
-
-    Multi-tipo (>1 tipos):
-      Todos los tipos detectados → get_composed_context() → síntesis LLM
-    """
+    """Responde desde memoria estructurada (R4-B multi-capa)."""
     intents = detect_memory_intents(question)
     log.debug("R4-B: intents detectados=%s para '%s'", intents, question[:60])
 
-    # ── 0 tipos detectados ────────────────────────────────────────────
     if not intents:
         log.debug("memory: ningún tipo detectado — devolviendo not-found")
         return _MEMORY_NOT_FOUND_MSG
 
-    # ── Más de 1 tipo → composición multi-capa ────────────────────────
     if len(intents) > 1:
         log.debug("R4-B: composición multi-capa con %d tipos: %s", len(intents), intents)
         composed = get_composed_context(intents)
@@ -291,7 +294,6 @@ def _decide_memory(question: str) -> str:
         fallback = f"Información de memoria:\n{composed}"
         return _synthesize_memory_answer(question, composed, fallback)
 
-    # ── 1 tipo → lógica específica (comportamiento anterior preservado) ─
     kind = intents[0]
     log.debug("Carril memory clasificado como: %s", kind)
 
@@ -301,7 +303,8 @@ def _decide_memory(question: str) -> str:
 
     if kind == "tasks":
         t = get_tasks()
-        return _format_tasks_answer(t) if t else "No encontré tareas registradas."
+        # Fix B4: pasar la pregunta para distinguir hechas vs pendientes
+        return _format_tasks_answer(t, question=question) if t else "No encontré tareas registradas."
 
     if kind == "project_facts":
         f = get_project_facts()
@@ -348,11 +351,7 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión.
-
-    Returns:
-        tuple[str, list]: ("__EXIT__", []) siempre.
-    """
+    """Genera resumen episódico y señala cierre de sesión."""
     import requests
 
     turns = len(chat_history) // 2
@@ -399,37 +398,21 @@ def _decide_rag(
     chat_history: list,
     route: str,
 ) -> tuple[str, list, int, int, bool]:
-    """Recupera contexto RAG, inyecta experiencias previas y llama al LLM.
-
-    Flujo (8B-v2):
-      1. Caché semántica (bypass para preguntas de identidad).
-      2. Retrieval: memoria estructurada + documentos RAG.
-      3. Experience injection: busca en experience_index con score >= 0.80.
-      4. LLM con contexto completo.
-      5. Verificación de fidelidad.
-      6. Caché save (solo si score >= _CACHE_MIN_SCORE y sin inyección episódica).
-
-    Returns:
-        tuple[str, list, int, int, bool]:
-            (answer, source_docs, retrieval_ms, llm_ms, cached)
-    """
+    """Recupera contexto RAG, inyecta experiencias previas y llama al LLM."""
     input_lower = user_input.lower()
     is_identity = any(kw in input_lower for kw in _IDENTITY_KEYWORDS)
 
-    # ── 1. Caché semántica ────────────────────────────────────────────
     if not is_identity:
         cached = cache_lookup(user_input)
         if cached is not None:
             log.debug("Respuesta servida desde caché semántica")
             return cached, [], 0, 0, True
 
-    # ── 2. Retrieval ──────────────────────────────────────────────
     t_ret_start = time.perf_counter()
     memory_context = get_selective_context(route)
     context_text, source_docs = retrieve_context(user_input, vectordb)
     retrieval_ms = int((time.perf_counter() - t_ret_start) * 1000)
 
-    # ── 3. Experience injection (8B-v2) ───────────────────────────────
     experience_injected = False
     try:
         from app.episode_store import experience_lookup
@@ -441,7 +424,6 @@ def _decide_rag(
     except Exception as exc:
         log.warning("[8B-v2] experience_lookup falló (no bloquea): %s", exc)
 
-    # ── 4. LLM ────────────────────────────────────────────────────
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
@@ -456,7 +438,6 @@ def _decide_rag(
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
-    # ── 5. Verificación de fidelidad ───────────────────────────────────
     is_faithful, score = verify_fidelity(answer, source_docs, question=user_input)
     if not is_faithful:
         log.warning(
@@ -465,7 +446,6 @@ def _decide_rag(
         )
         return NO_EVIDENCE_MSG, source_docs, retrieval_ms, llm_ms, False
 
-    # ── 6. Caché save ────────────────────────────────────────────────
     can_cache = not is_identity and not experience_injected and score >= _CACHE_MIN_SCORE
     if can_cache:
         log.debug("Guardando en caché (score=%.3f >= %.2f)", score, _CACHE_MIN_SCORE)
@@ -487,24 +467,7 @@ def process_turn(
     vectordb: Any,
     chat_history: list,
 ) -> tuple[str, list]:
-    """Punto de entrada único de la capa de inteligencia.
-
-    Recibe el carril ya clasificado y devuelve (respuesta, source_docs).
-    No persiste historial — esa responsabilidad pertenece a chat_core.
-    Registra métricas en storage/metrics.jsonl al final de cada turno (7A).
-    Desde R2-connect: pasa intent_type y num_docs a record_turn().
-
-    Returns:
-        tuple[str, list]: (respuesta_texto, lista_de_documentos_fuente)
-
-    Flujo:
-        exit            → _decide_exit
-        tool_list_files → _handle_list_files
-        tool            → dispatch_tool
-        memory          → _decide_memory (TERMINAL) — R4-B multi-capa
-        unsupported     → mensaje directo
-        resto           → _decide_rag (con experience injection 8B-v2)
-    """
+    """Punto de entrada único de la capa de inteligencia."""
     t_start = time.perf_counter()
 
     if route == "exit":
@@ -529,16 +492,14 @@ def process_turn(
 
     if route == "memory":
         t0 = time.perf_counter()
-        # R4-B: detect_memory_intents devuelve lista; para métricas usamos
-        # el primer intent o 'memory_query' si la lista está vacía.
         intents = detect_memory_intents(user_input)
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
-            memory_intent = "multi:" + "+".join(intents)  # ej: "multi:episode+work_state"
+            memory_intent = "multi:" + "+".join(intents)
         answer = _decide_memory(user_input)
         _record_metric(
             route=route,
-        intent_type=memory_intent,
+            intent_type=memory_intent,
             llm_ms=int((time.perf_counter() - t0) * 1000),
             tokens_est=int(len(answer.split()) * 1.3),
         )
@@ -549,7 +510,6 @@ def process_turn(
         _record_metric(route=route, intent_type="unsupported")
         return _UNSUPPORTED_MSG, []
 
-    # Carril RAG (y cualquier otro) — incluye experience injection (8B-v2)
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route=route
     )

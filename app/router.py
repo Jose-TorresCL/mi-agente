@@ -35,7 +35,10 @@ Fix R1-E:
 
 Fix P13:
   Agregado 'sprint' y variantes a MEMORY_PROJECT_FACTS_KEYWORDS.
-  classify_memory_query('¿en qué sprint estamos?') ahora devuelve 'project_facts'.
+
+Fix B1:
+  Agregado '!estado' al set de comandos especiales en _route_by_keywords.
+  Antes '!estado' caía a embeddings y se enrutaba como 'memory' (incorrecto).
 """
 from __future__ import annotations
 
@@ -144,6 +147,9 @@ MEMORY_TASKS_KEYWORDS = [
     "qué tareas tengo", "que tareas tengo",
     "ponme al día", "ponme al dia",
     "tareas", "mis tareas", "ver tareas", "mostrar tareas",
+    "tareas hechas", "tareas completadas", "tareas cerradas",
+    "qué tareas hice", "que tareas hice",
+    "lista todas las tareas", "todas las tareas",
 ]
 
 _TASK_SUGGESTION_SIGNALS = [
@@ -163,7 +169,6 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
 ]
 
 # Fix 6B: keywords para preguntas episódicas (sesiones anteriores, aprendizajes).
-# Se conectan a memory_manager.get_episodic_context() en la fase 6B-2.
 MEMORY_EPISODE_KEYWORDS = [
     "qué aprendí", "que aprendi", "qué aprendimos", "que aprendimos",
     "sesión anterior", "sesion anterior", "última sesión", "ultima sesion",
@@ -258,7 +263,7 @@ def classify_memory_query(question: str) -> str | None:
     Tipos reconocidos:
       'profile'       → datos del usuario (nombre, estilo, nivel)
       'work_state'    → foco actual, siguiente paso, bloqueos
-      'tasks'         → tareas pendientes
+      'tasks'         → tareas pendientes o completadas
       'project_facts' → hechos del proyecto (fase, nombre, sprint, etc.)
       'episode'       → sesiones anteriores, aprendizajes, historial (fix 6B)
 
@@ -296,7 +301,8 @@ def _route_by_keywords(question: str) -> str | None:
     """Capa 1: clasificación instantánea por keywords."""
     q = question.lower().strip()
 
-    if q in {"!estatus", "!status"}:
+    # Fix B1: !estado debe detectarse aquí antes de llegar a embeddings.
+    if q in {"!estado", "!estatus", "!status"}:
         return "!estado"
 
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
