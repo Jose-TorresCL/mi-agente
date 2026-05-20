@@ -32,6 +32,10 @@ Fix 6B:
 Fix R1-E:
   El singleton de Chroma para intent_index vive en app.intent_index.
   router.py es función pura de clasificación — sin imports de Chroma.
+
+Fix P13:
+  Agregado 'sprint' y variantes a MEMORY_PROJECT_FACTS_KEYWORDS.
+  classify_memory_query('¿en qué sprint estamos?') ahora devuelve 'project_facts'.
 """
 from __future__ import annotations
 
@@ -153,6 +157,9 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "fase actual", "fase del proyecto", "estado del proyecto",
     "hechos del proyecto", "datos del proyecto",
     "en qué fase", "en que fase", "nombre del proyecto",
+    # Fix P13: preguntas sobre sprint → son hechos del proyecto
+    "sprint", "en qué sprint", "en que sprint",
+    "qué sprint", "que sprint", "sprint actual",
 ]
 
 # Fix 6B: keywords para preguntas episódicas (sesiones anteriores, aprendizajes).
@@ -252,7 +259,7 @@ def classify_memory_query(question: str) -> str | None:
       'profile'       → datos del usuario (nombre, estilo, nivel)
       'work_state'    → foco actual, siguiente paso, bloqueos
       'tasks'         → tareas pendientes
-      'project_facts' → hechos del proyecto (fase, nombre, etc.)
+      'project_facts' → hechos del proyecto (fase, nombre, sprint, etc.)
       'episode'       → sesiones anteriores, aprendizajes, historial (fix 6B)
 
     Retorna None si la pregunta no encaja en ningún tipo conocido.
