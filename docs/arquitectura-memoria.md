@@ -198,3 +198,62 @@ como "memoria del asistente" antes de la pregunta.
 | Memoria episódica con embeddings | Para recuperar episodios por similitud semántica |
 | Separar `chroma_db` por colecciones | Cuando haya múltiples proyectos |
 | TTL en hechos del proyecto | Cuando algunos hechos queden obsoletos |
+
+---
+
+## Recuperación Selectiva (memory_context.py)
+
+**¿Qué es?** Un módulo que decide *cuánto* contexto de memoria inyectar
+en el prompt según el carril de enrutamiento activo.  
+**Dónde vive:** `app/memory_context.py`  
+**Quién lo llama:** `intelligence.py` antes de construir el prompt final.
+
+### El problema que resuelve
+
+Sin recuperación selectiva, cada consulta recibía el contexto completo
+(perfil + hechos + work_state + tareas + episodio), lo que generaba
+prompts innecesariamente largos en consultas simples.
+
+### Cómo funciona
+
+```python
+get_selective_context(route: str) -> str
+```
+
+| Carril (`route`) | Contexto entregado | Razón |
+|---|---|---|
+| `memory` | Completo (perfil + hechos + work_state + tareas + episodio) | El LLM necesita todo para responder sobre el estado |
+| `rag` | Solo perfil + hechos del proyecto | Evita contaminar el prompt RAG con estado operativo |
+| `tool_*` | Vacío (`""`) | Las tools leen directamente de `storage/` |
+| Otros carriles | Completo (fallback seguro) | Garantiza que nunca se pierda contexto |
+
+### Comportamiento de `build_memory_context()`
+
+Los campos de `work_state` (foco, siguiente paso, bloqueos) se incluyen
+**solo si tienen valor**. Esto evita líneas vacías como `"- Siguiente paso: "`
+en el prompt cuando el estado no está definido.
+
+---
+
+## Tipos formales de memoria (MemoryType)
+
+`app/schemas.py` define el enum `MemoryType` que formaliza los tipos
+de memoria que el sistema reconoce:
+
+```python
+class MemoryType(str, Enum):
+    CONVERSATION = "conversation"   # Turno a turno (Capa 1)
+    EPISODE      = "episode"        # Resumen de sesión (Capa 2)
+    SEMANTIC     = "semantic"       # Documentos vectoriales (Capa 3)
+    PROFILE      = "profile"        # Perfil del usuario (Capa 4)
+    FACT         = "fact"           # Hecho del proyecto (Capa 4)
+    WORK_STATE   = "work_state"     # Estado de trabajo (Capa 4)
+    TASK         = "task"           # Tareas (Capa 4)
+```
+
+**Para qué sirve:** `memory_manager.py` usa este enum para anotar
+cada operación de lectura/escritura, garantizando que nunca se mezclen
+tipos de memoria en una misma operación.
+
+> Decisiones de referencia: [ADR-002](adr/ADR-002-memoria-en-capas.md) y
+> [ADR-003](adr/ADR-003-memory-manager.md)
