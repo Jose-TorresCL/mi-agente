@@ -20,25 +20,31 @@ Se necesitaba una capa de orquestación que:
 ## Decisión
 
 Se creó `app/intelligence.py` como **orquestador único del agente**,
-con un modelo de 9 carriles de decisión explícitos.
+con un modelo de 10 carriles de decisión explícitos.
 
-### Los 9 carriles
+### Los 10 carriles
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                   intelligence.py                        │
 │                                                          │
-│  1. exit          → cierra sesión, guarda episodio       │
-│  2. memory        → memory_manager.get_context_for()     │
-│  3. rag           → RAG pipeline + fidelity check        │
-│  4. tool_list_files    → lista archivos del proyecto     │
-│  5. tool_read_file     → lee un archivo específico       │
-│  6. tool_save_fact     → guarda hecho en memoria         │
-│  7. tool_create_task   → crea tarea en memoria           │
-│  8. tool_complete_task → marca tarea completada          │
-│  9. unsupported   → respuesta honesta de límite          │
+│  1. exit                → cierra sesión, guarda episodio  │
+│  2. memory              → memory_manager.get_context_for() │
+│  3. rag                 → RAG pipeline + fidelity check   │
+│  4. tool_list_files     → lista archivos del proyecto     │
+│  5. tool_read_file      → lee un archivo específico       │
+│  6. tool_save_fact      → guarda hecho en memoria         │
+│  7. tool_create_task    → crea tarea en memoria           │
+│  8. tool_complete_task  → marca tarea completada          │
+│  9. tool_update_work_state → actualiza foco y siguiente paso │
+│ 10. unsupported         → respuesta honesta de límite     │
 └──────────────────────────────────────────────────────────┘
 ```
+
+**Nota sobre `tool_update_work_state`:** es un carril de escritura distinto
+de `memory` (que es solo lectura). Actualiza `foco`, `siguiente_paso` y
+`bloqueantes` en `storage/memory.json` directamente desde el agente,
+sin pasar por el LLM generativo.
 
 ### Carril TERMINAL: `exit`
 
