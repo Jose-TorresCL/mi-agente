@@ -1,117 +1,84 @@
 # Visión del agente — Norte del proyecto
 
-> Este documento no es un plan rígido. Es una brújula.
-> Cada etapa puede reordenarse, acelerarse o pausarse según lo que aprendas.
-> Lo que no cambia: la dirección.
+> Este documento no es un plan técnico. Es la razón de existir del proyecto.
+> Lo que construyes hoy es la semilla. Este documento describe el árbol.
 
 ---
 
-## La idea central
+## La idea grande
 
-Un solo agente local que se separa por **modos o capas** según el tipo de tarea.
-No múltiples agentes paralelos — un router que construye el contexto correcto
-para cada situación y se lo entrega siempre al mismo modelo.
+La mayoría de los asistentes de IA modernos requieren conexión a internet,
+APIs de pago y hardware especializado. Eso los hace inaccesibles para
+el 90% de las personas en el mundo.
+
+Este proyecto demuestra que no tiene que ser así.
+
+Un asistente local, que corre en un ThinkPad sin GPU, que aprende de
+cada conversación, que recuerda quién eres y en qué trabajas, que mejora
+con el tiempo — sin mandar un solo byte fuera del equipo.
+
+---
+
+## La arquitectura que lo hace posible
+
+Un solo agente. Un solo modelo. Un router que adapta el contexto
+según el tipo de tarea — en lugar de modelos especializados separados.
 
 ```
 Consulta del usuario
        ↓
-   [ROUTER]  ← decide el modo
+   [ROUTER]  ← entiende la intención
        ↓
-┌─────────────────────────────────────────┐
-│  MODO: conversación  → contexto liviano │
-│  MODO: rag           → recupera docs    │
-│  MODO: código        → lee archivos     │
-│  MODO: reflexión     → consolida hechos │
-└─────────────────────────────────────────┘
+   [CONTEXTO]  ← construye solo lo necesario
        ↓
-   [LLM]  ← genera la respuesta con el contexto del modo
+   [LLM local]  ← responde con lo que sabe + lo que recuerda
+       ↓
+   [MEMORIA]  ← guarda lo que aprendió
 ```
 
-Esto es esencialmente lo que hacen MemGPT y Cursor AI.
-Tu router híbrido actual es la semilla de esta arquitectura.
+Esto no es nuevo — es lo que hacen sistemas como MemGPT o Cursor AI.
+La diferencia: funciona en tu máquina, con tus documentos, sin costo.
 
 ---
 
-## Etapas orientativas
+## La dirección: autonomía progresiva
 
-### ✅ Etapa 1 — Base funcional (completada)
-**Nivel:** Fundamental
+El agente no nace autónomo. Gana autonomía en etapas,
+siempre con el humano como árbitro final.
 
-- RAG con Chroma + LangChain
-- Router híbrido (keyword + embedding)
-- Memoria en 4 capas (conversación, perfil, episodios, reglas)
-- Fidelity check contra alucinaciones
-- Caché semántica
-- Memory manager unificado
-- Workstate: retoma el contexto al arrancar
+**Hoy** — Responde, recuerda, recupera documentos relevantes.
 
----
+**Mañana** — Lee su propio código. Entiende cómo está construido.
 
-### 🎯 Etapa 2 — Modo código (próxima)
-**Nivel:** Intermedio
+**Después** — Propone mejoras concretas. El humano revisa y aprueba.
 
-El agente puede leer archivos de su propio proyecto y razonar sobre ellos.
+**El horizonte** — Aprende de sus propios errores. Consolida patrones.
+Mejora sus respuestas sin que nadie se lo pida.
 
-**Qué implica:**
-- Una `Tool` en LangChain que hace `open(archivo).read()`
-- El router detecta preguntas sobre código (`"¿qué hace app/router.py?"`, `"revisa este archivo"`)
-- El LLM recibe el contenido del archivo como contexto adicional
-- Las respuestas incluyen observaciones sobre el código, no solo sobre documentos
-
-**Prerequisito recomendado:** modelo con buen razonamiento de código
-(`qwen2.5-coder:7b` o `llama3.1:8b`)
+Cada etapa amplía lo anterior. Nada se tira.
 
 ---
 
-### 🔭 Etapa 3 — Auto-mejora con diffs
-**Nivel:** Avanzado
+## El norte que no cambia
 
-El agente propone cambios concretos al código en formato diff.
-Tú revisas y apruebas. Se aplican con `git apply`.
+Cuatro principios que actúan como filtro para cualquier decisión futura:
 
-**Qué implica:**
-- El modo código evoluciona: ahora no solo lee sino que propone
-- El agente genera bloques `diff` o `patch` válidos
-- Flujo: propuesta → revisión humana → `git apply` → commit
-- Nunca auto-aplica sin aprobación explícita
-
-**Por qué el humano siempre revisa:**
-El agente puede equivocarse. La revisión humana es la red de seguridad.
-
----
-
-### 🌌 Etapa 4 — Memoria reflexiva
-**Nivel:** Avanzado
-
-El agente consolida aprendizajes propios sobre sí mismo.
-
-**Ejemplos de lo que podría registrar:**
-- `"Cuando pregunto sobre X, el retriever trae chunks de Y que no son relevantes"`
-- `"El fidelity check bloquea respuestas correctas sobre temas cortos"`
-- `"El usuario prefiere respuestas con ejemplos de código"`
-
-Esto es lo que MemGPT llama *self-editing memory*.
-Requiere la Etapa 3 como base — el agente necesita poder leer y modificar
-sus propios archivos de memoria.
-
----
-
-## Principios que no cambian
-
-1. **Local primero** — ningún dato sale del equipo
+1. **Local primero** — ningún dato sale del equipo, nunca
 2. **Aprobación humana siempre** — el agente propone, el humano decide
-3. **Progresivo y seguro** — cada etapa construye sobre la anterior, nada se tira
-4. **Simple antes que elegante** — si funciona con menos, no añadir más
+3. **Progresivo y seguro** — cada mejora construye sobre la anterior
+4. **Accesible por diseño** — si no corre en hardware modesto, no sirve
 
 ---
 
-## Hardware de referencia
+## Por qué importa más allá del proyecto
 
-ThinkPad · Intel Core i7 8th gen · 16 GB DDR4 · Sin GPU dedicada
+Un asistente así — local, barato, que aprende — podría ser
+útil para millones de personas que hoy no tienen acceso a estas herramientas.
 
-Ver `docs/hardware-modelos.md` para la tabla de modelos compatibles.
+Ese es el horizonte real: no solo un proyecto personal,
+sino una demostración de que la IA útil no requiere infraestructura costosa.
 
 ---
 
-*Última actualización: 11/05/2026*
+*Última actualización: 19/05/2026*
 *Este archivo vive en el repo y se actualiza cuando la visión evoluciona.*
