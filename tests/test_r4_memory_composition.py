@@ -18,7 +18,7 @@ from app.memory_manager import detect_memory_intents, get_composed_context
 class TestDetectMemoryIntents:
     """Verifica la detección de intenciones de memoria (1 o más tipos)."""
 
-    # ── Preguntas de un solo tipo ─────────────────────────────────────
+    # ── Preguntas de un solo tipo ─────────────────────────────────
 
     def test_single_work_state(self):
         intents = detect_memory_intents("¿cuál es mi foco actual?")
@@ -64,7 +64,7 @@ class TestDetectMemoryIntents:
                 "episode debe aparecer antes que work_state en el orden canónico"
             )
 
-    # ── Preguntas sin señales de memoria ─────────────────────────────
+    # ── Preguntas sin señales de memoria ────────────────────────────
 
     def test_no_memory_signals(self):
         """Pregunta sin keywords de memoria → lista vacía."""
@@ -92,11 +92,13 @@ class TestGetComposedContext:
         assert "R3" in result
         assert "R4" in result
 
-    @patch("app.memory_manager.get_working_context",
-           return_value="Foco actual: implementar R4")
     @patch("app.memory_manager.get_working_context")
-    def test_empty_layer_omitted(self, mock_working, _):
-        """Una capa con contenido vacío no genera sección."""
+    def test_empty_layer_omitted(self, mock_working):
+        """Una capa con contenido vacío no genera sección.
+
+        Fix: un solo @patch sin return_value en el decorador.
+        El valor se asigna aquí para que el mock tenga control real.
+        """
         mock_working.return_value = ""
         with patch("app.memory_manager.get_episodic_context", return_value=""):
             with patch("app.memory_manager.get_semantic_context",
