@@ -8,7 +8,7 @@ Estrategia en tres capas:
   2. _route_by_embeddings() → ~50ms, consulta storage/intent_index.
      Busca la frase más similar en el índice y devuelve su carril.
      Solo activa si la similitud supera el umbral EMBED_THRESHOLD.
-     Usa singleton _intent_db para no recrear Chroma en cada consulta.
+     Singleton gestionado por app.intent_index — el router no toca Chroma.
 
   3. Fallback directo → 'rag' sin llamada al LLM.
      Si Capa 1 y Capa 2 no resuelven, se asume RAG como carril seguro.
@@ -28,6 +28,10 @@ Fix 6B:
   classify_memory_query: añadido tipo 'episode' para preguntas sobre
   sesiones anteriores, aprendizajes pasados y episodios de trabajo.
   Se conecta a memory_manager.get_episodic_context() en la fase 6B-2.
+
+Fix R1-E:
+  El singleton de Chroma para intent_index vive en app.intent_index.
+  router.py es función pura de clasificación — sin imports de Chroma.
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ from pathlib import Path
 from app.config import MODEL_NAME, OLLAMA_URL
 from app.tools import extract_file_path
 from app.logger import get_logger
+from app import intent_index
 
 log = get_logger(__name__)
 
@@ -57,36 +62,8 @@ SESSION_STATS: dict[str, int] = {
 # Configuración de embeddings (Capa 2)
 # ─────────────────────────────────────────────
 
-INTENT_DIR      = Path("storage/intent_index")
-EMBED_MODEL     = "nomic-embed-text"
-EMBED_THRESHOLD = 0.70
-EMBED_TOP_K     = 1
-
-
-# ─────────────────────────────────────────────
-# Singleton para intent_db (Capa 2)
-# ─────────────────────────────────────────────
-
-_intent_db = None
-_intent_embeddings = None
-
-
-def _get_intent_db():
-    global _intent_db, _intent_embeddings
-    if _intent_db is None:
-        from langchain_ollama import OllamaEmbeddings
-        from langchain_chroma import Chroma
-
-        _intent_embeddings = OllamaEmbeddings(
-            model=EMBED_MODEL,
-            base_url=OLLAMA_URL,
-        )
-        _intent_db = Chroma(
-            persist_directory=str(INTENT_DIR),
-            embedding_function=_intent_embeddings,
-            collection_name="intent_index",
-        )
-    return _intent_db
+EMBED_THRESHOLD = intent_index.EMBED_THRESHOLD
+EMBED_TOP_K     = intent_index.EMBED_TOP_K
 
 
 # ─────────────────────────────────────────────
@@ -331,11 +308,14 @@ def _route_by_keywords(question: str) -> str | None:
 
 
 def _route_by_embeddings(question: str) -> str | None:
-    if not INTENT_DIR.exists():
+    """Capa 2: clasificación por similitud semántica via intent_index."""
+    vectordb = intent_index.get_intent_db()
+    if vectordb is None:
         return None
     try:
-        vectordb = _get_intent_db()
-        results = vectordb.similarity_search_with_score(query=question, k=EMBED_TOP_K)
+        results = vectordb.similarity_search_with_score(
+            query=question, k=intent_index.EMBED_TOP_K
+        )
         if not results:
             return None
         doc, distance = results[0]
@@ -345,9 +325,9 @@ def _route_by_embeddings(question: str) -> str | None:
         if _is_question(question) and lane in _WRITE_LANES:
             log.debug("[router:emb] pregunta detectada — bloqueando '%s' → fallback rag", lane)
             return None
-        if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
+        if similarity >= intent_index.EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
-        log.debug("[router:emb] similitud baja (%.2f < %.2f) → fallback rag", similarity, EMBED_THRESHOLD)
+        log.debug("[router:emb] similitud baja (%.2f < %.2f) → fallback rag", similarity, intent_index.EMBED_THRESHOLD)
         return None
     except Exception as e:
         log.warning("[router:emb] error: %s → fallback rag", e)
