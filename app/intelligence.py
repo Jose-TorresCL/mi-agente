@@ -20,6 +20,10 @@ Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes (CERRADO)
 Fix C1 — chat_history en _synthesize_memory_answer (CERRADO)
 Fix C2 — cliente LLM unificado con generate_raw() (CERRADO)
 D2 — prompt de síntesis movido a prompts.py (CERRADO)
+D5 — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO):
+  Antes: process_turn detectaba intents y luego _decide_memory los re-detectaba.
+  Ahora: process_turn detecta, pasa intents a _decide_memory como parámetro.
+  _decide_memory ya no llama detect_memory_intents internamente.
 
 R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO):
   _retrieve_memory_context() ← AGENTE RECUPERADOR
@@ -377,10 +381,16 @@ def _synthesize_memory_answer(
 # R5-MoA — ORQUESTADOR de memoria
 # ───────────────────────────────────────────────
 
-def _decide_memory(question: str, chat_history: list | None = None) -> str:
-    """ORQUESTADOR (R5-MoA): coordina recuperador y sintetizador de memoria."""
-    intents = detect_memory_intents(question)
-    log.debug("R5-MoA: intents detectados=%s para '%s'", intents, question[:60])
+def _decide_memory(
+    question: str,
+    intents: list[str],
+    chat_history: list | None = None,
+) -> str:
+    """ORQUESTADOR (R5-MoA): coordina recuperador y sintetizador de memoria.
+
+    D5: recibe intents ya detectados desde process_turn — no los re-detecta.
+    """
+    log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
 
     if not intents:
         return _MEMORY_NOT_FOUND_MSG
@@ -403,7 +413,7 @@ def _decide_memory(question: str, chat_history: list | None = None) -> str:
 # ───────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
-    """CAĊHE (R6-RAG): devuelve hit semántico o None. Sin efectos secundarios.
+    """CAĊHE (R6-RAG): devuelve hit semántico o None. Sin efectos secundarios.
 
     Las preguntas de identidad nunca se sirven desde caché porque la
     respuesta depende del contexto de la sesión, no de los documentos.
@@ -657,11 +667,13 @@ def process_turn(
 
     if route == "memory":
         t0 = time.perf_counter()
+        # D5: detect_memory_intents se llama UNA sola vez aquí.
+        # _decide_memory recibe los intents como parámetro — no los re-detecta.
         intents = detect_memory_intents(user_input)
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
-        answer = _decide_memory(user_input, chat_history=chat_history)
+        answer = _decide_memory(user_input, intents=intents, chat_history=chat_history)
         _record_metric(route=route, intent_type=memory_intent,
                        llm_ms=int((time.perf_counter() - t0) * 1000),
                        tokens_est=int(len(answer.split()) * 1.3))
