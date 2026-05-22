@@ -26,10 +26,21 @@ Convenciones:
     colección diferente — Chroma las aísla automáticamente)
 
 Never raises: todos los métodos públicos capturan excepciones y loggean.
+
+D6  — decay temporal (Park et al. 2023 — Generative Agents) (CERRADO):
+  score_final = DECAY_ALPHA * score_semántico + (1-DECAY_ALPHA) * e^(-DECAY_LAMBDA * días)
+  _DECAY_ALPHA  = 0.75  (peso del score semántico vs. recencia)
+  _DECAY_LAMBDA = 0.05  (velocidad de decaimiento — suave, no agresivo)
+  Efecto: episodio de hoy × 1.0. 30 días × 0.89. 90 días × 0.78.
+  Se aplica en search_episodes() y experience_lookup_with_score().
+  El boost de exitosos (8C) se aplica sobre score post-decay.
+  Fallback: sin fecha válida, el score no se modifica.
 """
 from __future__ import annotations
 
 import json
+import math
+from datetime import date as _date_cls, datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -61,6 +72,13 @@ _EXITOSO_BOOST = 0.15
 
 # Umbral: episodios fallidos se muestran solo si no hay alternativos > este valor (8C).
 _FALLIDO_HIDE_THRESHOLD = 0.65
+
+# D6: parámetros de decay temporal (Generative Agents — Park et al. 2023).
+# score_final = _DECAY_ALPHA * score_sem + (1 - _DECAY_ALPHA) * e^(-_DECAY_LAMBDA * días)
+# _DECAY_ALPHA  : peso del score semántico (0–1). Más alto = más semántica, menos tiempo.
+# _DECAY_LAMBDA : velocidad de decaimiento. 0.05 = suave (90 días → factor 0.78).
+_DECAY_ALPHA  = 0.75
+_DECAY_LAMBDA = 0.05
 
 # ─────────────────────────────────────────────
 # Inicialización lazy del cliente Chroma
@@ -126,17 +144,49 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
     return doc_id, metadata, content
 
 
+def _apply_recency_decay(semantic_score: float, episode_date_str: str) -> float:
+    """D6: aplica decay temporal al score semántico.
+
+    Fórmula (Generative Agents — Park et al. 2023):
+        score_final = alpha * score_sem + (1 - alpha) * e^(-lambda * días)
+
+    Interpretación:
+        - Un episodio de HOY tiene factor de recencia = 1.0 (máximo).
+        - Un episodio de hace 30 días tiene factor de recencia ≈ 0.22.
+        - El score final pondera 75% semántica + 25% recencia.
+
+    Ejemplos con semantic_score=0.85:
+        - 0 días:  0.75*0.85 + 0.25*1.00 = 0.8875
+        - 30 días: 0.75*0.85 + 0.25*0.22 = 0.6930
+        - 90 días: 0.75*0.85 + 0.25*0.01 = 0.6400
+
+    Fallback: si la fecha no es parseable, devuelve el score original sin modificar.
+    Never raises.
+    """
+    try:
+        ep_date  = datetime.strptime(episode_date_str, "%Y-%m-%d").date()
+        today    = _date_cls.today()
+        days_ago = max((today - ep_date).days, 0)
+        recency  = math.exp(-_DECAY_LAMBDA * days_ago)
+        final    = _DECAY_ALPHA * semantic_score + (1.0 - _DECAY_ALPHA) * recency
+        return round(min(final, 1.0), 4)
+    except Exception:
+        # Fecha inválida o ausente — devuelve score original sin penalizar
+        return semantic_score
+
+
 def _extract_best_candidate(
     results: list,
     inject_threshold: float,
 ) -> tuple[str, float] | tuple[None, float]:
     """Helper interno: selecciona el mejor episodio candidato para inyección.
 
+    D6: el score que recibe ya viene con decay temporal aplicado.
     Aplica la misma lógica de preferencia que experience_lookup():
       exitosos > unmarked > fallidos (solo si no hay alternativas).
 
     Args:
-        results: lista de (doc, score) de Chroma.
+        results: lista de (doc, score_con_decay) ya filtrada.
         inject_threshold: score mínimo para considerar inyección.
 
     Returns:
@@ -204,8 +254,10 @@ def index_episode(episode: dict) -> bool:
 def search_episodes(query: str, k: int = 3) -> list[dict]:
     """Busca los k episodios más relevantes para la consulta.
 
+    D6: aplica decay temporal (_apply_recency_decay) antes del boost.
     Aplica boost de calidad (8C): exitosos +0.15, fallidos descartados si hay
     alternativos con score >= 0.65.
+    Orden final de operaciones: score_sem → decay → boost_exitoso → ranking.
     """
     col = _get_collection()
     if col is None:
@@ -219,17 +271,21 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
                 continue
 
             meta = doc.metadata
-            exitoso_str = meta.get("exitoso", "unmarked")
+            episode_date = meta.get("date", "")
+            exitoso_str  = meta.get("exitoso", "unmarked")
+
+            # D6: aplicar decay temporal al score semántico
+            decayed_score = _apply_recency_decay(raw_score, episode_date)
 
             if exitoso_str == "true":
                 exitoso = True
-                boosted_score = min(raw_score + _EXITOSO_BOOST, 1.0)
+                boosted_score = min(decayed_score + _EXITOSO_BOOST, 1.0)
             elif exitoso_str == "false":
                 exitoso = False
-                boosted_score = raw_score
+                boosted_score = decayed_score
             else:
                 exitoso = None
-                boosted_score = raw_score
+                boosted_score = decayed_score
 
             candidates.append({
                 "summary":          doc.page_content,
@@ -262,6 +318,7 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
 def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, float]:
     """D3: variante de experience_lookup que expone el score al llamador.
 
+    D6: el score devuelto ya incluye decay temporal.
     Diseñada para ser llamada desde _retrieve_rag_context() en intelligence.py.
     Devuelve (snippet, score) para que intelligence.py aplique su propio umbral
     (_MIN_EXPERIENCE_SCORE = 0.70) sin depender del formato del texto.
@@ -283,10 +340,17 @@ def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, 
         return None, 0.0
     try:
         results = col.similarity_search_with_relevance_scores(query, k=5)
-        snippet, score = _extract_best_candidate(results, EXPERIENCE_INJECT_THRESHOLD)
+
+        # D6: aplicar decay temporal a cada resultado antes de seleccionar
+        results_with_decay = [
+            (doc, _apply_recency_decay(raw_score, doc.metadata.get("date", "")))
+            for doc, raw_score in results
+        ]
+
+        snippet, score = _extract_best_candidate(results_with_decay, EXPERIENCE_INJECT_THRESHOLD)
         if snippet:
             log.debug(
-                "[episode_store] experience_lookup_with_score: score=%.3f para '%s'",
+                "[episode_store] experience_lookup_with_score: score=%.3f (con decay) para '%s'",
                 score, query[:40],
             )
         return snippet, score
