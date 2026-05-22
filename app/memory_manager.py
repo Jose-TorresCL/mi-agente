@@ -398,6 +398,10 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
        exactamente el mismo valor (ignorando la key), no escribe y retorna False.
     3. Si la key ya existe con un valor distinto, actualiza.
 
+    Fix B2-ext: fuerza str() sobre existing_value antes de .strip() para
+    evitar 'int object has no attribute strip' cuando project_facts.json
+    contiene valores no-string guardados previamente.
+
     Returns:
         True si se guardó correctamente.
         False si key o value están vacíos, o si el valor ya existe.
@@ -410,7 +414,10 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
     existing_facts = load_project_facts()
     value_normalized = value.strip().lower()
     for existing_key, existing_value in existing_facts.items():
-        if existing_value.strip().lower() == value_normalized:
+        # Fix B2-ext: convertir a str antes de .strip() — project_facts puede
+        # contener valores int/float si fueron guardados con tipo incorrecto.
+        existing_value_str = str(existing_value).strip().lower()
+        if existing_value_str == value_normalized:
             if existing_key == key.strip():
                 log.debug("save_fact omitido (ya existe igual): %s = %s", key, value)
             else:
