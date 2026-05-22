@@ -12,6 +12,10 @@ Convención:
   - Los handlers reciben el user_input crudo y retornan la respuesta final.
   - suggest_next_step() es responsabilidad del handler de tool_update_work_state.
   - Cualquier fallo interno debe retornar un str descriptivo, nunca lanzar.
+
+Fix B2:
+  _handle_save_fact retorna mensaje claro si content queda vacío tras
+  limpiar prefijos, en lugar de pasar string vacío a memory_manager.
 """
 from __future__ import annotations
 
@@ -42,8 +46,14 @@ def _handle_save_fact(user_input: str) -> str:
         if content.lower().startswith(prefix):
             content = content[len(prefix):].strip()
             break
+
+    # Fix B2: si tras limpiar prefijos el contenido quedó vacío, avisar
+    # claramente en lugar de pasar un string vacío a memory_manager.
     if not content:
-        return "No pude guardar el hecho: no entendí el contenido."
+        return (
+            "No entendí qué hecho querías guardar. "
+            "Prueba con: 'guarda como hecho que el router ya está probado'."
+        )
     return tool_save_fact(content)
 
 

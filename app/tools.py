@@ -49,20 +49,25 @@ from app.tool_helpers import (  # noqa: F401
 # Tool: guardar hecho
 # ─────────────────────────────────────────────
 
-def tool_save_fact(content: str) -> str:
+def tool_save_fact(content) -> str:
     """Guarda un hecho en project_facts.json.
+
+    Fix B2: acepta cualquier tipo en 'content' y fuerza str() antes de
+    operar, evitando 'int object has no attribute strip' cuando el
+    dispatcher pasa un argumento con tipo incorrecto.
 
     D3: rechaza contenido vacío antes de llamar a memory_manager.save_fact.
 
     Args:
-        content: Texto del hecho a guardar (ya limpio, sin prefijos de navegación).
+        content: Texto del hecho a guardar. Se convierte a str si no lo es.
 
     Returns:
         str con confirmación del hecho guardado, o mensaje de error.
 
     Never raises.
     """
-    content = content.strip()
+    # Fix B2: guard de tipo — convierte a str antes de cualquier operación
+    content = str(content).strip()
 
     if not content:
         return "No pude guardar el hecho: el contenido está vacío."

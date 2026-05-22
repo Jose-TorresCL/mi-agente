@@ -39,6 +39,12 @@ Fix P13:
 Fix B1:
   Agregado '!estado' al set de comandos especiales en _route_by_keywords.
   Antes '!estado' caía a embeddings y se enrutaba como 'memory' (incorrecto).
+
+Fix B2:
+  Nueva lista AGENT_IDENTITY_KEYWORDS → carril 'rag'.
+  Se evalúa ANTES de classify_memory_query en _route_by_keywords para que
+  'quién eres tú', 'qué puedes hacer', etc. nunca lleguen al clasificador
+  de embeddings y no caigan erróneamente en el carril 'memory'.
 """
 from __future__ import annotations
 
@@ -180,6 +186,31 @@ MEMORY_EPISODE_KEYWORDS = [
     "última vez que", "ultima vez que",
 ]
 
+# Fix B2: keywords de identidad del agente → siempre van a 'rag'.
+# Se evalúan ANTES de classify_memory_query para evitar confusión con
+# preguntas sobre el usuario ('quién soy yo' → memory vs 'quién eres tú' → rag).
+AGENT_IDENTITY_KEYWORDS = [
+    "quién eres", "quien eres",
+    "quién eres tú", "quien eres tu", "quien eres tú",
+    "qué eres", "que eres",
+    "qué puedes hacer", "que puedes hacer",
+    "qué puedes", "que puedes",
+    "qué sabes hacer", "que sabes hacer",
+    "para qué sirves", "para que sirves",
+    "cuéntame de ti", "cuentame de ti",
+    "cuéntame sobre ti", "cuentame sobre ti",
+    "dime quién eres", "dime quien eres",
+    "qué eres tú", "que eres tu",
+    "cómo te llamas", "como te llamas",
+    "cuál es tu nombre", "cual es tu nombre",
+    "qué modelo eres", "que modelo eres",
+    "cuáles son tus capacidades", "cuales son tus capacidades",
+    "qué herramientas tienes", "que herramientas tienes",
+    "tus límites", "tus limites",
+    "qué no puedes hacer", "que no puedes hacer",
+    "tus capacidades",
+]
+
 TOOL_SAVE_FACT_KEYWORDS = [
     "guarda como hecho", "guardar hecho", "registra que", "anota que",
     "guarda el hecho", "registra el hecho", "guarda esto como hecho",
@@ -315,6 +346,11 @@ def _route_by_keywords(question: str) -> str | None:
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
+
+    # Fix B2: identidad del agente ANTES de classify_memory_query
+    # para que 'quién eres tú' no caiga en memory por similitud con 'quién soy yo'
+    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "rag"
+
     if classify_memory_query(question) is not None:           return "memory"
 
     return None
