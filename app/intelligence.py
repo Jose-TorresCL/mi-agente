@@ -19,6 +19,7 @@ Fix B3 — timeout síntesis subido de 10s a 30s (CERRADO)
 Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes (CERRADO)
 Fix C1 — chat_history en _synthesize_memory_answer (CERRADO)
 Fix C2 — cliente LLM unificado con generate_raw() (CERRADO)
+D2 — prompt de síntesis movido a prompts.py (CERRADO)
 
 R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO):
   _retrieve_memory_context() ← AGENTE RECUPERADOR
@@ -85,7 +86,7 @@ from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
-from app.prompts import QA_SYSTEM_PROMPT
+from app.prompts import QA_SYSTEM_PROMPT, MEMORY_SYNTHESIS_PROMPT
 from app.tool_helpers import list_project_files
 
 log = get_logger(__name__)
@@ -356,22 +357,13 @@ def _synthesize_memory_answer(
 
     No sabe nada de JSON ni de qué cajón se abrió.
     Fix C1: inyecta historial. Fix C2: usa generate_raw() (singleton LLM).
+    D2: usa MEMORY_SYNTHESIS_PROMPT desde prompts.py.
     """
-    history_snippet = _build_history_snippet(chat_history)
-    history_block = (
-        f"\nConversación reciente (contexto de la sesión):\n{history_snippet}\n"
-        if history_snippet else ""
-    )
-    prompt = (
-        "Eres Lautaro, asistente técnico local del proyecto 'mi-agente'.\n"
-        "Tienes acceso a los siguientes datos del proyecto:\n\n"
-        f"{context_text}\n"
-        f"{history_block}\n"
-        "Responde la siguiente pregunta de forma natural, clara y concisa "
-        "en español. No listes todos los campos — sintetiza lo más relevante "
-        "para la pregunta, considerando el contexto de la conversación reciente "
-        "si es relevante. Máximo 4 oraciones.\n\n"
-        f"Pregunta: {question}\n\nRespuesta:"
+    history_snippet = _build_history_snippet(chat_history) or "(sin historial previo)"
+    prompt = MEMORY_SYNTHESIS_PROMPT.format(
+        context_text=context_text,
+        chat_history=history_snippet,
+        question=question,
     )
     answer = generate_raw(prompt, temperature=0.3, num_predict=150,
                           timeout=_MEMORY_SYNTHESIS_TIMEOUT)
