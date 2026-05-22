@@ -2,8 +2,17 @@
 
 Responsabilidad única: todo lo relacionado con ChromaDB y LangChain.
 Ningún otro módulo debería importar langchain_chroma ni ChatOllama directamente.
+
+Clientes LLM disponibles (Fix C2 — cliente unificado):
+  build_chain()    → chain LangChain RAG completa (para process_turn RAG)
+  generate_raw()   → llamada directa al LLM singleton sin RAG ni chain.
+                     Para síntesis de memoria, resumen episódico y cualquier
+                     llamada LLM que no necesite recuperación vectorial.
+                     Mismo modelo, mismos timeouts, mismo logging centralizado.
 """
 from __future__ import annotations
+
+from typing import Any
 
 from app.config import MODEL_NAME, OLLAMA_URL, CHROMA_DIR
 from app.logger import get_logger
@@ -12,6 +21,7 @@ from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage
 
 log = get_logger(__name__)
 
@@ -34,6 +44,60 @@ def get_llm() -> ChatOllama:
         )
         log.debug("LLM singleton inicializado: %s", MODEL_NAME)
     return _llm_instance
+
+
+# ─────────────────────────────────────────────
+# Fix C2 — cliente LLM unificado (sin RAG)
+# ─────────────────────────────────────────────
+
+def generate_raw(
+    prompt: str,
+    temperature: float = 0.3,
+    num_predict: int = 150,
+    timeout: int = 30,
+) -> str | None:
+    """Llama al LLM singleton con un prompt libre, sin RAG ni chain LangChain.
+
+    Usa el mismo ChatOllama singleton que build_chain(), garantizando:
+    - Un único cliente LLM en todo el proyecto (Fix C2).
+    - El mismo modelo (MODEL_NAME de config.py).
+    - Logging centralizado con el mismo get_logger.
+    - Manejo de errores uniforme: devuelve None en caso de fallo.
+
+    Args:
+        prompt:      Texto completo del prompt a enviar al LLM.
+        temperature: Temperatura de generación (default 0.3, más conservador
+                     que RAG que usa 0.1).
+        num_predict: Máximo de tokens a generar.
+        timeout:     Segundos antes de abortar la llamada.
+
+    Returns:
+        Texto generado por el LLM, o None si la llamada falló.
+
+    Uso típico:
+        answer = generate_raw(prompt, temperature=0.3, num_predict=150)
+        if answer is None:
+            return fallback_string
+    """
+    try:
+        llm = get_llm()
+        # ChatOllama acepta opciones extra vía bind().
+        # Creamos una instancia temporal con los parámetros ajustados
+        # sin tocar el singleton base (que mantiene temperature=0.1 para RAG).
+        llm_temp = ChatOllama(
+            model=MODEL_NAME,
+            base_url=OLLAMA_URL,
+            temperature=temperature,
+            num_predict=num_predict,
+            timeout=timeout,
+        )
+        result = llm_temp.invoke([HumanMessage(content=prompt)])
+        text = result.content.strip() if hasattr(result, "content") else str(result).strip()
+        log.debug("generate_raw: %d chars generados", len(text))
+        return text if text else None
+    except Exception as exc:
+        log.warning("generate_raw falló: %s", exc)
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -82,10 +146,6 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
         "qué falta", "que falta", "qué queda", "que queda",
         "plan del proyecto", "próxima sesión", "proxima sesion",
     ],
-    # Paso 3 — papers de investigación indexados el 17/05/2026
-    # Cubre: SLM-First, MoA, MemGPT, LightMem y conceptos relacionados.
-    # fetch_k sube a 30 para estos docs (más candidatos antes de MMR)
-    # porque son documentos nuevos con menos co-ocurrencias en el índice.
     "paper": [
         "slm-first", "slm first", "small language model first",
         "moa", "mixture of agents", "mixture-of-agents",
@@ -100,8 +160,6 @@ _DOC_TYPE_SIGNALS: dict[str, list[str]] = {
     ],
 }
 
-# fetch_k diferenciado por tipo: los papers son nuevos en el índice y
-# necesitan más candidatos iniciales antes de que MMR los descarte.
 _FETCH_K_BY_TYPE: dict[str, int] = {
     "paper": 30,
 }
@@ -118,19 +176,9 @@ def _infer_doc_types(question: str) -> list[str]:
 
 
 def build_retriever(vectordb: Chroma, question: str):
-    """Construye el retriever con MMR y filtro opcional por tipo de documento.
-
-    MMR (Maximal Marginal Relevance) balancea relevancia y diversidad:
-    - fetch_k: candidatos iniciales. 20 por defecto, 30 para papers nuevos.
-    - lambda_mult=0.6: 0=diversidad pura, 1=similitud pura.
-    - k=5: chunks finales devueltos al LLM.
-
-    Paso 3: tipo 'paper' usa fetch_k=30 para compensar que son documentos
-    indexados recientemente con menos co-ocurrencias en el vector store.
-    """
+    """Construye el retriever con MMR y filtro opcional por tipo de documento."""
     doc_types = _infer_doc_types(question)
 
-    # Determinar fetch_k: si alguno de los tipos usa fetch_k diferenciado, tomarlo.
     fetch_k = max(
         (_FETCH_K_BY_TYPE.get(dt, _DEFAULT_FETCH_K) for dt in doc_types),
         default=_DEFAULT_FETCH_K,

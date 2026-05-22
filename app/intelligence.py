@@ -47,8 +47,12 @@ Fix C1 — chat_history en _synthesize_memory_answer:
   Se pasan los últimos 3 turnos del historial de conversación al prompt
   de síntesis de memoria. Antes el LLM respondía sin saber qué se habló
   en la sesión, produciendo respuestas desconectadas del contexto.
-  Ahora _synthesize_memory_answer recibe chat_history: list | None y
-  todos los call sites en _decide_memory() lo propagan.
+
+Fix C2 — cliente LLM unificado (CERRADO):
+  _synthesize_memory_answer y _decide_exit ya NO usan requests.post() directo.
+  Ambas usan generate_raw() de rag_engine, que aprovecha el mismo ChatOllama
+  singleton que build_chain(). Un único cliente LLM en todo el proyecto.
+  Se elimina el import de 'requests' de este archivo.
 """
 from __future__ import annotations
 
@@ -71,7 +75,7 @@ from app.memory_manager import (
     get_composed_context,
 )
 from app.metrics import record_turn as _record_metric
-from app.rag_engine import retrieve_context, build_chain
+from app.rag_engine import retrieve_context, build_chain, generate_raw
 from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
@@ -166,7 +170,6 @@ def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
             )
         return "\n".join(lines)
 
-    # Default: pendientes
     pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
     if not pending:
         return "No hay tareas pendientes registradas."
@@ -180,11 +183,7 @@ def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
 
 
 def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_HISTORY_TURNS) -> str:
-    """Fix C1: extrae los últimos N turnos del historial como texto compacto.
-
-    Devuelve cadena vacía si no hay historial o está vacío.
-    Solo incluye el texto — el llamador decide si inyectarlo en el prompt.
-    """
+    """Fix C1: extrae los últimos N turnos del historial como texto compacto."""
     if not chat_history:
         return ""
     recent = chat_history[-(max_turns * 2):]
@@ -203,16 +202,12 @@ def _synthesize_memory_answer(
     fallback: str,
     chat_history: list | None = None,
 ) -> str:
-    """Llama al LLM para sintetizar una respuesta natural a partir del contexto
-    de memoria estructurada.
+    """Llama al LLM para sintetizar una respuesta de memoria.
 
-    Fix C1: acepta chat_history opcional. Si se provee, inyecta los últimos
-    _MEMORY_HISTORY_TURNS turnos en el prompt para que el LLM pueda conectar
-    la respuesta con lo que se está hablando en la sesión actual.
+    Fix C1: inyecta los últimos turnos del historial en el prompt.
+    Fix C2: usa generate_raw() de rag_engine en vez de requests.post() directo.
+            Un único cliente LLM (ChatOllama singleton) en todo el proyecto.
     """
-    import requests
-
-    # Fix C1: construir bloque de historial si está disponible.
     history_snippet = _build_history_snippet(chat_history)
     history_block = (
         f"\nConversación reciente (contexto de la sesión):\n{history_snippet}\n"
@@ -231,24 +226,17 @@ def _synthesize_memory_answer(
         f"Pregunta: {question}\n\nRespuesta:"
     )
 
-    try:
-        import requests as _req
-        response = _req.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.3, "num_predict": 150},
-            },
-            timeout=_MEMORY_SYNTHESIS_TIMEOUT,
-        )
-        answer = response.json().get("response", "").strip()
-        if answer:
-            return answer
-    except Exception as exc:
-        log.warning("Síntesis de memoria falló, usando fallback: %s", exc)
+    # Fix C2: generate_raw() usa ChatOllama singleton, no requests.post() directo.
+    answer = generate_raw(
+        prompt,
+        temperature=0.3,
+        num_predict=150,
+        timeout=_MEMORY_SYNTHESIS_TIMEOUT,
+    )
+    if answer:
+        return answer
 
+    log.warning("_synthesize_memory_answer: generate_raw devolvió None, usando fallback")
     return fallback
 
 
@@ -329,8 +317,8 @@ def _handle_list_files(question: str) -> str:
 def _decide_memory(question: str, chat_history: list | None = None) -> str:
     """Responde desde memoria estructurada (R4-B multi-capa).
 
-    Fix C1: recibe chat_history y lo propaga a _synthesize_memory_answer
-    para que todas las síntesis LLM tengan contexto conversacional.
+    Fix C1: recibe chat_history y lo propaga a _synthesize_memory_answer.
+    Fix C2: _synthesize_memory_answer ya usa generate_raw() internamente.
     """
     intents = detect_memory_intents(question)
     log.debug("R4-B: intents detectados=%s para '%s'", intents, question[:60])
@@ -356,7 +344,6 @@ def _decide_memory(question: str, chat_history: list | None = None) -> str:
 
     if kind == "tasks":
         t = get_tasks()
-        # Fix B4: pasar la pregunta para distinguir hechas vs pendientes
         return _format_tasks_answer(t, question=question) if t else "No encontré tareas registradas."
 
     if kind == "project_facts":
@@ -404,9 +391,10 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión."""
-    import requests
+    """Genera resumen episódico y señala cierre de sesión.
 
+    Fix C2: usa generate_raw() de rag_engine en vez de requests.post() directo.
+    """
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -424,20 +412,17 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
             f"Conversación:\n{history_text}\n\nResumen:"
         )
 
-        try:
-            response = requests.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": MODEL_NAME,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 80},
-                },
-                timeout=_EPISODE_TIMEOUT,
-            )
-            summary = response.json().get("response", summary).strip()
-        except Exception as exc:
-            log.warning("No se pudo generar resumen de sesión: %s", exc)
+        # Fix C2: generate_raw() reemplaza requests.post() directo.
+        generated = generate_raw(
+            prompt,
+            temperature=0.2,
+            num_predict=80,
+            timeout=_EPISODE_TIMEOUT,
+        )
+        if generated:
+            summary = generated
+        else:
+            log.warning("No se pudo generar resumen de sesión")
 
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
@@ -549,7 +534,6 @@ def process_turn(
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
-        # Fix C1: propagar chat_history al decisor de memoria
         answer = _decide_memory(user_input, chat_history=chat_history)
         _record_metric(
             route=route,
