@@ -31,6 +31,12 @@ Contratos de retorno internos (R1-A):
   _decide_rag()     →  RagResult
   DecisionResult    →  TypedDict con los campos semánticos de cada respuesta interna
 
+Contrato de entrada (TurnContext):
+  TurnContext       →  TypedDict con los 4 parámetros de process_turn()
+  Permite pasar el estado de turno como un dict tipado en lugar de
+  4 argumentos posicionales sueltos. chat_core construye el TurnContext
+  y lo pasa a process_turn() — que acepta ambas formas para compatibilidad.
+
 Nota sobre TypedDict y total=False:
   Los campos marcados como opcional (con total=False en la subclase)
   pueden estar ausentes en el JSON. Los campos en la clase base con
@@ -78,6 +84,51 @@ class MemoryType(str, Enum):
     SEMANTIC   = "semantic"
     EPISODIC   = "episodic"
     PROCEDURAL = "procedural"
+
+
+# ───────────────────────────────────────────────
+# TurnContext — contrato de entrada a process_turn()
+# ───────────────────────────────────────────────
+
+class TurnContext(TypedDict):
+    """Contrato de entrada a process_turn().
+
+    Agrupa los 4 parámetros del turno en un dict tipado.
+    Permite que chat_core construya el contexto explícitamente
+    y lo pase como un objeto — en lugar de 4 argumentos posicionales.
+
+    Beneficios:
+      - El IDE detecta si falta algún campo al construir el contexto.
+      - process_turn() puede inspeccionarlo como un todo (e.g. logging).
+      - Facilita extender el contrato en el futuro sin cambiar la firma.
+
+    Campos:
+        route:        Carril elegido por route_query().
+                      Valores: "rag", "memory", "tool_*", "exit", "unsupported".
+        query:        Texto de entrada del usuario (sin modificar).
+        vectordb:     Instancia de la base vectorial Chroma (puede ser None
+                      en tests que no usan RAG).
+        chat_history: Lista de HumanMessage / AIMessage de la sesión activa.
+                      Puede estar vacía en el primer turno.
+
+    Uso en chat_core.py:
+        from app.schemas import TurnContext
+        ctx = TurnContext(
+            route=route,
+            query=user_input,
+            vectordb=vectordb,
+            chat_history=chat_history,
+        )
+        answer, source_docs = process_turn(ctx)
+
+    Compatibilidad hacia atrás:
+        process_turn() también acepta los 4 argumentos posicionales sueltos
+        (firma original) para no romper tests ni código externo existente.
+    """
+    route:        str
+    query:        str
+    vectordb:     Any
+    chat_history: list
 
 
 # ───────────────────────────────────────────────

@@ -21,6 +21,7 @@ from typing import Any
 from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
 from app.intelligence import process_turn
+from app.schemas import TurnContext
 
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -81,7 +82,11 @@ def handle_query(
     vectordb: Any,
     chat_history: list,
 ) -> tuple[str, list]:
-    """Clasifica la consulta, delega a process_turn() y persiste el turno.
+    """Clasifica la consulta, construye TurnContext y delega a process_turn().
+
+    TurnContext agrupa los 4 parámetros del turno en un dict tipado.
+    process_turn() desempaqueta el contexto internamente — el contrato
+    de retorno (str, list) no cambia.
 
     Returns:
         (respuesta, source_docs)  — source_docs puede ser lista vacía.
@@ -90,8 +95,16 @@ def handle_query(
     route = route_query(user_input)
     log.debug("Ruta asignada: '%s' para: %s", route, user_input[:60])
 
+    # Construir TurnContext — contrato de entrada tipado
+    ctx = TurnContext(
+        route=route,
+        query=user_input,
+        vectordb=vectordb,
+        chat_history=chat_history,
+    )
+
     # Delegar procesamiento completo a la capa de inteligencia
-    answer, source_docs = process_turn(route, user_input, vectordb, chat_history)
+    answer, source_docs = process_turn(ctx)
 
     # Persistir historial solo si no es exit ni respuesta de error de fidelidad
     if answer != "__EXIT__":

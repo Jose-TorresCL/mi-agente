@@ -10,7 +10,11 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 
 Contrato público
 ────────────────
-    process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]
+    process_turn(ctx: TurnContext) -> tuple[str, list]
+    process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]  # legacy
+
+    Ambas formas son equivalentes. chat_core usa TurnContext (forma nueva).
+    Los tests que llaman a process_turn directamente con 4 args siguen funcionando.
 
 R1  — contratos internos (CERRADO)
 R2-connect — intent_type y num_docs en record_turn() (CERRADO)
@@ -31,6 +35,7 @@ D4-B — prompt de resumen episódico reducido (CERRADO):
 D5  — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO).
 R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO).
 R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
+TurnContext — process_turn acepta TurnContext o 4 args sueltos (CERRADO).
 """
 from __future__ import annotations
 
@@ -60,6 +65,7 @@ from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
 from app.prompts import QA_SYSTEM_PROMPT, MEMORY_SYNTHESIS_PROMPT
 from app.tool_helpers import list_project_files
+from app.schemas import TurnContext
 
 log = get_logger(__name__)
 
@@ -379,7 +385,6 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
                 exp_score, _MIN_EXPERIENCE_SCORE,
             )
         elif snippet:
-            # Snippet existe pero score insuficiente — se descarta
             log.debug(
                 "[R6-RAG] Experiencia episódica descartada (score=%.3f < %.2f)",
                 exp_score, _MIN_EXPERIENCE_SCORE,
@@ -522,7 +527,6 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
     if turns > 0:
         log.info("Guardando resumen episódico (%d turnos)", turns)
         history_text = _compress_history(chat_history)
-        # D4-B: 2 líneas en vez de 3, 45 tokens en vez de 80, temperature 0.1
         prompt = (
             "Resume esta conversación en exactamente 2 líneas en español.\n"
             "Línea 1: tema principal y decisión tomada.\n"
@@ -547,12 +551,39 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 # ───────────────────────────────────────────────────
 
 def process_turn(
-    route: str,
-    user_input: str,
-    vectordb: Any,
-    chat_history: list,
+    route_or_ctx: str | TurnContext,
+    user_input: str | None = None,
+    vectordb: Any = None,
+    chat_history: list | None = None,
 ) -> tuple[str, list]:
-    """Punto de entrada único de la capa de inteligencia."""
+    """Punto de entrada único de la capa de inteligencia.
+
+    Acepta dos formas de llamada equivalentes:
+
+    Forma nueva (TurnContext) — usada por chat_core:
+        ctx = TurnContext(route="rag", query=user_input, vectordb=db, chat_history=hist)
+        answer, docs = process_turn(ctx)
+
+    Forma legacy (4 args) — usada por tests existentes:
+        answer, docs = process_turn(route, user_input, vectordb, chat_history)
+
+    Ambas formas son equivalentes. La forma legacy sigue funcionando sin cambios.
+    """
+    # Desempaquetar TurnContext si se recibe como primer argumento
+    if isinstance(route_or_ctx, dict):
+        ctx: TurnContext = route_or_ctx
+        route        = ctx["route"]
+        user_input   = ctx["query"]
+        vectordb     = ctx["vectordb"]
+        chat_history = ctx["chat_history"]
+    else:
+        route        = route_or_ctx
+        # user_input, vectordb, chat_history ya vienen como args posicionales
+
+    # Garantizar que chat_history nunca sea None dentro de la función
+    if chat_history is None:
+        chat_history = []
+
     t_start = time.perf_counter()
 
     if route == "exit":
