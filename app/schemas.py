@@ -248,21 +248,47 @@ class MemoryFile(TypedDict):
     messages: list[Message]
 
 
+# Claves conocidas de Message — al nivel de módulo para reutilización
+_MSG_KNOWN_KEYS = {"role", "content", "timestamp"}
+
+
 # ───────────────────────────────────────────────
 # storage/episodic_memory.json
 # ───────────────────────────────────────────────
 
-class EpisodeItem(TypedDict):
-    """Schema de cada episodio en storage/episodic_memory.json."""
+class EpisodeItemRequired(TypedDict, total=True):
+    """Campos obligatorios de cada episodio en episodic_memory.json."""
     date: str
     time: str
     turns: int
     summary: str
 
 
+class EpisodeItem(EpisodeItemRequired, total=False):
+    """Schema completo de cada episodio en episodic_memory.json.
+
+    Los campos opcionales (total=False) son escritos por episode_store.py
+    al indexar y cerrar sesión (8C):
+        carril_dominante:   carril más usado en la sesión.
+        tareas_completadas: número de tareas completadas en la sesión.
+        exitoso:            "true" | "false" | "unmarked" — resultado de la sesión.
+    """
+    carril_dominante:   str
+    tareas_completadas: int
+    exitoso:            str   # "true" | "false" | "unmarked"
+
+
 class EpisodicMemory(TypedDict):
     """Schema de storage/episodic_memory.json (nivel raíz)."""
     episodes: list[EpisodeItem]
+
+
+# Claves conocidas de EpisodeItem — al nivel de módulo para reutilización
+_EP_KNOWN_KEYS = {
+    "date", "time", "turns", "summary",
+    # campos opcionales escritos por episode_store.py (8C)
+    "carril_dominante", "tareas_completadas", "exitoso",
+}
 
 
 # ───────────────────────────────────────────────
@@ -344,7 +370,6 @@ def validate_storage() -> list[str]:
 
     # ─ memory.json ───────────────────────────────────────────────
     memory_file = _load_json_safe(_STORAGE_DIR / "memory.json")
-    _MSG_KNOWN_KEYS = {"role", "content", "timestamp"}
     if memory_file is None:
         warnings.append("[storage] memory.json no existe aún (normal en primera ejecución)")
     elif isinstance(memory_file, dict):
@@ -359,7 +384,6 @@ def validate_storage() -> list[str]:
         warnings.append("[storage:error] memory.json no es un objeto JSON válido")
 
     # ─ episodic_memory.json ───────────────────────────────────────
-    _EP_KNOWN_KEYS = {"date", "time", "turns", "summary"}
     ep_file = _load_json_safe(_STORAGE_DIR / "episodic_memory.json")
     if ep_file is None:
         warnings.append("[storage] episodic_memory.json no existe aún (normal en primera ejecución)")
