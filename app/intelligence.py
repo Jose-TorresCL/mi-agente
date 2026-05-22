@@ -42,6 +42,13 @@ Fix B3 — timeout síntesis subido de 10s a 30s:
 
 Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes:
   'lista todas las tareas hechas' ya no devuelve pendientes.
+
+Fix C1 — chat_history en _synthesize_memory_answer:
+  Se pasan los últimos 3 turnos del historial de conversación al prompt
+  de síntesis de memoria. Antes el LLM respondía sin saber qué se habló
+  en la sesión, produciendo respuestas desconectadas del contexto.
+  Ahora _synthesize_memory_answer recibe chat_history: list | None y
+  todos los call sites en _decide_memory() lo propagan.
 """
 from __future__ import annotations
 
@@ -100,6 +107,9 @@ _DONE_TASK_KEYWORDS = {
     "cerradas", "cerrada", "terminadas", "terminada", "listas", "lista",
     "done",
 }
+
+# Fix C1: turnos recientes del historial a inyectar en síntesis de memoria.
+_MEMORY_HISTORY_TURNS = 3
 
 # Mensaje estándar para consultas fuera del alcance del agente.
 _UNSUPPORTED_MSG = (
@@ -169,19 +179,55 @@ def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
     return "\n".join(lines)
 
 
-def _synthesize_memory_answer(question: str, context_text: str, fallback: str) -> str:
+def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_HISTORY_TURNS) -> str:
+    """Fix C1: extrae los últimos N turnos del historial como texto compacto.
+
+    Devuelve cadena vacía si no hay historial o está vacío.
+    Solo incluye el texto — el llamador decide si inyectarlo en el prompt.
+    """
+    if not chat_history:
+        return ""
+    recent = chat_history[-(max_turns * 2):]
+    lines = []
+    for m in recent:
+        role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
+        content = m.content.strip().replace("\n", " ")
+        truncated = content[:_HISTORY_LINE_MAX] + ("…" if len(content) > _HISTORY_LINE_MAX else "")
+        lines.append(f"{role}: {truncated}")
+    return "\n".join(lines)
+
+
+def _synthesize_memory_answer(
+    question: str,
+    context_text: str,
+    fallback: str,
+    chat_history: list | None = None,
+) -> str:
     """Llama al LLM para sintetizar una respuesta natural a partir del contexto
     de memoria estructurada.
+
+    Fix C1: acepta chat_history opcional. Si se provee, inyecta los últimos
+    _MEMORY_HISTORY_TURNS turnos en el prompt para que el LLM pueda conectar
+    la respuesta con lo que se está hablando en la sesión actual.
     """
     import requests
+
+    # Fix C1: construir bloque de historial si está disponible.
+    history_snippet = _build_history_snippet(chat_history)
+    history_block = (
+        f"\nConversación reciente (contexto de la sesión):\n{history_snippet}\n"
+        if history_snippet else ""
+    )
 
     prompt = (
         "Eres Lautaro, asistente técnico local del proyecto 'mi-agente'.\n"
         "Tienes acceso a los siguientes datos del proyecto:\n\n"
-        f"{context_text}\n\n"
+        f"{context_text}\n"
+        f"{history_block}\n"
         "Responde la siguiente pregunta de forma natural, clara y concisa "
         "en español. No listes todos los campos — sintetiza lo más relevante "
-        "para la pregunta. Máximo 4 oraciones.\n\n"
+        "para la pregunta, considerando el contexto de la conversación reciente "
+        "si es relevante. Máximo 4 oraciones.\n\n"
         f"Pregunta: {question}\n\nRespuesta:"
     )
 
@@ -223,7 +269,7 @@ def _format_episodes_context(episodes: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def _decide_episode(question: str) -> str:
+def _decide_episode(question: str, chat_history: list | None = None) -> str:
     """Responde preguntas directas sobre sesiones pasadas (carril episode)."""
     episodes: list[dict] = []
     try:
@@ -240,8 +286,11 @@ def _decide_episode(question: str) -> str:
 
     if episodes_with_content:
         context_text = _format_episodes_context(episodes_with_content)
-        return _synthesize_memory_answer(question, context_text,
-                                         f"Sesiones encontradas:\n{context_text}")
+        return _synthesize_memory_answer(
+            question, context_text,
+            f"Sesiones encontradas:\n{context_text}",
+            chat_history=chat_history,
+        )
 
     json_context = get_context_for("episode")
     if json_context:
@@ -277,8 +326,12 @@ def _handle_list_files(question: str) -> str:
 # Decisores internos por carril
 # ───────────────────────────────────────────────
 
-def _decide_memory(question: str) -> str:
-    """Responde desde memoria estructurada (R4-B multi-capa)."""
+def _decide_memory(question: str, chat_history: list | None = None) -> str:
+    """Responde desde memoria estructurada (R4-B multi-capa).
+
+    Fix C1: recibe chat_history y lo propaga a _synthesize_memory_answer
+    para que todas las síntesis LLM tengan contexto conversacional.
+    """
     intents = detect_memory_intents(question)
     log.debug("R4-B: intents detectados=%s para '%s'", intents, question[:60])
 
@@ -292,7 +345,7 @@ def _decide_memory(question: str) -> str:
         if not composed.strip():
             return _MEMORY_NOT_FOUND_MSG
         fallback = f"Información de memoria:\n{composed}"
-        return _synthesize_memory_answer(question, composed, fallback)
+        return _synthesize_memory_answer(question, composed, fallback, chat_history=chat_history)
 
     kind = intents[0]
     log.debug("Carril memory clasificado como: %s", kind)
@@ -312,7 +365,7 @@ def _decide_memory(question: str) -> str:
             return "No encontré hechos del proyecto."
         context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
         fallback = "**Hechos del proyecto:**\n" + context_text
-        return _synthesize_memory_answer(question, context_text, fallback)
+        return _synthesize_memory_answer(question, context_text, fallback, chat_history=chat_history)
 
     if kind == "work_state":
         w = get_work_state()
@@ -331,10 +384,10 @@ def _decide_memory(question: str) -> str:
             context_lines.append(f"- Bloqueos: {blockers.strip()}")
         context_text = "\n".join(context_lines)
         fallback = "**Estado de trabajo:**\n" + context_text
-        return _synthesize_memory_answer(question, context_text, fallback)
+        return _synthesize_memory_answer(question, context_text, fallback, chat_history=chat_history)
 
     if kind == "episode":
-        return _decide_episode(question)
+        return _decide_episode(question, chat_history=chat_history)
 
     log.debug("memory: tipo no reconocido '%s' — devolviendo not-found", kind)
     return _MEMORY_NOT_FOUND_MSG
@@ -496,7 +549,8 @@ def process_turn(
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
-        answer = _decide_memory(user_input)
+        # Fix C1: propagar chat_history al decisor de memoria
+        answer = _decide_memory(user_input, chat_history=chat_history)
         _record_metric(
             route=route,
             intent_type=memory_intent,
