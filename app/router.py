@@ -41,10 +41,11 @@ Fix B1:
   Antes '!estado' caía a embeddings y se enrutaba como 'memory' (incorrecto).
 
 Fix B2:
-  Nueva lista AGENT_IDENTITY_KEYWORDS → carril 'rag'.
+  Nueva lista AGENT_IDENTITY_KEYWORDS → carril 'identity'.
   Se evalúa ANTES de classify_memory_query en _route_by_keywords para que
   'quién eres tú', 'qué puedes hacer', etc. nunca lleguen al clasificador
-  de embeddings y no caigan erróneamente en el carril 'memory'.
+  de embeddings y no caigan erróneamente en el carril 'memory' ni 'rag'.
+  intelligence.py devuelve respuesta fija para este carril — 0ms, sin LLM.
 """
 from __future__ import annotations
 
@@ -186,9 +187,10 @@ MEMORY_EPISODE_KEYWORDS = [
     "última vez que", "ultima vez que",
 ]
 
-# Fix B2: keywords de identidad del agente → siempre van a 'rag'.
-# Se evalúan ANTES de classify_memory_query para evitar confusión con
-# preguntas sobre el usuario ('quién soy yo' → memory vs 'quién eres tú' → rag).
+# Fix B2 → feat: AGENT_IDENTITY_KEYWORDS ahora devuelve 'identity' (no 'rag').
+# intelligence.py maneja este carril con respuesta fija — 0ms, sin LLM.
+# Se evalúa ANTES de classify_memory_query para evitar confusión con
+# preguntas sobre el usuario ('quién soy yo' → memory vs 'quién eres tú' → identity).
 AGENT_IDENTITY_KEYWORDS = [
     "quién eres", "quien eres",
     "quién eres tú", "quien eres tu", "quien eres tú",
@@ -275,7 +277,7 @@ RAG_HINTS = [
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
-    "memory", "rag",
+    "memory", "rag", "identity",
     "unsupported",
 }
 
@@ -347,9 +349,9 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
-    # Fix B2: identidad del agente ANTES de classify_memory_query
+    # Identidad del agente ANTES de classify_memory_query
     # para que 'quién eres tú' no caiga en memory por similitud con 'quién soy yo'
-    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "rag"
+    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
 
     if classify_memory_query(question) is not None:           return "memory"
 
@@ -427,7 +429,7 @@ def format_estado() -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Returns str con el carril ('rag', 'memory', 'tool_*', 'unsupported', 'exit').
+    Returns str con el carril ('rag', 'memory', 'identity', 'tool_*', 'unsupported', 'exit').
     Nunca retorna None ni lanza excepciones — fallback a 'rag'.
     """
     if question.lower().strip() in _EXIT_WORDS:
