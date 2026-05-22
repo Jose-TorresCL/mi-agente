@@ -24,6 +24,10 @@ D3  — umbral episódico propio en intelligence.py (CERRADO):
   _MIN_EXPERIENCE_SCORE = 0.70 en _retrieve_rag_context().
   Se usa experience_lookup_with_score() que expone el score explícitamente.
   intelligence.py decide si inyectar — no depende del umbral de episode_store.
+D4-B — prompt de resumen episódico reducido (CERRADO):
+  3 líneas → 2 líneas. num_predict 80 → 45. temperature 0.2 → 0.1.
+  Razón: el resumen solo necesita ser buscable semánticamente, no literario.
+  Reducción estimada de latencia al salir: ~40% en CPU sin GPU.
 D5  — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO).
 R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO).
 R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
@@ -507,22 +511,26 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
+    """D4-B: prompt reducido a 2 líneas y num_predict=45 para bajar latencia ~40% en CPU.
+
+    El resumen episódico solo necesita ser buscable semánticamente.
+    2 líneas (tema+decisión / siguiente paso) son suficientes para search_episodes().
+    """
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
     if turns > 0:
         log.info("Guardando resumen episódico (%d turnos)", turns)
         history_text = _compress_history(chat_history)
+        # D4-B: 2 líneas en vez de 3, 45 tokens en vez de 80, temperature 0.1
         prompt = (
-            "Eres un asistente que resume sesiones de trabajo.\n"
-            "Resume la siguiente conversación en exactamente 3 líneas en español.\n"
-            "Línea 1: tema principal tratado.\n"
-            "Línea 2: qué se logró o decidió.\n"
-            "Línea 3: cuál es el siguiente paso pendiente.\n"
-            "Sin bullet points ni numeración. Solo 3 líneas.\n\n"
+            "Resume esta conversación en exactamente 2 líneas en español.\n"
+            "Línea 1: tema principal y decisión tomada.\n"
+            "Línea 2: siguiente paso pendiente.\n"
+            "Sin bullet points ni numeración. Solo 2 líneas.\n\n"
             f"Conversación:\n{history_text}\n\nResumen:"
         )
-        generated = generate_raw(prompt, temperature=0.2, num_predict=80,
+        generated = generate_raw(prompt, temperature=0.1, num_predict=45,
                                  timeout=_EPISODE_TIMEOUT)
         if generated:
             summary = generated
