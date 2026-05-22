@@ -53,11 +53,40 @@ Fix C2 — cliente LLM unificado (CERRADO):
   Ambas usan generate_raw() de rag_engine, que aprovecha el mismo ChatOllama
   singleton que build_chain(). Un único cliente LLM en todo el proyecto.
   Se elimina el import de 'requests' de este archivo.
+
+R5-MoA — separación recuperador / sintetizador en _decide_memory (CERRADO):
+  Aplica el patrón Mixture-of-Agents (Together AI, 2024) a escala de módulo:
+  no requiere múltiples modelos — requiere múltiples roles claros.
+
+  Antes: _decide_memory() mezclaba en un solo punto detectar intents,
+  abrir cajones JSON, formatear texto y llamar al LLM. Un único punto de falla.
+
+  Ahora:
+    _retrieve_memory_context(question)     ← AGENTE RECUPERADOR
+      - Detecta intents.
+      - Abre cajones (profile, tasks, project_facts, work_state, episode).
+      - Formatea el texto de contexto.
+      - Devuelve MemoryContext (TypedDict) con {context_text, fallback, sources}.
+      - No sabe nada del LLM.
+
+    _synthesize_memory_answer(...)         ← AGENTE SINTETIZADOR
+      - Recibe contexto limpio + historial.
+      - Construye el prompt y llama a generate_raw().
+      - No sabe nada de JSON ni de qué cajón se abrió.
+
+    _decide_memory(question, chat_history) ← ORQUESTADOR
+      - Llama al recuperador, obtiene MemoryContext.
+      - Si el contexto está vacío devuelve fallback directo sin tocar el LLM.
+      - Si el tipo es profile o tasks (estructurado), formatea sin LLM.
+      - Si necesita síntesis, llama al sintetizador con el contexto limpio.
+
+  Beneficio: agregar un sexto tipo de memoria (ej: 'rules') solo requiere
+  tocar _retrieve_memory_context(). El sintetizador no cambia.
 """
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -88,8 +117,7 @@ log = get_logger(__name__)
 # Timeout para la llamada de resumen episódico (en segundos).
 _EPISODE_TIMEOUT = 20
 
-# Fix B3: timeout de síntesis subido de 10s a 30s para evitar timeouts
-# cuando Ollama está ocupado generando otra respuesta simultáneamente.
+# Fix B3: timeout de síntesis subido de 10s a 30s.
 _MEMORY_SYNTHESIS_TIMEOUT = 30
 
 # Longitud máxima por línea de historial comprimido (chars).
@@ -105,7 +133,7 @@ _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuá
 _IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                       "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 
-# Fix B4: palabras que indican que el usuario quiere ver tareas COMPLETADAS.
+# Fix B4: palabras que indican tareas COMPLETADAS.
 _DONE_TASK_KEYWORDS = {
     "hechas", "hecho", "completadas", "completada", "completado",
     "cerradas", "cerrada", "terminadas", "terminada", "listas", "lista",
@@ -122,7 +150,7 @@ _UNSUPPORTED_MSG = (
     "consultar tareas y estado de trabajo."
 )
 
-# Fix 6A: mensaje cuando route=memory pero el tipo no es reconocido.
+# Mensaje cuando route=memory pero sin tipo reconocido.
 _MEMORY_NOT_FOUND_MSG = (
     "No encontré información relevante en la memoria para esa pregunta. "
     "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
@@ -131,7 +159,30 @@ _MEMORY_NOT_FOUND_MSG = (
 
 
 # ───────────────────────────────────────────────
-# Helpers de formato — carril memory
+# TypedDict del resultado de recuperación de memoria (R5-MoA)
+# ───────────────────────────────────────────────
+
+class MemoryContext(TypedDict):
+    """Contrato de salida del AGENTE RECUPERADOR (_retrieve_memory_context).
+
+    context_text : texto plano con los datos recuperados de los cajones JSON.
+                   Listo para inyectar en el prompt del sintetizador.
+    fallback     : respuesta estructurada (sin LLM) que se usa si el
+                   sintetizador falla o si el tipo no necesita LLM
+                   (por ejemplo, profile y tasks).
+    sources      : lista de tipos de memoria abiertos. Útil para logging
+                   y para que el orquestador decida si necesita LLM.
+    needs_llm    : True si la respuesta requiere síntesis LLM.
+                   False si el fallback estructurado es suficiente.
+    """
+    context_text: str
+    fallback: str
+    sources: list[str]
+    needs_llm: bool
+
+
+# ───────────────────────────────────────────────
+# Helpers de formato (sin LLM)
 # ───────────────────────────────────────────────
 
 def _format_profile_answer(profile: dict) -> str:
@@ -149,11 +200,7 @@ def _format_profile_answer(profile: dict) -> str:
 
 
 def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
-    """Formatea tareas según lo que pide el usuario.
-
-    Fix B4: si la pregunta menciona tareas 'hechas/completadas',
-    muestra solo las completadas. Si no, muestra solo las pendientes.
-    """
+    """Fix B4: distingue tareas hechas vs pendientes según keywords en la pregunta."""
     tasks = tasks_data.get("tasks", [])
     q_lower = question.lower()
     wants_done = any(kw in q_lower for kw in _DONE_TASK_KEYWORDS)
@@ -196,17 +243,208 @@ def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_H
     return "\n".join(lines)
 
 
+def _format_episodes_context(episodes: list[dict]) -> str:
+    """Formatea episodios de Chroma en texto legible para el sintetizador."""
+    lines = []
+    for i, ep in enumerate(episodes, 1):
+        lines.append(
+            f"Sesión {i} ({ep.get('date', '?')} {ep.get('time', '')}, "
+            f"{ep.get('turns', 0)} turnos, relevancia: {ep.get('score', 0):.2f}):"
+        )
+        summary = ep.get("summary", "").strip()
+        if summary.startswith("["):
+            newline_pos = summary.find("\n")
+            summary = summary[newline_pos + 1:].strip() if newline_pos != -1 else summary
+        lines.append(f"  {summary}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+# ───────────────────────────────────────────────
+# R5-MoA — AGENTE RECUPERADOR
+# ───────────────────────────────────────────────
+
+def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext:
+    """AGENTE RECUPERADOR (R5-MoA): abre cajones de memoria y devuelve contexto limpio.
+
+    No sabe nada del LLM. Solo recupera, formatea y empaqueta.
+    El orquestador (_decide_memory) decide si enviar el resultado al
+    sintetizador o devolver el fallback directamente.
+
+    Args:
+        question: pregunta original del usuario.
+        intents:  lista de tipos de memoria detectados (no vacía).
+
+    Returns:
+        MemoryContext con context_text, fallback, sources y needs_llm.
+    """
+    # ─── Multi-capa: si hay más de un intent, composición de cajones ───
+    if len(intents) > 1:
+        composed = get_composed_context(intents)
+        if not composed.strip():
+            return MemoryContext(
+                context_text="",
+                fallback=_MEMORY_NOT_FOUND_MSG,
+                sources=intents,
+                needs_llm=False,
+            )
+        return MemoryContext(
+            context_text=composed,
+            fallback=f"Información de memoria:\n{composed}",
+            sources=intents,
+            needs_llm=True,
+        )
+
+    kind = intents[0]
+
+    # ─── profile: estructurado, sin LLM ───
+    if kind == "profile":
+        p = get_profile()
+        if not p:
+            return MemoryContext(
+                context_text="",
+                fallback="No encontré información de perfil.",
+                sources=["profile"],
+                needs_llm=False,
+            )
+        return MemoryContext(
+            context_text="",  # profile usa fallback directo
+            fallback=_format_profile_answer(p),
+            sources=["profile"],
+            needs_llm=False,
+        )
+
+    # ─── tasks: estructurado, sin LLM ───
+    if kind == "tasks":
+        t = get_tasks()
+        if not t:
+            return MemoryContext(
+                context_text="",
+                fallback="No encontré tareas registradas.",
+                sources=["tasks"],
+                needs_llm=False,
+            )
+        return MemoryContext(
+            context_text="",  # tasks usa fallback directo
+            fallback=_format_tasks_answer(t, question=question),
+            sources=["tasks"],
+            needs_llm=False,
+        )
+
+    # ─── project_facts: texto plano, necesita síntesis LLM ───
+    if kind == "project_facts":
+        f = get_project_facts()
+        if not f:
+            return MemoryContext(
+                context_text="",
+                fallback="No encontré hechos del proyecto.",
+                sources=["project_facts"],
+                needs_llm=False,
+            )
+        context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
+        return MemoryContext(
+            context_text=context_text,
+            fallback="**Hechos del proyecto:**\n" + context_text,
+            sources=["project_facts"],
+            needs_llm=True,
+        )
+
+    # ─── work_state: texto plano, necesita síntesis LLM ───
+    if kind == "work_state":
+        w = get_work_state()
+        if not w:
+            return MemoryContext(
+                context_text="",
+                fallback="No encontré estado de trabajo.",
+                sources=["work_state"],
+                needs_llm=False,
+            )
+        _ws_fields = [
+            ("current_focus",  "Foco actual"),
+            ("last_completed", "Último paso completado"),
+            ("next_step",      "Siguiente paso"),
+        ]
+        context_lines = [f"- {label}: {w.get(k, 'sin definir')}" for k, label in _ws_fields]
+        blockers = w.get("current_blockers", [])
+        if isinstance(blockers, list) and blockers:
+            context_lines.append(f"- Bloqueos: {', '.join(blockers)}")
+        elif isinstance(blockers, str) and blockers.strip():
+            context_lines.append(f"- Bloqueos: {blockers.strip()}")
+        context_text = "\n".join(context_lines)
+        return MemoryContext(
+            context_text=context_text,
+            fallback="**Estado de trabajo:**\n" + context_text,
+            sources=["work_state"],
+            needs_llm=True,
+        )
+
+    # ─── episode: recupera desde Chroma, necesita síntesis LLM ───
+    if kind == "episode":
+        episodes: list[dict] = []
+        try:
+            from app.episode_store import search_episodes
+            episodes = search_episodes(question, k=3)
+        except Exception as exc:
+            log.warning("[episode] search_episodes falló: %s", exc)
+
+        _EMPTY_MARKER = "Resumen no disponible"
+        episodes_with_content = [
+            ep for ep in episodes
+            if _EMPTY_MARKER not in ep.get("summary", "")
+        ]
+
+        if episodes_with_content:
+            context_text = _format_episodes_context(episodes_with_content)
+            return MemoryContext(
+                context_text=context_text,
+                fallback=f"Sesiones encontradas:\n{context_text}",
+                sources=["episode"],
+                needs_llm=True,
+            )
+
+        # Fallback: JSON plano
+        json_context = get_context_for("episode")
+        if json_context:
+            return MemoryContext(
+                context_text="",
+                fallback=json_context,
+                sources=["episode"],
+                needs_llm=False,
+            )
+        return MemoryContext(
+            context_text="",
+            fallback="No encontré sesiones anteriores registradas con información relevante.",
+            sources=["episode"],
+            needs_llm=False,
+        )
+
+    # tipo desconocido
+    log.debug("_retrieve_memory_context: tipo no reconocido '%s'", kind)
+    return MemoryContext(
+        context_text="",
+        fallback=_MEMORY_NOT_FOUND_MSG,
+        sources=[kind],
+        needs_llm=False,
+    )
+
+
+# ───────────────────────────────────────────────
+# R5-MoA — AGENTE SINTETIZADOR
+# ───────────────────────────────────────────────
+
 def _synthesize_memory_answer(
     question: str,
     context_text: str,
     fallback: str,
     chat_history: list | None = None,
 ) -> str:
-    """Llama al LLM para sintetizar una respuesta de memoria.
+    """AGENTE SINTETIZADOR (R5-MoA): recibe contexto limpio y genera la respuesta.
 
-    Fix C1: inyecta los últimos turnos del historial en el prompt.
-    Fix C2: usa generate_raw() de rag_engine en vez de requests.post() directo.
-            Un único cliente LLM (ChatOllama singleton) en todo el proyecto.
+    No sabe nada de JSON ni de qué cajón se abrió.
+    Solo construye el prompt, llama a generate_raw() y devuelve texto.
+
+    Fix C1: inyecta últimos turnos del historial en el prompt.
+    Fix C2: usa generate_raw() (ChatOllama singleton), no requests.post().
     """
     history_snippet = _build_history_snippet(chat_history)
     history_block = (
@@ -226,7 +464,6 @@ def _synthesize_memory_answer(
         f"Pregunta: {question}\n\nRespuesta:"
     )
 
-    # Fix C2: generate_raw() usa ChatOllama singleton, no requests.post() directo.
     answer = generate_raw(
         prompt,
         temperature=0.3,
@@ -240,50 +477,46 @@ def _synthesize_memory_answer(
     return fallback
 
 
-def _format_episodes_context(episodes: list[dict]) -> str:
-    """Formatea una lista de episodios recuperados de Chroma en texto legible."""
-    lines = []
-    for i, ep in enumerate(episodes, 1):
-        lines.append(
-            f"Sesión {i} ({ep.get('date', '?')} {ep.get('time', '')}, "
-            f"{ep.get('turns', 0)} turnos, relevancia: {ep.get('score', 0):.2f}):"
-        )
-        summary = ep.get("summary", "").strip()
-        if summary.startswith("["):
-            newline_pos = summary.find("\n")
-            summary = summary[newline_pos + 1:].strip() if newline_pos != -1 else summary
-        lines.append(f"  {summary}")
-        lines.append("")
-    return "\n".join(lines).strip()
+# ───────────────────────────────────────────────
+# R5-MoA — ORQUESTADOR de memoria
+# ───────────────────────────────────────────────
 
+def _decide_memory(question: str, chat_history: list | None = None) -> str:
+    """ORQUESTADOR (R5-MoA): coordina recuperador y sintetizador.
 
-def _decide_episode(question: str, chat_history: list | None = None) -> str:
-    """Responde preguntas directas sobre sesiones pasadas (carril episode)."""
-    episodes: list[dict] = []
-    try:
-        from app.episode_store import search_episodes
-        episodes = search_episodes(question, k=3)
-    except Exception as exc:
-        log.warning("[episode] search_episodes falló, usando fallback JSON: %s", exc)
+    Flujo:
+      1. Detecta intents (tipos de memoria).
+      2. Llama al recuperador para obtener MemoryContext.
+      3. Si no hay contexto ni necesita LLM, devuelve fallback directo.
+      4. Si needs_llm=False (profile, tasks), devuelve fallback estructurado.
+      5. Si needs_llm=True, delega al sintetizador con el contexto limpio.
+    """
+    intents = detect_memory_intents(question)
+    log.debug("R5-MoA: intents detectados=%s para '%s'", intents, question[:60])
 
-    _EMPTY_MARKER = "Resumen no disponible"
-    episodes_with_content = [
-        ep for ep in episodes
-        if _EMPTY_MARKER not in ep.get("summary", "")
-    ]
+    if not intents:
+        log.debug("memory: ningún tipo detectado — devolviendo not-found")
+        return _MEMORY_NOT_FOUND_MSG
 
-    if episodes_with_content:
-        context_text = _format_episodes_context(episodes_with_content)
-        return _synthesize_memory_answer(
-            question, context_text,
-            f"Sesiones encontradas:\n{context_text}",
-            chat_history=chat_history,
-        )
+    # PASO 1: recuperador obtiene el contexto
+    mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
+    log.debug(
+        "R5-MoA: recuperador terminó [sources=%s needs_llm=%s ctx_len=%d]",
+        mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]),
+    )
 
-    json_context = get_context_for("episode")
-    if json_context:
-        return json_context
-    return "No encontré sesiones anteriores registradas con información relevante."
+    # PASO 2: orquestador decide si necesita sintetizador
+    if not mem_ctx["needs_llm"]:
+        # profile, tasks, episodio vacío — respuesta directa sin LLM
+        return mem_ctx["fallback"]
+
+    # PASO 3: sintetizador recibe contexto limpio
+    return _synthesize_memory_answer(
+        question,
+        mem_ctx["context_text"],
+        mem_ctx["fallback"],
+        chat_history=chat_history,
+    )
 
 
 # ───────────────────────────────────────────────
@@ -311,74 +544,8 @@ def _handle_list_files(question: str) -> str:
 
 
 # ───────────────────────────────────────────────
-# Decisores internos por carril
+# Decisores internos — otros carriles
 # ───────────────────────────────────────────────
-
-def _decide_memory(question: str, chat_history: list | None = None) -> str:
-    """Responde desde memoria estructurada (R4-B multi-capa).
-
-    Fix C1: recibe chat_history y lo propaga a _synthesize_memory_answer.
-    Fix C2: _synthesize_memory_answer ya usa generate_raw() internamente.
-    """
-    intents = detect_memory_intents(question)
-    log.debug("R4-B: intents detectados=%s para '%s'", intents, question[:60])
-
-    if not intents:
-        log.debug("memory: ningún tipo detectado — devolviendo not-found")
-        return _MEMORY_NOT_FOUND_MSG
-
-    if len(intents) > 1:
-        log.debug("R4-B: composición multi-capa con %d tipos: %s", len(intents), intents)
-        composed = get_composed_context(intents)
-        if not composed.strip():
-            return _MEMORY_NOT_FOUND_MSG
-        fallback = f"Información de memoria:\n{composed}"
-        return _synthesize_memory_answer(question, composed, fallback, chat_history=chat_history)
-
-    kind = intents[0]
-    log.debug("Carril memory clasificado como: %s", kind)
-
-    if kind == "profile":
-        p = get_profile()
-        return _format_profile_answer(p) if p else "No encontré información de perfil."
-
-    if kind == "tasks":
-        t = get_tasks()
-        return _format_tasks_answer(t, question=question) if t else "No encontré tareas registradas."
-
-    if kind == "project_facts":
-        f = get_project_facts()
-        if not f:
-            return "No encontré hechos del proyecto."
-        context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
-        fallback = "**Hechos del proyecto:**\n" + context_text
-        return _synthesize_memory_answer(question, context_text, fallback, chat_history=chat_history)
-
-    if kind == "work_state":
-        w = get_work_state()
-        if not w:
-            return "No encontré estado de trabajo."
-        _ws_fields = [
-            ("current_focus",  "Foco actual"),
-            ("last_completed", "Último paso completado"),
-            ("next_step",      "Siguiente paso"),
-        ]
-        context_lines = [f"- {label}: {w.get(k, 'sin definir')}" for k, label in _ws_fields]
-        blockers = w.get("current_blockers", [])
-        if isinstance(blockers, list) and blockers:
-            context_lines.append(f"- Bloqueos: {', '.join(blockers)}")
-        elif isinstance(blockers, str) and blockers.strip():
-            context_lines.append(f"- Bloqueos: {blockers.strip()}")
-        context_text = "\n".join(context_lines)
-        fallback = "**Estado de trabajo:**\n" + context_text
-        return _synthesize_memory_answer(question, context_text, fallback, chat_history=chat_history)
-
-    if kind == "episode":
-        return _decide_episode(question, chat_history=chat_history)
-
-    log.debug("memory: tipo no reconocido '%s' — devolviendo not-found", kind)
-    return _MEMORY_NOT_FOUND_MSG
-
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
     lines: list[str] = []
@@ -412,7 +579,6 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
             f"Conversación:\n{history_text}\n\nResumen:"
         )
 
-        # Fix C2: generate_raw() reemplaza requests.post() directo.
         generated = generate_raw(
             prompt,
             temperature=0.2,
@@ -426,7 +592,6 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
-
     return "__EXIT__", []
 
 
