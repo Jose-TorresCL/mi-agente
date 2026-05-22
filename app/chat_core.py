@@ -11,6 +11,10 @@ Contrato público
 Dirección de dependencias:
     chat_core  →  intelligence  →  memory_manager / rag_engine / ...
     chat_core  NO importa router, rag_engine, fidelity_check ni tools directamente.
+
+E3: process_turn ahora devuelve DecisionResult (TypedDict).
+    handle_query desempaqueta result["response"] y result.get("source_docs", []).
+    El contrato público de handle_query (str, list) no cambia.
 """
 from __future__ import annotations
 
@@ -85,8 +89,8 @@ def handle_query(
     """Clasifica la consulta, construye TurnContext y delega a process_turn().
 
     TurnContext agrupa los 4 parámetros del turno en un dict tipado.
-    process_turn() desempaqueta el contexto internamente — el contrato
-    de retorno (str, list) no cambia.
+    process_turn() devuelve DecisionResult — se desempaquetan response y
+    source_docs para mantener el contrato público (str, list) de handle_query.
 
     Returns:
         (respuesta, source_docs)  — source_docs puede ser lista vacía.
@@ -104,7 +108,17 @@ def handle_query(
     )
 
     # Delegar procesamiento completo a la capa de inteligencia
-    answer, source_docs = process_turn(ctx)
+    # E3: process_turn devuelve DecisionResult — desempaquetar campos explícitos
+    result      = process_turn(ctx)
+    answer      = result["response"]
+    source_docs = result.get("source_docs", [])
+
+    # Log de métricas disponibles desde DecisionResult
+    log.debug(
+        "[handle_query] route=%s source=%s cached=%s llm_ms=%s retrieval_ms=%s",
+        result.get("route"), result.get("source"), result.get("cached"),
+        result.get("llm_ms"), result.get("retrieval_ms"),
+    )
 
     # Persistir historial solo si no es exit ni respuesta de error de fidelidad
     if answer != "__EXIT__":

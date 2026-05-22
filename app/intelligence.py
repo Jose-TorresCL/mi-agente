@@ -1,7 +1,7 @@
 """Capa de inteligencia — orquestador de decisión.
 
 Responsabilidad única: dado un carril ya clasificado, decidir qué hacer
-y devolver (respuesta, source_docs).
+y devolver DecisionResult.
 
 NO conoce chat.py ni chat_ui.py.
 NO persiste historial de conversación — eso es responsabilidad de chat_core.
@@ -10,8 +10,8 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 
 Contrato público
 ────────────────
-    process_turn(ctx: TurnContext) -> tuple[str, list]
-    process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]  # legacy
+    process_turn(ctx: TurnContext) -> DecisionResult
+    process_turn(route, user_input, vectordb, chat_history) -> DecisionResult  # legacy
 
     Ambas formas son equivalentes. chat_core usa TurnContext (forma nueva).
     Los tests que llaman a process_turn directamente con 4 args siguen funcionando.
@@ -36,6 +36,7 @@ D5  — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO).
 R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO).
 R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
 TurnContext — process_turn acepta TurnContext o 4 args sueltos (CERRADO).
+E3  — process_turn devuelve DecisionResult en vez de tuple (CERRADO).
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
 from app.prompts import QA_SYSTEM_PROMPT, MEMORY_SYNTHESIS_PROMPT
 from app.tool_helpers import list_project_files
-from app.schemas import TurnContext
+from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
@@ -515,12 +516,8 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     return "\n".join(lines)
 
 
-def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """D4-B: prompt reducido a 2 líneas y num_predict=45 para bajar latencia ~40% en CPU.
-
-    El resumen episódico solo necesita ser buscable semánticamente.
-    2 líneas (tema+decisión / siguiente paso) son suficientes para search_episodes().
-    """
+def _decide_exit(chat_history: list) -> DecisionResult:
+    """D4-B: prompt reducido a 2 líneas y num_predict=45 para bajar latencia ~40% en CPU."""
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -543,7 +540,16 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
-    return "__EXIT__", []
+    return DecisionResult(
+        route="exit",
+        response="__EXIT__",
+        cached=False,
+        source="direct",
+        source_docs=[],
+        retrieval_ms=0,
+        llm_ms=0,
+        tokens_est=0,
+    )
 
 
 # ───────────────────────────────────────────────────
@@ -555,19 +561,24 @@ def process_turn(
     user_input: str | None = None,
     vectordb: Any = None,
     chat_history: list | None = None,
-) -> tuple[str, list]:
+) -> DecisionResult:
     """Punto de entrada único de la capa de inteligencia.
 
     Acepta dos formas de llamada equivalentes:
 
     Forma nueva (TurnContext) — usada por chat_core:
         ctx = TurnContext(route="rag", query=user_input, vectordb=db, chat_history=hist)
-        answer, docs = process_turn(ctx)
+        result = process_turn(ctx)
+        answer = result["response"]
+        docs   = result.get("source_docs", [])
 
     Forma legacy (4 args) — usada por tests existentes:
-        answer, docs = process_turn(route, user_input, vectordb, chat_history)
+        result = process_turn(route, user_input, vectordb, chat_history)
+        answer = result["response"]
 
-    Ambas formas son equivalentes. La forma legacy sigue funcionando sin cambios.
+    Retorna DecisionResult con campos explícitos:
+        route, response, cached, source, source_docs,
+        retrieval_ms, llm_ms, tokens_est
     """
     # Desempaquetar TurnContext si se recibe como primer argumento
     if isinstance(route_or_ctx, dict):
@@ -586,23 +597,45 @@ def process_turn(
 
     t_start = time.perf_counter()
 
+    # ── exit ────────────────────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
         _record_metric(route="exit", intent_type="exit")
         return result
 
+    # ── tool_list_files ──────────────────────────────────────────────────────
     if route == "tool_list_files":
         answer = _handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files")
-        return answer, []
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="tool",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
 
+    # ── tools registradas ───────────────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool(route, user_input)
-        _record_metric(route=route, intent_type=route,
-                       llm_ms=int((time.perf_counter() - t0) * 1000))
-        return answer, []
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms)
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="tool",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=llm_ms,
+            tokens_est=0,
+        )
 
+    # ── memory ──────────────────────────────────────────────────────────────
     if route == "memory":
         t0 = time.perf_counter()
         # D5: detect_memory_intents se llama UNA sola vez aquí.
@@ -611,22 +644,53 @@ def process_turn(
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
         answer = _decide_memory(user_input, intents=intents, chat_history=chat_history)
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        tokens_est = int(len(answer.split()) * 1.3)
         _record_metric(route=route, intent_type=memory_intent,
-                       llm_ms=int((time.perf_counter() - t0) * 1000),
-                       tokens_est=int(len(answer.split()) * 1.3))
-        return answer, []
+                       llm_ms=llm_ms, tokens_est=tokens_est)
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="json",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=llm_ms,
+            tokens_est=tokens_est,
+        )
 
+    # ── unsupported ─────────────────────────────────────────────────────────
     if route == "unsupported":
         _record_metric(route=route, intent_type="unsupported")
-        return _UNSUPPORTED_MSG, []
+        return DecisionResult(
+            route=route,
+            response=_UNSUPPORTED_MSG,
+            cached=False,
+            source="direct",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
 
+    # ── rag (fallback) ───────────────────────────────────────────────────────
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route=route
     )
+    tokens_est = int(len(answer.split()) * 1.3)
     _record_metric(
         route=route, intent_type=route,
         retrieval_ms=retrieval_ms, llm_ms=llm_ms,
-        tokens_est=int(len(answer.split()) * 1.3),
+        tokens_est=tokens_est,
         cached=cached, num_docs=len(source_docs),
     )
-    return answer, source_docs
+    return DecisionResult(
+        route=route,
+        response=answer,
+        cached=cached,
+        source="cache" if cached else "chroma",
+        source_docs=source_docs,
+        retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms,
+        tokens_est=tokens_est,
+    )
