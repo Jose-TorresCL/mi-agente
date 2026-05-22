@@ -11,10 +11,10 @@ Flujo de uso normal:
   2. intelligence.py carril 'episode' llama search_episodes() para responder
      preguntas directas sobre sesiones pasadas.
   3. intelligence.py _retrieve_rag_context() llama experience_lookup_with_score()
-     y aplica su propio umbral _MIN_EXPERIENCE_SCORE (D3).
-  4. experience_lookup() sigue disponible para compatibilidad — delega
-     en experience_lookup_with_score() internamente.
-  5. (8C) al cerrar sesión, close_session_episode() pregunta al usuario y
+     para inyectar contexto episódico relevante en todos los carriles RAG.
+     El score se expone explícitamente para que intelligence.py aplique
+     su propio umbral (_MIN_EXPERIENCE_SCORE = 0.70) — D3.
+  4. (8C) al cerrar sesión, close_session_episode() pregunta al usuario y
      llama mark_episode() para marcar exitoso=True/False.
 
 Convenciones:
@@ -44,18 +44,16 @@ log = get_logger("episode_store")
 # Constantes
 # ─────────────────────────────────────────────
 
-EPISODE_COLLECTION   = "experience_index"          # renombrado de 'episodios' (8A-v2)
+EPISODE_COLLECTION   = "experience_index"
 EPISODIC_MEMORY_FILE = Path("storage") / "episodic_memory.json"
 CHROMA_DIR           = Path("storage") / "chroma"
 
 # Score mínimo para que search_episodes() lo considere relevante en búsqueda directa.
 _MIN_RELEVANCE_SCORE = 0.20
 
-# Score para inyección automática en contexto RAG (experience_lookup).
-# NOTA D3: este umbral es el default del store. intelligence.py aplica
-# su propio umbral _MIN_EXPERIENCE_SCORE = 0.70 sobre el score devuelto
-# por experience_lookup_with_score(). No son redundantes: este filtra
-# ruido extremo; el de intelligence filtra relevancia semántica real.
+# Score para inyección automática en contexto RAG (experience_lookup legacy).
+# D3: este umbral es ahora responsabilidad de intelligence.py (_MIN_EXPERIENCE_SCORE).
+# Se mantiene aquí solo como fallback para experience_lookup() (compatibilidad).
 EXPERIENCE_INJECT_THRESHOLD = 0.80
 
 # Boost aplicado a episodios exitosos en search_episodes() (8C).
@@ -68,18 +66,11 @@ _FALLIDO_HIDE_THRESHOLD = 0.65
 # Inicialización lazy del cliente Chroma
 # ─────────────────────────────────────────────
 
-_collection = None  # instancia lazy: se crea al primer uso
+_collection = None
 
 
 def _get_collection():
-    """Devuelve (creando si no existe) la colección 'experience_index' en Chroma.
-
-    Usa OllamaEmbeddings con el mismo modelo que el RAG de documentos
-    para que los vectores sean comparables semánticamente.
-
-    Returns:
-        langchain_chroma.Chroma | None  — None si Chroma/Ollama no están disponibles.
-    """
+    """Devuelve (creando si no existe) la colección 'experience_index' en Chroma."""
     global _collection
     if _collection is not None:
         return _collection
@@ -105,41 +96,21 @@ def _get_collection():
 # ─────────────────────────────────────────────
 
 def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
-    """Convierte un EpisodeItem a (id, metadata, page_content) para Chroma.
-
-    El `page_content` es el resumen del episodio — es lo que se embeddea
-    y se usa para la búsqueda semántica.
-
-    El `id` es 'YYYY-MM-DDTHH:MM' para garantizar unicidad y orden.
-
-    Metadatos enriquecidos (8A-v2):
-      - carril_dominante:   carril más usado en la sesión (str, default 'unknown')
-      - tareas_completadas: número de tareas marcadas done en la sesión (int)
-      - exitoso:            True/False/None (None = sin marcar aún)
-
-    Args:
-        episode: dict con keys date, time, turns, summary y opcionales
-                 carril_dominante, tareas_completadas, exitoso.
-
-    Returns:
-        Tupla (doc_id, metadata, text_content).
-    """
+    """Convierte un EpisodeItem a (id, metadata, page_content) para Chroma."""
     date    = episode.get("date", "unknown")
     time_   = episode.get("time", "00:00")
     turns   = episode.get("turns", 0)
     summary = episode.get("summary", "").strip()
 
-    # Metadatos enriquecidos — valores por defecto si no están en el episodio
     carril_dominante   = episode.get("carril_dominante", "unknown")
     tareas_completadas = episode.get("tareas_completadas", 0)
-    # Chroma no almacena None como metadato — se convierte a string sentinel
     exitoso_raw = episode.get("exitoso", None)
     if exitoso_raw is True:
         exitoso_str = "true"
     elif exitoso_raw is False:
         exitoso_str = "false"
     else:
-        exitoso_str = "unmarked"   # valor sentinel — sin marcar aún
+        exitoso_str = "unmarked"
 
     doc_id   = f"{date}T{time_}"
     metadata = {
@@ -151,36 +122,60 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
         "tareas_completadas": tareas_completadas,
         "exitoso":            exitoso_str,
     }
-    # El texto indexado combina fecha + resumen para que
-    # preguntas como '¿qué pasó el 18 de mayo?' también funcionen.
     content = f"[{date} {time_}] ({turns} turnos)\n{summary}"
     return doc_id, metadata, content
 
 
-def _build_experience_snippet(doc, score: float) -> str:
-    """Formatea un documento episódico como snippet listo para inyectar en RAG.
+def _extract_best_candidate(
+    results: list,
+    inject_threshold: float,
+) -> tuple[str, float] | tuple[None, float]:
+    """Helper interno: selecciona el mejor episodio candidato para inyección.
 
-    Extrae el resumen limpio (sin encabezado [fecha hora]) y construye
-    el texto con metadatos de trazabilidad.
+    Aplica la misma lógica de preferencia que experience_lookup():
+      exitosos > unmarked > fallidos (solo si no hay alternativas).
 
     Args:
-        doc:   Documento Chroma con page_content y metadata.
-        score: Score de similitud semántica.
+        results: lista de (doc, score) de Chroma.
+        inject_threshold: score mínimo para considerar inyección.
 
     Returns:
-        String formateado para prepend en context_text RAG.
+        (snippet_text, score) del mejor candidato, o (None, 0.0) si no hay.
     """
-    date = doc.metadata.get("date", "?")
-    time_ = doc.metadata.get("time", "?")
-    summary_text = doc.page_content
-    # Limpiar encabezado [fecha hora] si está incluido en el content
+    candidates = [
+        (doc, score) for doc, score in results
+        if score >= inject_threshold
+    ]
+    if not candidates:
+        return None, 0.0
+
+    successful = [(d, s) for d, s in candidates if d.metadata.get("exitoso") == "true"]
+    unmarked   = [(d, s) for d, s in candidates if d.metadata.get("exitoso", "unmarked") == "unmarked"]
+    failed     = [(d, s) for d, s in candidates if d.metadata.get("exitoso") == "false"]
+
+    if successful:
+        selected = successful
+    elif unmarked:
+        selected = unmarked
+    else:
+        selected = failed
+
+    if not selected:
+        return None, 0.0
+
+    best_doc, best_score = max(selected, key=lambda x: x[1])
+    date      = best_doc.metadata.get("date", "?")
+    time_     = best_doc.metadata.get("time", "?")
+    summary_text = best_doc.page_content
     if summary_text.startswith("["):
         nl = summary_text.find("\n")
         summary_text = summary_text[nl + 1:].strip() if nl != -1 else summary_text
-    return (
-        f"[Experiencia previa relevante — {date} {time_}, score={score:.2f}]\n"
+
+    snippet = (
+        f"[Experiencia previa relevante — {date} {time_}, score={best_score:.2f}]\n"
         f"{summary_text}"
     )
+    return snippet, best_score
 
 
 # ─────────────────────────────────────────────
@@ -188,20 +183,7 @@ def _build_experience_snippet(doc, score: float) -> str:
 # ─────────────────────────────────────────────
 
 def index_episode(episode: dict) -> bool:
-    """Indexa un único episodio en Chroma (experience_index).
-
-    Idempotente: si el episodio ya existe (mismo ID), Chroma lo actualiza
-    sin duplicar.
-
-    Args:
-        episode: dict con keys date, time, turns, summary y opcionales
-                 carril_dominante, tareas_completadas, exitoso.
-
-    Returns:
-        True si se indexó correctamente, False si Chroma no está disponible.
-
-    Never raises.
-    """
+    """Indexa un único episodio en Chroma (experience_index). Idempotente."""
     col = _get_collection()
     if col is None:
         return False
@@ -222,25 +204,8 @@ def index_episode(episode: dict) -> bool:
 def search_episodes(query: str, k: int = 3) -> list[dict]:
     """Busca los k episodios más relevantes para la consulta.
 
-    Aplica boost de calidad (8C):
-      - Episodios con exitoso=True reciben +_EXITOSO_BOOST (+0.15) sobre
-        el score raw de Chroma. Esto los sube en el ranking de forma natural.
-      - Episodios con exitoso=False se descartan si hay al menos un episodio
-        alternativo (exitoso=True o unmarked) con score boosteado >= 0.65.
-        Solo se incluyen fallidos si son los únicos resultados disponibles.
-      - El campo 'score' devuelto refleja el score boosteado para que
-        intelligence.py tome decisiones basadas en calidad real.
-
-    Args:
-        query: Texto de búsqueda.
-        k:     Número de resultados a devolver. Default 3.
-
-    Returns:
-        Lista de dicts con keys: summary, date, time, turns, score,
-        exitoso, carril_dominante.
-        Lista vacía si Chroma no está disponible o no hay resultados.
-
-    Never raises.
+    Aplica boost de calidad (8C): exitosos +0.15, fallidos descartados si hay
+    alternativos con score >= 0.65.
     """
     col = _get_collection()
     if col is None:
@@ -248,23 +213,22 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
     try:
         results = col.similarity_search_with_relevance_scores(query, k=k)
 
-        # ── Paso 1: calcular score boosteado para cada resultado ──────────
         candidates = []
         for doc, raw_score in results:
             if raw_score < _MIN_RELEVANCE_SCORE:
-                continue  # descartar por debajo del umbral mínimo
+                continue
 
             meta = doc.metadata
             exitoso_str = meta.get("exitoso", "unmarked")
 
             if exitoso_str == "true":
                 exitoso = True
-                boosted_score = min(raw_score + _EXITOSO_BOOST, 1.0)  # cap a 1.0
+                boosted_score = min(raw_score + _EXITOSO_BOOST, 1.0)
             elif exitoso_str == "false":
                 exitoso = False
-                boosted_score = raw_score  # sin boost — se evaluará para descarte
+                boosted_score = raw_score
             else:
-                exitoso = None  # unmarked
+                exitoso = None
                 boosted_score = raw_score
 
             candidates.append({
@@ -278,30 +242,16 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
             })
 
         if not candidates:
-            log.info(f"[episode_store] search '{query[:40]}' → 0 resultados (todos bajo umbral)")
             return []
 
-        # ── Paso 2: descartar episodios fallidos si hay alternativos válidos ─
-        # Un alternativo válido es exitoso=True o exitoso=None (unmarked).
         best_non_failed_score = max(
-            (
-                ep["score"] for ep in candidates
-                if ep["exitoso"] is not False
-            ),
+            (ep["score"] for ep in candidates if ep["exitoso"] is not False),
             default=0.0,
         )
-
         if best_non_failed_score >= _FALLIDO_HIDE_THRESHOLD:
-            # Hay resultados buenos sin marcar como fallidos — filtrar los fallidos
             candidates = [ep for ep in candidates if ep["exitoso"] is not False]
-            log.debug(
-                "[episode_store] search: fallidos descartados (mejor alternativo=%.3f >= %.2f)",
-                best_non_failed_score, _FALLIDO_HIDE_THRESHOLD,
-            )
 
-        # ── Paso 3: ordenar por score boosteado descendente ──────────────
         candidates.sort(key=lambda x: x["score"], reverse=True)
-
         log.info(f"[episode_store] search '{query[:40]}' → {len(candidates)} resultados")
         return candidates
     except Exception as exc:
@@ -310,22 +260,21 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
 
 
 def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, float]:
-    """Busca la experiencia previa más relevante y devuelve (snippet, score).
+    """D3: variante de experience_lookup que expone el score al llamador.
 
-    D3: contrato explícito con score. intelligence.py usa esta función
-    y aplica su propio umbral _MIN_EXPERIENCE_SCORE = 0.70 antes de inyectar.
-    Así el agente RAG controla su propio criterio de calidad, independiente
-    del umbral interno del store.
+    Diseñada para ser llamada desde _retrieve_rag_context() en intelligence.py.
+    Devuelve (snippet, score) para que intelligence.py aplique su propio umbral
+    (_MIN_EXPERIENCE_SCORE = 0.70) sin depender del formato del texto.
 
-    Prioriza episodios marcados como exitosos sobre los no marcados.
-    Ignora episodios marcados como fallidos si hay alternativos >= 0.65.
+    Usa EXPERIENCE_INJECT_THRESHOLD (0.80) como filtro base interno.
+    El llamador puede aplicar un umbral adicional sobre el score devuelto.
 
     Args:
         query: pregunta actual del usuario.
 
     Returns:
-        (snippet_text, score) si hay candidato sobre EXPERIENCE_INJECT_THRESHOLD.
-        (None, 0.0)           si no hay experiencias suficientemente relevantes.
+        (snippet_text, score) si hay experiencia relevante,
+        (None, 0.0)           si no hay ninguna por encima del umbral.
 
     Never raises.
     """
@@ -334,50 +283,13 @@ def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, 
         return None, 0.0
     try:
         results = col.similarity_search_with_relevance_scores(query, k=5)
-        # Filtrar por umbral base del store (elimina ruido extremo)
-        candidates = [
-            (doc, score) for doc, score in results
-            if score >= EXPERIENCE_INJECT_THRESHOLD
-        ]
-        if not candidates:
-            return None, 0.0
-
-        # Separar exitosos de fallidos
-        successful = [
-            (doc, score) for doc, score in candidates
-            if doc.metadata.get("exitoso") == "true"
-        ]
-        failed = [
-            (doc, score) for doc, score in candidates
-            if doc.metadata.get("exitoso") == "false"
-        ]
-        unmarked = [
-            (doc, score) for doc, score in candidates
-            if doc.metadata.get("exitoso", "unmarked") == "unmarked"
-        ]
-
-        # Preferencia: exitosos > sin marcar > fallidos (solo si no hay alternativas)
-        if successful:
-            selected = successful
-        elif unmarked:
-            selected = unmarked
-        else:
-            selected = failed
-
-        if not selected:
-            return None, 0.0
-
-        # Tomar el mejor resultado
-        best_doc, best_score = max(selected, key=lambda x: x[1])
-
-        log.debug(
-            "[episode_store] experience_lookup_with_score: hit %sT%s (score=%.3f)",
-            best_doc.metadata.get("date", "?"),
-            best_doc.metadata.get("time", "?"),
-            best_score,
-        )
-        return _build_experience_snippet(best_doc, best_score), best_score
-
+        snippet, score = _extract_best_candidate(results, EXPERIENCE_INJECT_THRESHOLD)
+        if snippet:
+            log.debug(
+                "[episode_store] experience_lookup_with_score: score=%.3f para '%s'",
+                score, query[:40],
+            )
+        return snippet, score
     except Exception as exc:
         log.warning(f"[episode_store] experience_lookup_with_score error: {exc}")
         return None, 0.0
@@ -386,45 +298,23 @@ def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, 
 def experience_lookup(query: str) -> str | None:
     """Busca experiencias previas relevantes para inyectar en contexto RAG.
 
-    Compatibilidad: delega en experience_lookup_with_score() y descarta
-    el score. Código existente que llame a experience_lookup() sigue
-    funcionando sin cambios.
-
-    Para nuevos usos, preferir experience_lookup_with_score().
-
-    Args:
-        query: pregunta actual del usuario.
+    DEPRECATED para uso interno en intelligence.py — usar experience_lookup_with_score().
+    Se mantiene por compatibilidad con código externo o tests que lo llamen directamente.
 
     Returns:
         Texto de contexto listo para concatenar al prompt RAG, o None.
-
     Never raises.
     """
-    snippet, _score = experience_lookup_with_score(query)
+    snippet, _ = experience_lookup_with_score(query)
     return snippet
 
 
 def mark_episode(doc_id: str, exitoso: bool) -> bool:
-    """Actualiza el metadato 'exitoso' de un episodio ya indexado.
-
-    Usado por 8C al final de la sesión cuando el usuario responde s/n.
-    Como Chroma no soporta update in-place de metadatos, re-indexamos
-    el documento con los metadatos actualizados.
-
-    Args:
-        doc_id:  ID del episodio (ej: '2026-05-19T10:30').
-        exitoso: True si la sesión fue productiva, False si no.
-
-    Returns:
-        True si se actualizó, False si fallo.
-
-    Never raises.
-    """
+    """Actualiza el metadato 'exitoso' de un episodio ya indexado."""
     col = _get_collection()
     if col is None:
         return False
     try:
-        # Recuperar el documento existente
         result = col.get(ids=[doc_id], include=["documents", "metadatas"])
         if not result["ids"]:
             log.warning("[episode_store] mark_episode: ID '%s' no encontrado", doc_id)
@@ -434,7 +324,6 @@ def mark_episode(doc_id: str, exitoso: bool) -> bool:
         metadata = result["metadatas"][0]
         metadata["exitoso"] = "true" if exitoso else "false"
 
-        # Reemplazar el documento con metadatos actualizados
         col.delete(ids=[doc_id])
         col.add_texts(texts=[content], metadatas=[metadata], ids=[doc_id])
         log.info("[episode_store] mark_episode: %s marcado como exitoso=%s", doc_id, exitoso)
@@ -445,19 +334,7 @@ def mark_episode(doc_id: str, exitoso: bool) -> bool:
 
 
 def close_session_episode() -> None:
-    """Cierre de sesión: actualiza metadatos del episodio activo y pregunta al usuario.
-
-    Flujo (8C):
-      1. Obtiene el doc_id del episodio activo desde session_state.
-      2. Actualiza carril_dominante y tareas_completadas en Chroma.
-      3. Pregunta '¿Fue productiva esta sesión? (s/n)' con timeout 15s.
-      4. Llama mark_episode() con el resultado.
-
-    Si el usuario no responde en 15 segundos → cierre silencioso (unmarked).
-    Si el episodio no existe en Chroma todavía → solo loggea y continúa.
-
-    Never raises.
-    """
+    """Cierre de sesión: actualiza metadatos del episodio activo y pregunta al usuario (8C)."""
     try:
         from app.session_state import (
             get_session_doc_id,
@@ -473,7 +350,6 @@ def close_session_episode() -> None:
         if col is None:
             return
 
-        # Intentar actualizar carril_dominante y tareas_completadas
         result = col.get(ids=[doc_id], include=["documents", "metadatas"])
         if result["ids"]:
             content  = result["documents"][0]
@@ -488,13 +364,12 @@ def close_session_episode() -> None:
             )
         else:
             log.info(
-                "[episode_store] close_session: episodio %s no encontrado en índice — "
-                "probablemente sesión sin turnos completados.",
+                "[episode_store] close_session: episodio %s no encontrado — "
+                "sesión sin turnos completados.",
                 doc_id,
             )
             return
 
-        # Preguntar al usuario con timeout
         import threading
         answered = threading.Event()
         respuesta = [None]
@@ -511,7 +386,7 @@ def close_session_episode() -> None:
         t.join(timeout=15)
 
         if not answered.is_set() or respuesta[0] is None:
-            log.info("[episode_store] close_session: sin respuesta en 15s — episodio sin marcar")
+            log.info("[episode_store] close_session: sin respuesta en 15s — sin marcar")
             return
 
         if respuesta[0] in ("s", "si", "sí", "y", "yes"):
@@ -521,59 +396,37 @@ def close_session_episode() -> None:
             mark_episode(doc_id, exitoso=False)
             print("📝 Sesión marcada para revisión.")
         else:
-            log.info("[episode_store] close_session: respuesta '%s' no reconocida — sin marcar", respuesta[0])
+            log.info("[episode_store] close_session: respuesta '%s' no reconocida", respuesta[0])
 
     except Exception as exc:
         log.warning("[episode_store] close_session_episode error: %s", exc)
 
 
 def reindex_all() -> int:
-    """Re-indexa TODOS los episodios de episodic_memory.json desde cero.
-
-    Útil cuando:
-    - Se cambia el formato del episodio.
-    - Se quiere reconstruir el índice tras una corrupción.
-    - Se migra desde la versión sin índice (o con colección 'episodios' antigua).
-
-    Elimina la colección existente y la reconstruye.
-
-    Returns:
-        Número de episodios indexados (0 si falla o no hay episodios).
-
-    Never raises.
-    """
+    """Re-indexa TODOS los episodios de episodic_memory.json desde cero."""
     global _collection
     try:
         if not EPISODIC_MEMORY_FILE.exists():
-            log.info("[episode_store] reindex_all: no existe episodic_memory.json")
             return 0
 
         with open(EPISODIC_MEMORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         episodes = data.get("episodes", [])
         if not episodes:
-            log.info("[episode_store] reindex_all: sin episodios para indexar")
             return 0
 
-        # Forzar recreación de la colección
         _collection = None
         col = _get_collection()
         if col is None:
             return 0
 
-        # Eliminar todos los documentos existentes en la colección
         try:
             existing_ids = col.get()["ids"]
             if existing_ids:
                 col.delete(ids=existing_ids)
-                log.info(
-                    "[episode_store] reindex_all: eliminados %d docs previos",
-                    len(existing_ids),
-                )
         except Exception:
-            pass  # colección vacía: no hay nada que borrar
+            pass
 
-        # Indexar todos los episodios
         count = 0
         for ep in episodes:
             if index_episode(ep):
@@ -587,17 +440,7 @@ def reindex_all() -> int:
 
 
 def episode_index_stats() -> dict:
-    """Devuelve estadísticas del índice episódico.
-
-    Returns:
-        dict con:
-          - indexed_count: int  — documentos en Chroma
-          - collection:    str  — nombre de la colección
-          - chroma_dir:    str  — ruta del directorio
-          - available:     bool — True si Chroma está operativo
-
-    Never raises.
-    """
+    """Devuelve estadísticas del índice episódico."""
     col = _get_collection()
     if col is None:
         return {

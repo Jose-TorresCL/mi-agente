@@ -9,69 +9,24 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 (rag_engine, fidelity_check, tool_registry, semantic_cache).
 
 Contrato público
-─────────────────
+────────────────
     process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]
 
-R1 — contratos internos (CERRADO)
+R1  — contratos internos (CERRADO)
 R2-connect — intent_type y num_docs en record_turn() (CERRADO)
 R4-B — composición multi-capa de memoria (CERRADO)
 Fix B3 — timeout síntesis subido de 10s a 30s (CERRADO)
 Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes (CERRADO)
 Fix C1 — chat_history en _synthesize_memory_answer (CERRADO)
 Fix C2 — cliente LLM unificado con generate_raw() (CERRADO)
-D2 — prompt de síntesis movido a prompts.py (CERRADO)
-D3 — umbral episódico explícito en _retrieve_rag_context (CERRADO):
-  Antes: experience_lookup() inyectaba si score >= 0.80 (umbral del store).
-         intelligence.py no tenía criterio propio — dependía ciegamente
-         del umbral hardcodeado en episode_store.
-  Ahora: _retrieve_rag_context() llama experience_lookup_with_score(),
-         recibe (snippet, score) y aplica _MIN_EXPERIENCE_SCORE = 0.70.
-         Si score < 0.70 → no inyectar, loggear motivo.
-         El agente RAG controla su propio criterio de calidad.
-         experience_lookup() sigue disponible para compatibilidad.
-D5 — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO):
-  Antes: process_turn detectaba intents y luego _decide_memory los re-detectaba.
-  Ahora: process_turn detecta, pasa intents a _decide_memory como parámetro.
-  _decide_memory ya no llama detect_memory_intents internamente.
-
-R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO):
-  _retrieve_memory_context() ← AGENTE RECUPERADOR
-  _synthesize_memory_answer() ← AGENTE SINTETIZADOR
-  _decide_memory()            ← ORQUESTADOR
-  Contrato explícito: MemoryContext (TypedDict).
-
-R6-RAG — separación de responsabilidades en _decide_rag (CERRADO):
-  Antes: _decide_rag() tenía 5 responsabilidades mezcladas:
-    caché lookup, recuperación vectorial, inyección episódica,
-    llamada LLM y verificación de fidelidad. Un solo punto de falla.
-    La regla 'no cachear con inyección episódica' estaba enterrada.
-
-  Ahora:
-    _lookup_rag_cache(user_input, is_identity)
-        ← CACHÉ: devuelve hit (str) o None. Sin efectos secundarios.
-
-    _retrieve_rag_context(user_input, vectordb, route)
-        ← RECUPERADOR: recuperación vectorial + inyección episódica.
-          Devuelve RagContext (TypedDict) con context_text, source_docs,
-          memory_context, experience_injected y retrieval_ms.
-          D3: aplica _MIN_EXPERIENCE_SCORE = 0.70 sobre el score de
-          experience_lookup_with_score() antes de inyectar.
-
-    _generate_rag_answer(user_input, rag_ctx, chat_history)
-        ← GENERADOR: construye el prompt, llama al LLM vía build_chain(),
-          corre verify_fidelity() y devuelve (answer, source_docs,
-          llm_ms, is_faithful, score). No sabe nada de caché ni de
-          cómo se recuperó el contexto.
-
-    _decide_rag(user_input, vectordb, chat_history, route)
-        ← ORQUESTADOR: coordina los tres. La decisión de cachear es
-          transparente en este nivel: visible en una sola condición
-          con comentario, no escondida dentro de los sub-pasos.
-
-  Beneficio: cada sub-función tiene exactamente 1 responsabilidad y
-  puede testearse, reemplazarse o desactivarse en aislamiento.
-  Agregar un nuevo paso (ej: re-ranking) solo toca _retrieve_rag_context.
-  Cambiar la política de caché solo toca _decide_rag.
+D2  — prompt de síntesis movido a prompts.py (CERRADO)
+D3  — umbral episódico propio en intelligence.py (CERRADO):
+  _MIN_EXPERIENCE_SCORE = 0.70 en _retrieve_rag_context().
+  Se usa experience_lookup_with_score() que expone el score explícitamente.
+  intelligence.py decide si inyectar — no depende del umbral de episode_store.
+D5  — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO).
+R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO).
+R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
 """
 from __future__ import annotations
 
@@ -104,50 +59,30 @@ from app.tool_helpers import list_project_files
 
 log = get_logger(__name__)
 
-# Timeout para la llamada de resumen episódico (en segundos).
-_EPISODE_TIMEOUT = 20
-
-# Fix B3: timeout de síntesis subido de 10s a 30s.
-_MEMORY_SYNTHESIS_TIMEOUT = 30
-
-# Longitud máxima por línea de historial comprimido (chars).
-_HISTORY_LINE_MAX = 80
-
-# Score mínimo de fidelidad para guardar una respuesta en caché.
-_CACHE_MIN_SCORE = 0.55
-
-# D3: score mínimo que debe tener una experiencia episódica para inyectarla
-# en el contexto RAG. Criterio propio del agente RAG — independiente del
-# umbral EXPERIENCE_INJECT_THRESHOLD del store (0.80).
-# 0.70 = semánticamente relevante; por debajo, el riesgo de ruido supera
-# el beneficio del contexto adicional.
-_MIN_EXPERIENCE_SCORE = 0.70
-
-# Palabras que indican que el usuario quiere un CONTEO, no una lista.
-_COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
-
-# Preguntas de identidad — bypass del caché semántico.
-_IDENTITY_KEYWORDS = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
-                      "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
-
-# Fix B4: palabras que indican tareas COMPLETADAS.
-_DONE_TASK_KEYWORDS = {
+_EPISODE_TIMEOUT           = 20
+_MEMORY_SYNTHESIS_TIMEOUT  = 30
+_HISTORY_LINE_MAX          = 80
+_CACHE_MIN_SCORE           = 0.55
+_COUNT_KEYWORDS            = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
+_IDENTITY_KEYWORDS         = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
+                               "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
+_DONE_TASK_KEYWORDS        = {
     "hechas", "hecho", "completadas", "completada", "completado",
     "cerradas", "cerrada", "terminadas", "terminada", "listas", "lista",
     "done",
 }
+_MEMORY_HISTORY_TURNS      = 3
 
-# Fix C1: turnos recientes del historial a inyectar en síntesis de memoria.
-_MEMORY_HISTORY_TURNS = 3
+# D3: umbral propio de intelligence.py para inyección episódica.
+# Independiente de EXPERIENCE_INJECT_THRESHOLD en episode_store.py.
+# Razón: el agente RAG decide qué contamina su contexto — no el almacén.
+_MIN_EXPERIENCE_SCORE      = 0.70
 
-# Mensaje estándar para consultas fuera del alcance del agente.
 _UNSUPPORTED_MSG = (
     "Esa consulta está fuera del alcance de lo que puedo hacer por ahora. "
     "Puedo responder preguntas sobre el proyecto, buscar en la documentación, "
     "consultar tareas y estado de trabajo."
 )
-
-# Mensaje cuando route=memory pero sin tipo reconocido.
 _MEMORY_NOT_FOUND_MSG = (
     "No encontré información relevante en la memoria para esa pregunta. "
     "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
@@ -155,29 +90,22 @@ _MEMORY_NOT_FOUND_MSG = (
 )
 
 
-# ───────────────────────────────────────────────
-# TypedDicts — contratos entre sub-funciones (R5-MoA, R6-RAG)
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
+# TypedDicts — contratos entre sub-funciones
+# ───────────────────────────────────────────────────
 
 class MemoryContext(TypedDict):
-    """Contrato de salida del AGENTE RECUPERADOR de memoria (R5-MoA)."""
-    context_text: str       # texto plano listo para el prompt del sintetizador
-    fallback: str           # respuesta estructurada si falla el LLM o needs_llm=False
-    sources: list[str]      # cajones de memoria abiertos (para logging)
-    needs_llm: bool         # True si la respuesta requiere síntesis LLM
+    context_text: str
+    fallback: str
+    sources: list[str]
+    needs_llm: bool
 
 
 class RagContext(TypedDict):
     """Contrato de salida del AGENTE RECUPERADOR RAG (R6-RAG).
 
-    context_text       : texto de los documentos recuperados por ChromaDB
-                         (puede incluir experiencia episódica prepend).
-    source_docs        : documentos originales (para fidelidad y metadata).
-    memory_context     : contexto de memoria selectiva ya serializado.
-    experience_injected: True si se preprendó experiencia episódica.
-                         Hace explícita la regla de caché: respuestas con
-                         experiencia inyectada NO se cachean (son personalizadas).
-    retrieval_ms       : tiempo de recuperación en milisegundos.
+    experience_injected: True si se prepend la experiencia episódica
+                         Y su score superó _MIN_EXPERIENCE_SCORE (D3).
     """
     context_text: str
     source_docs: list
@@ -186,9 +114,9 @@ class RagContext(TypedDict):
     retrieval_ms: int
 
 
-# ───────────────────────────────────────────────
-# Helpers de formato (sin LLM) — carril memory
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
+# Helpers de formato — carril memory
+# ───────────────────────────────────────────────────
 
 def _format_profile_answer(profile: dict) -> str:
     lines = ["**Perfil del usuario:**"]
@@ -205,7 +133,6 @@ def _format_profile_answer(profile: dict) -> str:
 
 
 def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
-    """Fix B4: distingue tareas hechas vs pendientes según keywords."""
     tasks = tasks_data.get("tasks", [])
     q_lower = question.lower()
     wants_done = any(kw in q_lower for kw in _DONE_TASK_KEYWORDS)
@@ -235,7 +162,6 @@ def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
 
 
 def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_HISTORY_TURNS) -> str:
-    """Fix C1: extrae los últimos N turnos del historial como texto compacto."""
     if not chat_history:
         return ""
     recent = chat_history[-(max_turns * 2):]
@@ -249,7 +175,6 @@ def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_H
 
 
 def _format_episodes_context(episodes: list[dict]) -> str:
-    """Formatea episodios de Chroma en texto legible para el sintetizador."""
     lines = []
     for i, ep in enumerate(episodes, 1):
         lines.append(
@@ -265,15 +190,11 @@ def _format_episodes_context(episodes: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R5-MoA — AGENTE RECUPERADOR de memoria
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext:
-    """AGENTE RECUPERADOR (R5-MoA): abre cajones de memoria y devuelve MemoryContext.
-
-    No sabe nada del LLM. Solo recupera, formatea y empaqueta.
-    """
     if len(intents) > 1:
         composed = get_composed_context(intents)
         if not composed.strip():
@@ -363,9 +284,9 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
                          sources=[kind], needs_llm=False)
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R5-MoA — AGENTE SINTETIZADOR de memoria
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _synthesize_memory_answer(
     question: str,
@@ -373,12 +294,6 @@ def _synthesize_memory_answer(
     fallback: str,
     chat_history: list | None = None,
 ) -> str:
-    """AGENTE SINTETIZADOR (R5-MoA): recibe contexto limpio y genera respuesta.
-
-    No sabe nada de JSON ni de qué cajón se abrió.
-    Fix C1: inyecta historial. Fix C2: usa generate_raw() (singleton LLM).
-    D2: usa MEMORY_SYNTHESIS_PROMPT desde prompts.py.
-    """
     history_snippet = _build_history_snippet(chat_history) or "(sin historial previo)"
     prompt = MEMORY_SYNTHESIS_PROMPT.format(
         context_text=context_text,
@@ -393,19 +308,16 @@ def _synthesize_memory_answer(
     return fallback
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R5-MoA — ORQUESTADOR de memoria
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _decide_memory(
     question: str,
     intents: list[str],
     chat_history: list | None = None,
 ) -> str:
-    """ORQUESTADOR (R5-MoA): coordina recuperador y sintetizador de memoria.
-
-    D5: recibe intents ya detectados desde process_turn — no los re-detecta.
-    """
+    """D5: recibe intents ya detectados desde process_turn — no los re-detecta."""
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
 
     if not intents:
@@ -424,37 +336,26 @@ def _decide_memory(
     )
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R6-RAG — CACHÉ
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
-    """CACHÉ (R6-RAG): devuelve hit semántico o None. Sin efectos secundarios.
-
-    Las preguntas de identidad nunca se sirven desde caché porque la
-    respuesta depende del contexto de la sesión, no de los documentos.
-    """
     if is_identity:
         return None
     return cache_lookup(user_input)
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R6-RAG — AGENTE RECUPERADOR RAG
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagContext:
-    """AGENTE RECUPERADOR RAG (R6-RAG): recuperación vectorial + inyección episódica.
+    """AGENTE RECUPERADOR RAG (R6-RAG).
 
-    No sabe nada del LLM ni de la caché. Solo recupera y empaqueta.
-    La regla de cacheabilidad queda explícita en el campo experience_injected
-    del contrato RagContext, no enterrada en lógica interna.
-
-    Pasos:
-      1. get_selective_context() — memoria estructurada para el prompt.
-      2. retrieve_context()      — recuperación vectorial MMR en ChromaDB.
-      3. experience_lookup_with_score() — inyección episódica con umbral propio (D3).
-         Solo inyecta si score >= _MIN_EXPERIENCE_SCORE = 0.70.
+    D3: usa experience_lookup_with_score() y aplica _MIN_EXPERIENCE_SCORE (0.70)
+    como umbral propio — independiente del umbral interno de episode_store.
+    Solo inyecta si score >= _MIN_EXPERIENCE_SCORE.
     """
     t_start = time.perf_counter()
 
@@ -465,19 +366,20 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
     try:
         from app.episode_store import experience_lookup_with_score
         snippet, exp_score = experience_lookup_with_score(user_input)
-        if snippet is not None:
-            if exp_score >= _MIN_EXPERIENCE_SCORE:
-                context_text = snippet + "\n\n---\n\n" + context_text
-                experience_injected = True
-                log.debug(
-                    "[R6-RAG] Experiencia episódica inyectada (score=%.3f >= %.2f)",
-                    exp_score, _MIN_EXPERIENCE_SCORE,
-                )
-            else:
-                log.debug(
-                    "[R6-RAG] Experiencia episódica descartada (score=%.3f < %.2f)",
-                    exp_score, _MIN_EXPERIENCE_SCORE,
-                )
+
+        if snippet and exp_score >= _MIN_EXPERIENCE_SCORE:
+            context_text = snippet + "\n\n---\n\n" + context_text
+            experience_injected = True
+            log.debug(
+                "[R6-RAG] Experiencia episódica inyectada (score=%.3f >= %.2f)",
+                exp_score, _MIN_EXPERIENCE_SCORE,
+            )
+        elif snippet:
+            # Snippet existe pero score insuficiente — se descarta
+            log.debug(
+                "[R6-RAG] Experiencia episódica descartada (score=%.3f < %.2f)",
+                exp_score, _MIN_EXPERIENCE_SCORE,
+            )
     except Exception as exc:
         log.warning("[R6-RAG] experience_lookup_with_score falló (no bloquea): %s", exc)
 
@@ -492,21 +394,15 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
     )
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R6-RAG — AGENTE GENERADOR RAG
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _generate_rag_answer(
     user_input: str,
     rag_ctx: RagContext,
     chat_history: list,
 ) -> tuple[str, list, int, bool, float]:
-    """AGENTE GENERADOR RAG (R6-RAG): construye prompt, llama LLM, verifica fidelidad.
-
-    No sabe nada de caché ni de cómo se recuperó el contexto.
-    Recibe RagContext limpio y devuelve (answer, source_docs, llm_ms, is_faithful, score).
-    Si la fidelidad falla, devuelve NO_EVIDENCE_MSG como answer.
-    """
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
@@ -530,9 +426,9 @@ def _generate_rag_answer(
     return answer, rag_ctx["source_docs"], llm_ms, True, score
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # R6-RAG — ORQUESTADOR RAG
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _decide_rag(
     user_input: str,
@@ -540,39 +436,18 @@ def _decide_rag(
     chat_history: list,
     route: str,
 ) -> tuple[str, list, int, int, bool]:
-    """ORQUESTADOR RAG (R6-RAG): coordina caché, recuperador y generador.
-
-    Flujo:
-      1. Determina si es pregunta de identidad (bypass caché).
-      2. CACHÉ: busca hit semántico — si hay, devuelve inmediato.
-      3. RECUPERADOR: abre ChromaDB + inyección episódica → RagContext.
-      4. GENERADOR: construye prompt + LLM + fidelidad → respuesta.
-      5. ORQUESTADOR decide caché: política explícita y visible en este nivel.
-           No cachear si: identidad | experiencia inyectada | score bajo.
-
-    Returns:
-        (answer, source_docs, retrieval_ms, llm_ms, cached)
-    """
     is_identity = any(kw in user_input.lower() for kw in _IDENTITY_KEYWORDS)
 
-    # PASO 1: CACHÉ
     hit = _lookup_rag_cache(user_input, is_identity)
     if hit is not None:
-        log.debug("[R6-RAG] Respuesta servida desde caché semántica")
         return hit, [], 0, 0, True
 
-    # PASO 2: RECUPERADOR
     rag_ctx = _retrieve_rag_context(user_input, vectordb, route)
 
-    # PASO 3: GENERADOR
     answer, source_docs, llm_ms, is_faithful, score = _generate_rag_answer(
         user_input, rag_ctx, chat_history
     )
 
-    # PASO 4: ORQUESTADOR decide caché (política transparente)
-    # Regla 1: no cachear preguntas de identidad (dependen del contexto de sesión)
-    # Regla 2: no cachear si hay experiencia episódica inyectada (respuesta personalizada)
-    # Regla 3: no cachear si la fidelidad es baja
     can_cache = (
         not is_identity
         and not rag_ctx["experience_injected"]
@@ -580,7 +455,6 @@ def _decide_rag(
         and score >= _CACHE_MIN_SCORE
     )
     if can_cache:
-        log.debug("[R6-RAG] Guardando en caché (score=%.3f)", score)
         cache_save(user_input, answer)
     else:
         reasons = []
@@ -594,9 +468,9 @@ def _decide_rag(
     return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # Helpers — carril tool_list_files
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _handle_list_files(question: str) -> str:
     files = list_project_files()
@@ -618,9 +492,9 @@ def _handle_list_files(question: str) -> str:
     return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # Decisores — otros carriles (exit)
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
     lines: list[str] = []
@@ -633,7 +507,6 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
 
 
 def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """Genera resumen episódico y señala cierre de sesión. Fix C2: usa generate_raw()."""
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -661,9 +534,9 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
     return "__EXIT__", []
 
 
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 # Contrato público de la capa de inteligencia
-# ───────────────────────────────────────────────
+# ───────────────────────────────────────────────────
 
 def process_turn(
     route: str,
@@ -694,7 +567,6 @@ def process_turn(
     if route == "memory":
         t0 = time.perf_counter()
         # D5: detect_memory_intents se llama UNA sola vez aquí.
-        # _decide_memory recibe los intents como parámetro — no los re-detecta.
         intents = detect_memory_intents(user_input)
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
@@ -706,7 +578,6 @@ def process_turn(
         return answer, []
 
     if route == "unsupported":
-        log.debug("Carril unsupported — respondiendo sin LLM")
         _record_metric(route=route, intent_type="unsupported")
         return _UNSUPPORTED_MSG, []
 
