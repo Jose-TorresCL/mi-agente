@@ -20,6 +20,15 @@ Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes (CERRADO)
 Fix C1 — chat_history en _synthesize_memory_answer (CERRADO)
 Fix C2 — cliente LLM unificado con generate_raw() (CERRADO)
 D2 — prompt de síntesis movido a prompts.py (CERRADO)
+D3 — umbral episódico explícito en _retrieve_rag_context (CERRADO):
+  Antes: experience_lookup() inyectaba si score >= 0.80 (umbral del store).
+         intelligence.py no tenía criterio propio — dependía ciegamente
+         del umbral hardcodeado en episode_store.
+  Ahora: _retrieve_rag_context() llama experience_lookup_with_score(),
+         recibe (snippet, score) y aplica _MIN_EXPERIENCE_SCORE = 0.70.
+         Si score < 0.70 → no inyectar, loggear motivo.
+         El agente RAG controla su propio criterio de calidad.
+         experience_lookup() sigue disponible para compatibilidad.
 D5 — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO):
   Antes: process_turn detectaba intents y luego _decide_memory los re-detectaba.
   Ahora: process_turn detecta, pasa intents a _decide_memory como parámetro.
@@ -45,8 +54,8 @@ R6-RAG — separación de responsabilidades en _decide_rag (CERRADO):
         ← RECUPERADOR: recuperación vectorial + inyección episódica.
           Devuelve RagContext (TypedDict) con context_text, source_docs,
           memory_context, experience_injected y retrieval_ms.
-          La regla de cacheabilidad es ahora explícita en el campo
-          experience_injected del contrato, no enterrada en lógica interna.
+          D3: aplica _MIN_EXPERIENCE_SCORE = 0.70 sobre el score de
+          experience_lookup_with_score() antes de inyectar.
 
     _generate_rag_answer(user_input, rag_ctx, chat_history)
         ← GENERADOR: construye el prompt, llama al LLM vía build_chain(),
@@ -106,6 +115,13 @@ _HISTORY_LINE_MAX = 80
 
 # Score mínimo de fidelidad para guardar una respuesta en caché.
 _CACHE_MIN_SCORE = 0.55
+
+# D3: score mínimo que debe tener una experiencia episódica para inyectarla
+# en el contexto RAG. Criterio propio del agente RAG — independiente del
+# umbral EXPERIENCE_INJECT_THRESHOLD del store (0.80).
+# 0.70 = semánticamente relevante; por debajo, el riesgo de ruido supera
+# el beneficio del contexto adicional.
+_MIN_EXPERIENCE_SCORE = 0.70
 
 # Palabras que indican que el usuario quiere un CONTEO, no una lista.
 _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
@@ -413,7 +429,7 @@ def _decide_memory(
 # ───────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
-    """CAĊHE (R6-RAG): devuelve hit semántico o None. Sin efectos secundarios.
+    """CACHÉ (R6-RAG): devuelve hit semántico o None. Sin efectos secundarios.
 
     Las preguntas de identidad nunca se sirven desde caché porque la
     respuesta depende del contexto de la sesión, no de los documentos.
@@ -437,7 +453,8 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
     Pasos:
       1. get_selective_context() — memoria estructurada para el prompt.
       2. retrieve_context()      — recuperación vectorial MMR en ChromaDB.
-      3. experience_lookup()     — inyección episódica (opcional, no bloquea).
+      3. experience_lookup_with_score() — inyección episódica con umbral propio (D3).
+         Solo inyecta si score >= _MIN_EXPERIENCE_SCORE = 0.70.
     """
     t_start = time.perf_counter()
 
@@ -446,14 +463,23 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
 
     experience_injected = False
     try:
-        from app.episode_store import experience_lookup
-        experience_snippet = experience_lookup(user_input)
-        if experience_snippet:
-            context_text = experience_snippet + "\n\n---\n\n" + context_text
-            experience_injected = True
-            log.debug("[R6-RAG] Experiencia episódica inyectada en contexto")
+        from app.episode_store import experience_lookup_with_score
+        snippet, exp_score = experience_lookup_with_score(user_input)
+        if snippet is not None:
+            if exp_score >= _MIN_EXPERIENCE_SCORE:
+                context_text = snippet + "\n\n---\n\n" + context_text
+                experience_injected = True
+                log.debug(
+                    "[R6-RAG] Experiencia episódica inyectada (score=%.3f >= %.2f)",
+                    exp_score, _MIN_EXPERIENCE_SCORE,
+                )
+            else:
+                log.debug(
+                    "[R6-RAG] Experiencia episódica descartada (score=%.3f < %.2f)",
+                    exp_score, _MIN_EXPERIENCE_SCORE,
+                )
     except Exception as exc:
-        log.warning("[R6-RAG] experience_lookup falló (no bloquea): %s", exc)
+        log.warning("[R6-RAG] experience_lookup_with_score falló (no bloquea): %s", exc)
 
     retrieval_ms = int((time.perf_counter() - t_start) * 1000)
 

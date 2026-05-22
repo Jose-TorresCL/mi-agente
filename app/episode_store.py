@@ -10,9 +10,11 @@ Flujo de uso normal:
   1. memory_store.save_episode()  llama  index_episode()  al guardar.
   2. intelligence.py carril 'episode' llama search_episodes() para responder
      preguntas directas sobre sesiones pasadas.
-  3. intelligence.py _decide_rag() llama experience_lookup() para inyectar
-     contexto episódico relevante (score > 0.80) en todos los carriles RAG.
-  4. (8C) al cerrar sesión, close_session_episode() pregunta al usuario y
+  3. intelligence.py _retrieve_rag_context() llama experience_lookup_with_score()
+     y aplica su propio umbral _MIN_EXPERIENCE_SCORE (D3).
+  4. experience_lookup() sigue disponible para compatibilidad — delega
+     en experience_lookup_with_score() internamente.
+  5. (8C) al cerrar sesión, close_session_episode() pregunta al usuario y
      llama mark_episode() para marcar exitoso=True/False.
 
 Convenciones:
@@ -50,6 +52,10 @@ CHROMA_DIR           = Path("storage") / "chroma"
 _MIN_RELEVANCE_SCORE = 0.20
 
 # Score para inyección automática en contexto RAG (experience_lookup).
+# NOTA D3: este umbral es el default del store. intelligence.py aplica
+# su propio umbral _MIN_EXPERIENCE_SCORE = 0.70 sobre el score devuelto
+# por experience_lookup_with_score(). No son redundantes: este filtra
+# ruido extremo; el de intelligence filtra relevancia semántica real.
 EXPERIENCE_INJECT_THRESHOLD = 0.80
 
 # Boost aplicado a episodios exitosos en search_episodes() (8C).
@@ -149,6 +155,32 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
     # preguntas como '¿qué pasó el 18 de mayo?' también funcionen.
     content = f"[{date} {time_}] ({turns} turnos)\n{summary}"
     return doc_id, metadata, content
+
+
+def _build_experience_snippet(doc, score: float) -> str:
+    """Formatea un documento episódico como snippet listo para inyectar en RAG.
+
+    Extrae el resumen limpio (sin encabezado [fecha hora]) y construye
+    el texto con metadatos de trazabilidad.
+
+    Args:
+        doc:   Documento Chroma con page_content y metadata.
+        score: Score de similitud semántica.
+
+    Returns:
+        String formateado para prepend en context_text RAG.
+    """
+    date = doc.metadata.get("date", "?")
+    time_ = doc.metadata.get("time", "?")
+    summary_text = doc.page_content
+    # Limpiar encabezado [fecha hora] si está incluido en el content
+    if summary_text.startswith("["):
+        nl = summary_text.find("\n")
+        summary_text = summary_text[nl + 1:].strip() if nl != -1 else summary_text
+    return (
+        f"[Experiencia previa relevante — {date} {time_}, score={score:.2f}]\n"
+        f"{summary_text}"
+    )
 
 
 # ─────────────────────────────────────────────
@@ -277,37 +309,38 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
         return []
 
 
-def experience_lookup(query: str) -> str | None:
-    """Busca experiencias previas relevantes para inyectar en contexto RAG.
+def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, float]:
+    """Busca la experiencia previa más relevante y devuelve (snippet, score).
 
-    Diseñada para ser llamada desde _decide_rag() en intelligence.py.
-    Solo devuelve resultado si score >= EXPERIENCE_INJECT_THRESHOLD (0.80).
+    D3: contrato explícito con score. intelligence.py usa esta función
+    y aplica su propio umbral _MIN_EXPERIENCE_SCORE = 0.70 antes de inyectar.
+    Así el agente RAG controla su propio criterio de calidad, independiente
+    del umbral interno del store.
 
     Prioriza episodios marcados como exitosos sobre los no marcados.
-    Ignora episodios marcados como fallidos (exitoso=False) si hay
-    alternativos con score >= 0.65.
+    Ignora episodios marcados como fallidos si hay alternativos >= 0.65.
 
     Args:
         query: pregunta actual del usuario.
 
     Returns:
-        Texto de contexto listo para concatenar al prompt RAG, o None
-        si no hay experiencias suficientemente relevantes.
+        (snippet_text, score) si hay candidato sobre EXPERIENCE_INJECT_THRESHOLD.
+        (None, 0.0)           si no hay experiencias suficientemente relevantes.
 
     Never raises.
     """
     col = _get_collection()
     if col is None:
-        return None
+        return None, 0.0
     try:
         results = col.similarity_search_with_relevance_scores(query, k=5)
-        # Filtrar por umbral de inyección
+        # Filtrar por umbral base del store (elimina ruido extremo)
         candidates = [
             (doc, score) for doc, score in results
             if score >= EXPERIENCE_INJECT_THRESHOLD
         ]
         if not candidates:
-            return None
+            return None, 0.0
 
         # Separar exitosos de fallidos
         successful = [
@@ -329,33 +362,46 @@ def experience_lookup(query: str) -> str | None:
         elif unmarked:
             selected = unmarked
         else:
-            # Solo fallidos disponibles — incluir con advertencia
             selected = failed
 
         if not selected:
-            return None
+            return None, 0.0
 
         # Tomar el mejor resultado
         best_doc, best_score = max(selected, key=lambda x: x[1])
-        date = best_doc.metadata.get("date", "?")
-        time_ = best_doc.metadata.get("time", "?")
-        summary_text = best_doc.page_content
-        # Limpiar encabezado [fecha hora] si está incluido en el content
-        if summary_text.startswith("["):
-            nl = summary_text.find("\n")
-            summary_text = summary_text[nl + 1:].strip() if nl != -1 else summary_text
 
         log.debug(
-            "[episode_store] experience_lookup: hit en %sT%s (score=%.3f)",
-            date, time_, best_score,
+            "[episode_store] experience_lookup_with_score: hit %sT%s (score=%.3f)",
+            best_doc.metadata.get("date", "?"),
+            best_doc.metadata.get("time", "?"),
+            best_score,
         )
-        return (
-            f"[Experiencia previa relevante — {date} {time_}, score={best_score:.2f}]\n"
-            f"{summary_text}"
-        )
+        return _build_experience_snippet(best_doc, best_score), best_score
+
     except Exception as exc:
-        log.warning(f"[episode_store] experience_lookup error: {exc}")
-        return None
+        log.warning(f"[episode_store] experience_lookup_with_score error: {exc}")
+        return None, 0.0
+
+
+def experience_lookup(query: str) -> str | None:
+    """Busca experiencias previas relevantes para inyectar en contexto RAG.
+
+    Compatibilidad: delega en experience_lookup_with_score() y descarta
+    el score. Código existente que llame a experience_lookup() sigue
+    funcionando sin cambios.
+
+    Para nuevos usos, preferir experience_lookup_with_score().
+
+    Args:
+        query: pregunta actual del usuario.
+
+    Returns:
+        Texto de contexto listo para concatenar al prompt RAG, o None.
+
+    Never raises.
+    """
+    snippet, _score = experience_lookup_with_score(query)
+    return snippet
 
 
 def mark_episode(doc_id: str, exitoso: bool) -> bool:
@@ -449,43 +495,33 @@ def close_session_episode() -> None:
             return
 
         # Preguntar al usuario con timeout
-        import signal
+        import threading
+        answered = threading.Event()
+        respuesta = [None]
 
-        def _timeout_handler(signum, frame):
-            raise TimeoutError
+        def _ask():
+            try:
+                r = input("\n❓ ¿Fue productiva esta sesión? (s/n): ").strip().lower()
+                respuesta[0] = r
+            finally:
+                answered.set()
 
-        try:
-            # En Windows signal.SIGALRM no existe — usar threading como fallback
-            import threading
-            answered = threading.Event()
-            respuesta = [None]
+        t = threading.Thread(target=_ask, daemon=True)
+        t.start()
+        t.join(timeout=15)
 
-            def _ask():
-                try:
-                    r = input("\n❓ ¿Fue productiva esta sesión? (s/n): ").strip().lower()
-                    respuesta[0] = r
-                finally:
-                    answered.set()
+        if not answered.is_set() or respuesta[0] is None:
+            log.info("[episode_store] close_session: sin respuesta en 15s — episodio sin marcar")
+            return
 
-            t = threading.Thread(target=_ask, daemon=True)
-            t.start()
-            t.join(timeout=15)
-
-            if not answered.is_set() or respuesta[0] is None:
-                log.info("[episode_store] close_session: sin respuesta en 15s — episodio sin marcar")
-                return
-
-            if respuesta[0] in ("s", "si", "sí", "y", "yes"):
-                mark_episode(doc_id, exitoso=True)
-                print("✅ Sesión marcada como productiva.")
-            elif respuesta[0] in ("n", "no"):
-                mark_episode(doc_id, exitoso=False)
-                print("📝 Sesión marcada para revisión.")
-            else:
-                log.info("[episode_store] close_session: respuesta '%s' no reconocida — sin marcar", respuesta[0])
-
-        except Exception as exc:
-            log.warning("[episode_store] close_session: error al preguntar — %s", exc)
+        if respuesta[0] in ("s", "si", "sí", "y", "yes"):
+            mark_episode(doc_id, exitoso=True)
+            print("✅ Sesión marcada como productiva.")
+        elif respuesta[0] in ("n", "no"):
+            mark_episode(doc_id, exitoso=False)
+            print("📝 Sesión marcada para revisión.")
+        else:
+            log.info("[episode_store] close_session: respuesta '%s' no reconocida — sin marcar", respuesta[0])
 
     except Exception as exc:
         log.warning("[episode_store] close_session_episode error: %s", exc)
