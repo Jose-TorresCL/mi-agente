@@ -1,7 +1,7 @@
 """Capa de inteligencia — orquestador de decisión.
 
 Responsabilidad única: dado un carril ya clasificado, decidir qué hacer
-y devolver (respuesta, source_docs).
+y devolver DecisionResult.
 
 NO conoce chat.py ni chat_ui.py.
 NO persiste historial de conversación — eso es responsabilidad de chat_core.
@@ -10,8 +10,8 @@ SÍ usa la capa de memoria (memory_manager) y los módulos de inteligencia
 
 Contrato público
 ────────────────
-    process_turn(ctx: TurnContext) -> tuple[str, list]
-    process_turn(route, user_input, vectordb, chat_history) -> tuple[str, list]  # legacy
+    process_turn(ctx: TurnContext) -> DecisionResult
+    process_turn(route, user_input, vectordb, chat_history) -> DecisionResult  # legacy
 
     Ambas formas son equivalentes. chat_core usa TurnContext (forma nueva).
     Los tests que llaman a process_turn directamente con 4 args siguen funcionando.
@@ -38,6 +38,7 @@ R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
 TurnContext — process_turn acepta TurnContext o 4 args sueltos (CERRADO).
 feat: carril 'identity' — respuesta hardcodeada para preguntas de identidad
   del agente. 0ms, sin LLM ni RAG. router.py envía 'identity' en vez de 'rag'.
+E3  — process_turn devuelve DecisionResult en vez de tuple (CERRADO).
 """
 from __future__ import annotations
 
@@ -67,7 +68,7 @@ from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
 from app.prompts import QA_SYSTEM_PROMPT, MEMORY_SYNTHESIS_PROMPT
 from app.tool_helpers import list_project_files
-from app.schemas import TurnContext
+from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
@@ -87,7 +88,6 @@ _MEMORY_HISTORY_TURNS      = 3
 
 # D3: umbral propio de intelligence.py para inyección episódica.
 # Independiente de EXPERIENCE_INJECT_THRESHOLD en episode_store.py.
-# Razón: el agente RAG decide qué contamina su contexto — no el almacén.
 _MIN_EXPERIENCE_SCORE      = 0.70
 
 _UNSUPPORTED_MSG = (
@@ -97,8 +97,8 @@ _UNSUPPORTED_MSG = (
 )
 _MEMORY_NOT_FOUND_MSG = (
     "No encontré información relevante en la memoria para esa pregunta. "
-    "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
-    "'¿qué tareas tengo pendientes?' o '¿cuál es mi perfil?'."
+    "Si buscas datos del proyecto, prueba con: '\u00bfcuál es el estado del proyecto?', "
+    "'\u00bfqué tareas tengo pendientes?' o '\u00bfcuál es mi perfil?'."
 )
 
 # Respuesta fija de identidad — carril 'identity'.
@@ -118,9 +118,9 @@ _IDENTITY_MSG = (
 )
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # TypedDicts — contratos entre sub-funciones
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 class MemoryContext(TypedDict):
     context_text: str
@@ -142,9 +142,9 @@ class RagContext(TypedDict):
     retrieval_ms: int
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Helpers de formato — carril memory
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _format_profile_answer(profile: dict) -> str:
     lines = ["**Perfil del usuario:**"]
@@ -218,9 +218,9 @@ def _format_episodes_context(episodes: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R5-MoA — AGENTE RECUPERADOR de memoria
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext:
     if len(intents) > 1:
@@ -312,9 +312,9 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
                          sources=[kind], needs_llm=False)
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R5-MoA — AGENTE SINTETIZADOR de memoria
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _synthesize_memory_answer(
     question: str,
@@ -336,9 +336,9 @@ def _synthesize_memory_answer(
     return fallback
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R5-MoA — ORQUESTADOR de memoria
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _decide_memory(
     question: str,
@@ -364,9 +364,9 @@ def _decide_memory(
     )
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R6-RAG — CACHÉ
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
     if is_identity:
@@ -374,9 +374,9 @@ def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
     return cache_lookup(user_input)
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R6-RAG — AGENTE RECUPERADOR RAG
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagContext:
     """AGENTE RECUPERADOR RAG (R6-RAG).
@@ -421,9 +421,9 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
     )
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R6-RAG — AGENTE GENERADOR RAG
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _generate_rag_answer(
     user_input: str,
@@ -453,9 +453,9 @@ def _generate_rag_answer(
     return answer, rag_ctx["source_docs"], llm_ms, True, score
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # R6-RAG — ORQUESTADOR RAG
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _decide_rag(
     user_input: str,
@@ -495,9 +495,9 @@ def _decide_rag(
     return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Helpers — carril tool_list_files
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _handle_list_files(question: str) -> str:
     files = list_project_files()
@@ -519,9 +519,9 @@ def _handle_list_files(question: str) -> str:
     return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Decisores — otros carriles (exit)
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
     lines: list[str] = []
@@ -533,12 +533,8 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     return "\n".join(lines)
 
 
-def _decide_exit(chat_history: list) -> tuple[str, list]:
-    """D4-B: prompt reducido a 2 líneas y num_predict=45 para bajar latencia ~40% en CPU.
-
-    El resumen episódico solo necesita ser buscable semánticamente.
-    2 líneas (tema+decisión / siguiente paso) son suficientes para search_episodes().
-    """
+def _decide_exit(chat_history: list) -> DecisionResult:
+    """D4-B: prompt reducido a 2 líneas y num_predict=45 para bajar latencia ~40% en CPU."""
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -561,33 +557,46 @@ def _decide_exit(chat_history: list) -> tuple[str, list]:
 
     record_episode(summary=summary, turns=turns)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
-    return "__EXIT__", []
+    return DecisionResult(
+        route="exit",
+        response="__EXIT__",
+        cached=False,
+        source="direct",
+        source_docs=[],
+        retrieval_ms=0,
+        llm_ms=0,
+        tokens_est=0,
+    )
 
 
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Contrato público de la capa de inteligencia
-# ───────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def process_turn(
     route_or_ctx: str | TurnContext,
     user_input: str | None = None,
     vectordb: Any = None,
     chat_history: list | None = None,
-) -> tuple[str, list]:
+) -> DecisionResult:
     """Punto de entrada único de la capa de inteligencia.
 
     Acepta dos formas de llamada equivalentes:
 
     Forma nueva (TurnContext) — usada por chat_core:
         ctx = TurnContext(route="rag", query=user_input, vectordb=db, chat_history=hist)
-        answer, docs = process_turn(ctx)
+        result = process_turn(ctx)
+        answer = result["response"]
+        docs   = result.get("source_docs", [])
 
     Forma legacy (4 args) — usada por tests existentes:
-        answer, docs = process_turn(route, user_input, vectordb, chat_history)
+        result = process_turn(route, user_input, vectordb, chat_history)
+        answer = result["response"]
 
-    Ambas formas son equivalentes. La forma legacy sigue funcionando sin cambios.
+    Retorna DecisionResult con campos explícitos:
+        route, response, cached, source, source_docs,
+        retrieval_ms, llm_ms, tokens_est
     """
-    # Desempaquetar TurnContext si se recibe como primer argumento
     if isinstance(route_or_ctx, dict):
         ctx: TurnContext = route_or_ctx
         route        = ctx["route"]
@@ -595,61 +604,118 @@ def process_turn(
         vectordb     = ctx["vectordb"]
         chat_history = ctx["chat_history"]
     else:
-        route        = route_or_ctx
-        # user_input, vectordb, chat_history ya vienen como args posicionales
+        route = route_or_ctx
 
-    # Garantizar que chat_history nunca sea None dentro de la función
     if chat_history is None:
         chat_history = []
 
-    t_start = time.perf_counter()
-
+    # ── exit ────────────────────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
         _record_metric(route="exit", intent_type="exit")
         return result
 
-    # Carril identidad: respuesta fija, 0ms, sin LLM ni RAG.
+    # ── identity ────────────────────────────────────────────────────────
     if route == "identity":
         _record_metric(route="identity", intent_type="identity")
-        return _IDENTITY_MSG, []
+        return DecisionResult(
+            route="identity",
+            response=_IDENTITY_MSG,
+            cached=False,
+            source="direct",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
 
+    # ── tool_list_files ─────────────────────────────────────────────────────
     if route == "tool_list_files":
         answer = _handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files")
-        return answer, []
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="tool",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
 
+    # ── tools registradas ───────────────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool(route, user_input)
-        _record_metric(route=route, intent_type=route,
-                       llm_ms=int((time.perf_counter() - t0) * 1000))
-        return answer, []
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms)
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="tool",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=llm_ms,
+            tokens_est=0,
+        )
 
+    # ── memory ──────────────────────────────────────────────────────────────
     if route == "memory":
         t0 = time.perf_counter()
-        # D5: detect_memory_intents se llama UNA sola vez aquí.
         intents = detect_memory_intents(user_input)
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
         answer = _decide_memory(user_input, intents=intents, chat_history=chat_history)
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        tokens_est = int(len(answer.split()) * 1.3)
         _record_metric(route=route, intent_type=memory_intent,
-                       llm_ms=int((time.perf_counter() - t0) * 1000),
-                       tokens_est=int(len(answer.split()) * 1.3))
-        return answer, []
+                       llm_ms=llm_ms, tokens_est=tokens_est)
+        return DecisionResult(
+            route=route,
+            response=answer,
+            cached=False,
+            source="json",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=llm_ms,
+            tokens_est=tokens_est,
+        )
 
+    # ── unsupported ─────────────────────────────────────────────────────────
     if route == "unsupported":
         _record_metric(route=route, intent_type="unsupported")
-        return _UNSUPPORTED_MSG, []
+        return DecisionResult(
+            route=route,
+            response=_UNSUPPORTED_MSG,
+            cached=False,
+            source="direct",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
 
+    # ── rag (fallback) ───────────────────────────────────────────────────────
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route=route
     )
+    tokens_est = int(len(answer.split()) * 1.3)
     _record_metric(
         route=route, intent_type=route,
         retrieval_ms=retrieval_ms, llm_ms=llm_ms,
-        tokens_est=int(len(answer.split()) * 1.3),
+        tokens_est=tokens_est,
         cached=cached, num_docs=len(source_docs),
     )
-    return answer, source_docs
+    return DecisionResult(
+        route=route,
+        response=answer,
+        cached=cached,
+        source="cache" if cached else "chroma",
+        source_docs=source_docs,
+        retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms,
+        tokens_est=tokens_est,
+    )
