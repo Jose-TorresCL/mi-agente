@@ -5,6 +5,9 @@ y que process_turn con route='memory' no cae al carril RAG.
 
 Estos tests mockean las funciones de memory_manager para no depender
 de archivos JSON en storage/.
+
+Actualizado D5: _decide_memory(question, intents) — intents se detectan
+una sola vez en process_turn y se pasan como argumento.
 """
 import pytest
 from unittest.mock import patch, MagicMock
@@ -18,21 +21,21 @@ class TestDecideMemoryAlwaysReturnsString:
 
     def test_unknown_question_returns_string_not_none(self):
         """Una pregunta que no encaja en ningún tipo conocido → string, no None."""
-        # Esta pregunta no tiene keywords de ningún tipo de memoria
-        result = _decide_memory("¿Cuál es la capital de Francia?")
+        # intents=[] simula que detect_memory_intents no encontró nada
+        result = _decide_memory("¿Cuál es la capital de Francia?", intents=[])
         assert result is not None, "_decide_memory nunca debe retornar None"
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_unknown_question_contains_helpful_hint(self):
         """El mensaje de 'no encontré' incluye sugerencias de uso."""
-        result = _decide_memory("dime algo aleatorio")
+        result = _decide_memory("dime algo aleatorio", intents=[])
         assert "No encontré" in result or "memoria" in result.lower()
 
     @patch("app.intelligence.get_profile", return_value={"user_name": "José", "user_level": "junior"})
     def test_profile_question_returns_profile(self, mock_profile):
         """Pregunta de perfil → respuesta con datos del perfil."""
-        result = _decide_memory("¿cuál es mi perfil?")
+        result = _decide_memory("¿cuál es mi perfil?", intents=["profile"])
         assert result is not None
         assert isinstance(result, str)
         # El resultado debe mencionar el nombre o nivel
@@ -41,7 +44,7 @@ class TestDecideMemoryAlwaysReturnsString:
     @patch("app.intelligence.get_tasks", return_value={"tasks": []})
     def test_tasks_question_no_tasks(self, mock_tasks):
         """Pregunta de tareas sin tareas pendientes → mensaje claro."""
-        result = _decide_memory("¿qué tareas tengo pendientes?")
+        result = _decide_memory("¿qué tareas tengo pendientes?", intents=["tasks"])
         assert result is not None
         assert isinstance(result, str)
 
