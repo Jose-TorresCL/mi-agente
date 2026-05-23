@@ -1,14 +1,14 @@
 {
   "project_name": "mi-agente",
   "project_description": "Asistente IA local con memoria estructurada, router híbrido y RAG sobre documentación técnica",
-  "current_phase": "Fase 4 — Robustecimiento y cobertura de tests",
-  "current_sprint": "Sprint 4 — Auditoría de tests y corrección de bugs",
-  "sprint_goal": "Llegar a 306 tests pasando y documentar decisiones de arquitectura (ADRs)",
+  "repo": "https://github.com/Jose-TorresCL/mi-agente",
   "stack": "Python 3.11, Ollama (llama3.2 + nomic-embed-text), LangChain, ChromaDB, pytest",
   "architecture": "Router 3 capas (keywords → embeddings → fallback RAG) + memoria en capas (profile, workstate, tasks, facts, episodes)",
-  "repo": "https://github.com/Jose-TorresCL/mi-agente",
+  "current_phase": "Fase 4 — Robustecimiento y cobertura de tests",
+  "current_sprint": "Sprint 4 — Auditoría de tests y corrección de bugs",
+  "sprint_goal": "Normalización de texto en router + casos adversariales",
+  "sprint_status": "en curso",
   "last_milestone": "306/306 tests en verde — 2026-05-19",
-  "next_milestone": "Normalización de texto en router + casos adversariales",
-  "adr_count": 4,
+  "next_milestone": "Router normalizado + tests adversariales pasando",
   "test_coverage": "39% (306 tests, 2108 statements)"
 }

@@ -6,3 +6,5 @@ __pycache__/
 storage/
 .chromadb/
 .vscode/
+storage/project_facts.json
+.coverage
