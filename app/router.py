@@ -57,6 +57,14 @@ Fix N3:
   _COMPLETE_TASK_PATTERN ampliado: ahora acepta texto libre además de
   número de tarea. 'completé la tarea de tests' ahora matchea correctamente
   en tool_complete_task antes de llegar a tool_update_work_state.
+
+Fix R4+R7:
+  RAG_HINTS ahora se evalúa DESPUÉS de identity y memory en _route_by_keywords.
+  Antes: 'que es lo que tengo pendiente' → RAG (por 'que es' en RAG_HINTS).
+  Ahora: identity → memory → RAG_HINTS → fallback.
+  Eliminadas de RAG_HINTS las keywords demasiado genéricas que competían con
+  memory e identity: 'que es', 'objetivo', 'explicame', 'para que sirve',
+  'componentes'. Solo quedan señales inequívocamente documentales.
 """
 from __future__ import annotations
 
@@ -239,10 +247,8 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
 ]
 
 # Fix N3: patrón ampliado — acepta número de tarea O texto libre.
-# Antes: solo 'completé t-04'. Ahora: 'completé la tarea de tests' también matchea.
-# Esto evita que frases sin número caigan a tool_update_work_state por 'completé'.
 _COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|complete|complete)\s+(t-\d+|la tarea|el issue|el paso)",
+    r"(marca|marcar|cierra|cerrar|completar|complete)\s+(t-\d+|la tarea|el issue|el paso)",
     re.IGNORECASE,
 )
 
@@ -262,13 +268,16 @@ TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas funciones", "cuantas clases",
 ]
 
+# Fix R4+R7: solo keywords inequívocamente documentales.
+# Eliminadas: 'que es', 'objetivo', 'explicame', 'para que sirve', 'componentes'
+# porque competían con memory e identity cuando se evaluaban antes.
+# RAG_HINTS ahora se evalúa DESPUÉS de identity y memory en _route_by_keywords.
 RAG_HINTS = [
     "segun los documentos",
     "segun la documentacion",
     "segun los archivos",
     "que dice", "que hace",
     "como funciona", "como esta",
-    "explicame",
     "arquitectura",
     "relacion entre",
     "diferencia entre",
@@ -332,29 +341,45 @@ def _handle_unsupported(question: str) -> str:
 
 def _route_by_keywords(question: str) -> str | None:
     """Capa 1: clasificación instantánea por keywords.
-    Usa _normalize() para equiparar tildes, mayúsculas y espacios múltiples.
+
+    Orden de prioridad (Fix R4+R7):
+      1. !estado / comandos especiales
+      2. Carriles de escritura (tools)
+      3. unsupported
+      4. Archivos (extract_file_path, list, read)
+      5. identity    ← antes que RAG_HINTS (fix R7: 'para que sirves' no va a rag)
+      6. memory      ← antes que RAG_HINTS (fix R4: 'que es lo que tengo' no va a rag)
+      7. RAG_HINTS   ← solo si identity y memory no matchearon
     """
     q = _normalize(question)
 
-    # Fix B1: !estado debe detectarse aquí antes de llegar a embeddings.
+    # 1. Comandos especiales
     if q in {"!estado", "!estatus", "!status"}:
         return "!estado"
 
+    # 2. Carriles de escritura
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
+
+    # 3. Unsupported
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
-    if any(k in q for k in RAG_HINTS):                        return "rag"
+
+    # 4. Archivos
     if extract_file_path(question) is not None:               return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
-    # Identidad del agente ANTES de classify_memory_query
+    # 5. Identity (Fix R7: antes que RAG_HINTS)
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
 
+    # 6. Memory (Fix R4: antes que RAG_HINTS)
     if classify_memory_query(question) is not None:           return "memory"
+
+    # 7. RAG_HINTS — solo llega aquí si no es identity ni memory
+    if any(k in q for k in RAG_HINTS):                        return "rag"
 
     return None
 
