@@ -65,6 +65,17 @@ Fix R4+R7:
   Eliminadas de RAG_HINTS las keywords demasiado genéricas que competían con
   memory e identity: 'que es', 'objetivo', 'explicame', 'para que sirve',
   'componentes'. Solo quedan señales inequívocamente documentales.
+
+Fix R6:
+  Eliminadas 'crear', 'nuevo', 'nuevas' de _TASK_SUGGESTION_SIGNALS.
+  Antes: 'crear tarea' bloqueaba el carril tasks porque 'crear' era señal
+  de sugerencia. Ahora solo bloquean señales que indican intención de
+  proponer ideas, no de ejecutar acciones.
+
+Fix R8:
+  Confirmado: route_query ya aplica _normalize() antes del chequeo de
+  _EXIT_WORDS. 'Adiós', 'CHAO', 'hasta luego' matchean correctamente
+  sin importar tildes ni mayúsculas.
 """
 from __future__ import annotations
 
@@ -115,6 +126,8 @@ EMBED_TOP_K     = intent_index.EMBED_TOP_K
 
 # ─────────────────────────────────────────────
 # Palabras de salida
+# Fix R8: route_query aplica _normalize() antes del chequeo →
+# 'Adiós', 'CHAO', 'hasta luego' matchean sin importar tildes/mayúsculas.
 # ─────────────────────────────────────────────
 
 _EXIT_WORDS = {
@@ -186,9 +199,12 @@ MEMORY_TASKS_KEYWORDS = [
     "lista todas las tareas", "todas las tareas",
 ]
 
+# Fix R6: eliminadas 'crear', 'nuevo', 'nuevas'.
+# Antes bloqueaban frases como 'crear tarea nueva' → no llegaban a tasks.
+# Solo quedan señales que indican intención de proponer/sugerir, no ejecutar.
 _TASK_SUGGESTION_SIGNALS = [
     "podriamos", "podrias",
-    "nuevas", "nuevo", "crear", "agregar", "sugerir",
+    "agregar", "sugerir",
     "posibles", "ideas", "proponer", "que mas",
     "implementar", "anadir",
 ]
@@ -269,9 +285,8 @@ TOOL_UNSUPPORTED_KEYWORDS = [
 ]
 
 # Fix R4+R7: solo keywords inequívocamente documentales.
-# Eliminadas: 'que es', 'objetivo', 'explicame', 'para que sirve', 'componentes'
-# porque competían con memory e identity cuando se evaluaban antes.
-# RAG_HINTS ahora se evalúa DESPUÉS de identity y memory en _route_by_keywords.
+# Eliminadas: 'que es', 'objetivo', 'explicame', 'para que sirve', 'componentes'.
+# RAG_HINTS se evalúa DESPUÉS de identity y memory en _route_by_keywords.
 RAG_HINTS = [
     "segun los documentos",
     "segun la documentacion",
@@ -457,6 +472,9 @@ def route_query(question: str) -> str:
 
     Returns str con el carril ('rag', 'memory', 'identity', 'tool_*', 'unsupported', 'exit').
     Nunca retorna None ni lanza excepciones — fallback a 'rag'.
+
+    Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS, por lo que
+    'Adiós', 'CHAO', 'Hasta luego' matchean correctamente sin tildes ni mayúsculas.
     """
     if _normalize(question) in _EXIT_WORDS:
         return "exit"
