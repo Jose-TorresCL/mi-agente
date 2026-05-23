@@ -46,10 +46,22 @@ Fix B2:
   'quién eres tú', 'qué puedes hacer', etc. nunca lleguen al clasificador
   de embeddings y no caigan erróneamente en el carril 'memory' ni 'rag'.
   intelligence.py devuelve respuesta fija para este carril — 0ms, sin LLM.
+
+Fix N1+N2:
+  Agregada _normalize(text) que quita tildes, comprime espacios múltiples
+  y aplica unicodedata NFD. Todas las listas de keywords ahora solo tienen
+  la versión sin tilde — _normalize() se encarga de equipararlas.
+  Eliminados ~47 pares duplicados (con/sin tilde) del archivo.
+
+Fix N3:
+  _COMPLETE_TASK_PATTERN ampliado: ahora acepta texto libre además de
+  número de tarea. 'completé la tarea de tests' ahora matchea correctamente
+  en tool_complete_task antes de llegar a tool_update_work_state.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from app.config import MODEL_NAME, OLLAMA_URL
@@ -58,6 +70,19 @@ from app.logger import get_logger
 from app import intent_index
 
 log = get_logger(__name__)
+
+
+# ─────────────────────────────────────────────
+# Normalización de texto (Fix N1)
+# Quita tildes, comprime espacios múltiples.
+# Se aplica antes de TODO matching en Capa 1.
+# ─────────────────────────────────────────────
+
+def _normalize(text: str) -> str:
+    """Minúsculas + sin tildes + espacios comprimidos."""
+    nfkd = unicodedata.normalize("NFD", text.lower())
+    sin_tildes = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", sin_tildes).strip()
 
 
 # ─────────────────────────────────────────────
@@ -88,7 +113,7 @@ _EXIT_WORDS = {
     "salir", "exit", "quit", "bye",
     "sal", "salo", "sali", "salie",
     "chao", "chau",
-    "adios", "adiós",
+    "adios",
     "hasta luego", "hasta pronto",
     "nos vemos",
     "me voy", "cierro",
@@ -105,111 +130,92 @@ _WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "too
 
 # ─────────────────────────────────────────────
 # Listas de keywords (Capa 1)
+# Sin tildes — _normalize() equipara las variantes del usuario.
+# Fix N2: eliminados ~47 pares duplicados (con/sin tilde).
 # ─────────────────────────────────────────────
 
 TOOL_LIST_KEYWORDS = [
-    "listar archivos", "lista de archivos", "qué archivos", "que archivos",
+    "listar archivos", "lista de archivos", "que archivos",
     "archivos del proyecto", "ver archivos", "mostrar archivos",
-    "muéstrame los archivos", "muestrame los archivos",
-    "qué hay en el proyecto", "que hay en el proyecto",
+    "muestrame los archivos",
+    "que hay en el proyecto",
 ]
 
 TOOL_READ_KEYWORDS = [
-    "leer archivo", "muéstrame el archivo", "muestrame el archivo",
+    "leer archivo", "muestrame el archivo",
     "abre el archivo", "ver archivo", "mostrar archivo", "lee el archivo",
-    "leer docs", "leer documentación", "leer documento", "mostrar documento",
+    "leer docs", "leer documentacion", "leer documento", "mostrar documento",
 ]
 
 MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
-    "cómo prefiero", "como prefiero", "cómo trabajo", "como trabajo",
+    "como prefiero", "como trabajo",
     "perfil", "mi perfil",
-    "quién soy", "quien soy",
-    "quién soy yo", "quien soy yo",
-    "cómo me llamo", "como me llamo",
-    "mi nombre", "cuál es mi nombre", "cual es mi nombre",
+    "quien soy", "quien soy yo",
+    "como me llamo", "mi nombre", "cual es mi nombre",
 ]
 
 MEMORY_WORK_STATE_KEYWORDS = [
     "estado actual", "foco actual", "siguiente paso",
-    "en qué vamos", "en que vamos", "qué sigue", "que sigue",
-    "en qué estoy", "en que estoy", "qué estoy haciendo", "que estoy haciendo",
-    "último paso", "ultimo paso", "en qué quedamos", "en que quedamos",
-    "qué hago hoy", "que hago hoy",
-    "cuál es el plan", "cual es el plan",
-    "qué hicimos", "que hicimos",
-    "en qué estamos", "en que estamos",
-    "cuál es mi foco", "cual es mi foco",
-    "qué estoy trabajando", "que estoy trabajando",
-    "qué estaba haciendo", "que estaba haciendo",
-    "a qué me dedico ahora", "a que me dedico ahora",
+    "en que vamos", "que sigue",
+    "en que estoy", "que estoy haciendo",
+    "ultimo paso", "en que quedamos",
+    "que hago hoy", "cual es el plan",
+    "que hicimos", "en que estamos",
+    "cual es mi foco", "que estoy trabajando",
+    "que estaba haciendo", "a que me dedico ahora",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
-    "qué tareas hay", "que tareas hay",
-    "mis tareas", "mis tareas pendientes",
+    "que tareas hay", "mis tareas", "mis tareas pendientes",
     "lista de tareas pendientes",
     "tareas pendientes", "tareas abiertas",
-    "qué tengo pendiente", "que tengo pendiente",
-    "qué tareas tengo", "que tareas tengo",
-    "ponme al día", "ponme al dia",
-    "tareas", "mis tareas", "ver tareas", "mostrar tareas",
+    "que tengo pendiente", "que tareas tengo",
+    "ponme al dia",
+    "tareas", "ver tareas", "mostrar tareas",
     "tareas hechas", "tareas completadas", "tareas cerradas",
-    "qué tareas hice", "que tareas hice",
+    "que tareas hice",
     "lista todas las tareas", "todas las tareas",
 ]
 
 _TASK_SUGGESTION_SIGNALS = [
-    "podríamos", "podriamos", "podrías", "podrias",
+    "podriamos", "podrias",
     "nuevas", "nuevo", "crear", "agregar", "sugerir",
-    "posibles", "ideas", "proponer", "qué más", "que mas",
-    "implementar", "añadir", "añade",
+    "posibles", "ideas", "proponer", "que mas",
+    "implementar", "anadir",
 ]
 
 MEMORY_PROJECT_FACTS_KEYWORDS = [
     "fase actual", "fase del proyecto", "estado del proyecto",
     "hechos del proyecto", "datos del proyecto",
-    "en qué fase", "en que fase", "nombre del proyecto",
-    # Fix P13: preguntas sobre sprint → son hechos del proyecto
-    "sprint", "en qué sprint", "en que sprint",
-    "qué sprint", "que sprint", "sprint actual",
+    "en que fase", "nombre del proyecto",
+    "sprint", "en que sprint",
+    "que sprint", "sprint actual",
 ]
 
-# Fix 6B: keywords para preguntas episódicas (sesiones anteriores, aprendizajes).
 MEMORY_EPISODE_KEYWORDS = [
-    "qué aprendí", "que aprendi", "qué aprendimos", "que aprendimos",
-    "sesión anterior", "sesion anterior", "última sesión", "ultima sesion",
+    "que aprendi", "que aprendimos",
+    "sesion anterior", "ultima sesion",
     "sesiones anteriores", "la semana pasada", "ayer trabajamos",
-    "qué hicimos antes", "que hicimos antes",
-    "qué trabajamos", "que trabajamos",
+    "que hicimos antes", "que trabajamos",
     "historial de sesiones", "episodios anteriores",
-    "qué avancé", "que avance", "qué avanzamos", "que avanzamos",
-    "última vez que", "ultima vez que",
+    "que avance", "que avanzamos",
+    "ultima vez que",
 ]
 
-# Fix B2 → feat: AGENT_IDENTITY_KEYWORDS ahora devuelve 'identity' (no 'rag').
-# intelligence.py maneja este carril con respuesta fija — 0ms, sin LLM.
-# Se evalúa ANTES de classify_memory_query para evitar confusión con
-# preguntas sobre el usuario ('quién soy yo' → memory vs 'quién eres tú' → identity).
 AGENT_IDENTITY_KEYWORDS = [
-    "quién eres", "quien eres",
-    "quién eres tú", "quien eres tu", "quien eres tú",
-    "qué eres", "que eres",
-    "qué puedes hacer", "que puedes hacer",
-    "qué puedes", "que puedes",
-    "qué sabes hacer", "que sabes hacer",
-    "para qué sirves", "para que sirves",
-    "cuéntame de ti", "cuentame de ti",
-    "cuéntame sobre ti", "cuentame sobre ti",
-    "dime quién eres", "dime quien eres",
-    "qué eres tú", "que eres tu",
-    "cómo te llamas", "como te llamas",
-    "cuál es tu nombre", "cual es tu nombre",
-    "qué modelo eres", "que modelo eres",
-    "cuáles son tus capacidades", "cuales son tus capacidades",
-    "qué herramientas tienes", "que herramientas tienes",
-    "tus límites", "tus limites",
-    "qué no puedes hacer", "que no puedes hacer",
+    "quien eres", "quien eres tu",
+    "que eres", "que eres tu",
+    "que puedes hacer", "que puedes",
+    "que sabes hacer",
+    "para que sirves",
+    "cuentame de ti", "cuentame sobre ti",
+    "dime quien eres",
+    "como te llamas", "cual es tu nombre",
+    "que modelo eres",
+    "cuales son tus capacidades",
+    "que herramientas tienes",
+    "tus limites", "que no puedes hacer",
     "tus capacidades",
 ]
 
@@ -220,7 +226,7 @@ TOOL_SAVE_FACT_KEYWORDS = [
 
 TOOL_CREATE_TASK_KEYWORDS = [
     "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
-    "nueva tarea", "añade una tarea", "anota una tarea", "registra una tarea",
+    "nueva tarea", "anade una tarea", "anota una tarea", "registra una tarea",
 ]
 
 TOOL_COMPLETE_TASK_KEYWORDS = [
@@ -232,46 +238,40 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completada", "como completado",
 ]
 
+# Fix N3: patrón ampliado — acepta número de tarea O texto libre.
+# Antes: solo 'completé t-04'. Ahora: 'completé la tarea de tests' también matchea.
+# Esto evita que frases sin número caigan a tool_update_work_state por 'completé'.
 _COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|completé|complete)\s+t-\d+",
+    r"(marca|marcar|cierra|cerrar|completar|complete|complete)\s+(t-\d+|la tarea|el issue|el paso)",
     re.IGNORECASE,
 )
 
 TOOL_UPDATE_WORK_STATE_KEYWORDS = [
-    "actualiza el foco", "cambia el foco", "enfócate en", "ahora estoy en",
-    "completé", "terminé", "acabé", "ya hice", "listo:",
-    "termine", "acabe",
-    "el siguiente paso es", "sigue:", "próximo paso",
+    "actualiza el foco", "cambia el foco", "enfocate en", "ahora estoy en",
+    "complete", "termine", "acabe", "ya hice", "listo:",
+    "el siguiente paso es", "sigue:", "proximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
 TOOL_UNSUPPORTED_KEYWORDS = [
-    "cuántas líneas", "cuantas líneas",
-    "cuántas lineas", "cuantas lineas",
-    "líneas de código", "lineas de codigo",
-    "líneas tiene", "lineas tiene",
-    "cuánto código", "cuanto codigo",
-    "tamaño del proyecto", "peso del proyecto",
-    "cuántos archivos hay", "cuantos archivos hay",
-    "cuántos archivos tiene", "cuantos archivos tiene",
-    "cuántas funciones", "cuantas funciones",
-    "cuántas clases", "cuantas clases",
+    "cuantas lineas",
+    "lineas de codigo", "lineas tiene",
+    "cuanto codigo",
+    "tamano del proyecto", "peso del proyecto",
+    "cuantos archivos hay", "cuantos archivos tiene",
+    "cuantas funciones", "cuantas clases",
 ]
 
 RAG_HINTS = [
-    "según los documentos", "segun los documentos",
-    "según la documentación", "segun la documentación",
-    "según los archivos", "segun los archivos",
-    "qué dice", "que dice",
-    "qué hace", "que hace",
-    "cómo funciona", "como funciona",
-    "cómo está", "como esta",
-    "para qué sirve", "para que sirve",
-    "explica", "explícame", "explicame",
-    "arquitectura", "objetivo",
-    "relación entre", "relacion entre",
-    "componentes", "diferencia entre",
-    "qué es", "que es",
+    "segun los documentos",
+    "segun la documentacion",
+    "segun los archivos",
+    "que dice", "que hace",
+    "como funciona", "como esta",
+    "explicame",
+    "arquitectura",
+    "relacion entre",
+    "diferencia entre",
 ]
 
 VALID_LANES = {
@@ -302,7 +302,7 @@ def classify_memory_query(question: str) -> str | None:
 
     Retorna None si la pregunta no encaja en ningún tipo conocido.
     """
-    q = question.lower().strip()
+    q = _normalize(question)
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) \
@@ -331,8 +331,10 @@ def _handle_unsupported(question: str) -> str:
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: clasificación instantánea por keywords."""
-    q = question.lower().strip()
+    """Capa 1: clasificación instantánea por keywords.
+    Usa _normalize() para equiparar tildes, mayúsculas y espacios múltiples.
+    """
+    q = _normalize(question)
 
     # Fix B1: !estado debe detectarse aquí antes de llegar a embeddings.
     if q in {"!estado", "!estatus", "!status"}:
@@ -350,7 +352,6 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
     # Identidad del agente ANTES de classify_memory_query
-    # para que 'quién eres tú' no caiga en memory por similitud con 'quién soy yo'
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
 
     if classify_memory_query(question) is not None:           return "memory"
@@ -432,7 +433,7 @@ def route_query(question: str) -> str:
     Returns str con el carril ('rag', 'memory', 'identity', 'tool_*', 'unsupported', 'exit').
     Nunca retorna None ni lanza excepciones — fallback a 'rag'.
     """
-    if question.lower().strip() in _EXIT_WORDS:
+    if _normalize(question) in _EXIT_WORDS:
         return "exit"
 
     SESSION_STATS["total"] += 1
