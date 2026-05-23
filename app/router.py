@@ -76,6 +76,15 @@ Fix R8:
   Confirmado: route_query ya aplica _normalize() antes del chequeo de
   _EXIT_WORDS. 'Adiós', 'CHAO', 'hasta luego' matchean correctamente
   sin importar tildes ni mayúsculas.
+
+Fix P5-Paso1:
+  _route_by_keywords ahora retorna 'memory:<subtipo>' en vez de 'memory'.
+  Ejemplos: 'memory:tasks', 'memory:profile', 'memory:work_state',
+            'memory:project_facts', 'memory:episode'.
+  Esto permite que intelligence.py use contexto selectivo en lugar de
+  get_full_context(). Pendiente: Paso 2 (Capa 2) y Paso 4 (intelligence.py).
+  VALID_LANES actualizado con los subtipos para que _route_by_embeddings
+  no los rechace cuando la Capa 2 empiece a propagarlos.
 """
 from __future__ import annotations
 
@@ -200,7 +209,6 @@ MEMORY_TASKS_KEYWORDS = [
 ]
 
 # Fix R6: eliminadas 'crear', 'nuevo', 'nuevas'.
-# Antes bloqueaban frases como 'crear tarea nueva' → no llegaban a tasks.
 # Solo quedan señales que indican intención de proponer/sugerir, no ejecutar.
 _TASK_SUGGESTION_SIGNALS = [
     "podriamos", "podrias",
@@ -298,10 +306,15 @@ RAG_HINTS = [
     "diferencia entre",
 ]
 
+# Fix P5-Paso1: incluye los subtipos 'memory:*' para que _route_by_embeddings
+# no los rechace cuando la Capa 2 empiece a propagarlos (Paso 2 pendiente).
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
-    "memory", "rag", "identity",
+    "memory",
+    "memory:profile", "memory:work_state", "memory:tasks",
+    "memory:project_facts", "memory:episode",
+    "rag", "identity",
     "unsupported",
 }
 
@@ -362,9 +375,14 @@ def _route_by_keywords(question: str) -> str | None:
       2. Carriles de escritura (tools)
       3. unsupported
       4. Archivos (extract_file_path, list, read)
-      5. identity    ← antes que RAG_HINTS (fix R7: 'para que sirves' no va a rag)
-      6. memory      ← antes que RAG_HINTS (fix R4: 'que es lo que tengo' no va a rag)
+      5. identity    ← antes que RAG_HINTS
+      6. memory      ← antes que RAG_HINTS, ahora retorna 'memory:<subtipo>'
       7. RAG_HINTS   ← solo si identity y memory no matchearon
+
+    Fix P5-Paso1: el carril memory ahora incluye el subtipo como sufijo.
+      Ejemplos: 'memory:tasks', 'memory:profile', 'memory:work_state'.
+      intelligence.py debe usar lane.startswith('memory') para detectarlo
+      y lane.split(':')[1] para extraer el subtipo.
     """
     q = _normalize(question)
 
@@ -387,11 +405,13 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
-    # 5. Identity (Fix R7: antes que RAG_HINTS)
+    # 5. Identity (antes que RAG_HINTS)
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
 
-    # 6. Memory (Fix R4: antes que RAG_HINTS)
-    if classify_memory_query(question) is not None:           return "memory"
+    # 6. Memory — Fix P5-Paso1: propagar subtipo
+    memory_subtype = classify_memory_query(question)
+    if memory_subtype is not None:
+        return f"memory:{memory_subtype}"
 
     # 7. RAG_HINTS — solo llega aquí si no es identity ni memory
     if any(k in q for k in RAG_HINTS):                        return "rag"
@@ -470,11 +490,11 @@ def format_estado() -> str:
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto.
 
-    Returns str con el carril ('rag', 'memory', 'identity', 'tool_*', 'unsupported', 'exit').
+    Returns str con el carril ('rag', 'memory:<subtipo>', 'identity', 'tool_*', 'unsupported', 'exit').
     Nunca retorna None ni lanza excepciones — fallback a 'rag'.
 
-    Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS, por lo que
-    'Adiós', 'CHAO', 'Hasta luego' matchean correctamente sin tildes ni mayúsculas.
+    Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS.
+    Fix P5-Paso1: memory ahora incluye subtipo — ver _route_by_keywords.
     """
     if _normalize(question) in _EXIT_WORDS:
         return "exit"
