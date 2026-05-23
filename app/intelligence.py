@@ -39,6 +39,13 @@ TurnContext — process_turn acepta TurnContext o 4 args sueltos (CERRADO).
 feat: carril 'identity' — respuesta hardcodeada para preguntas de identidad
   del agente. 0ms, sin LLM ni RAG. router.py envía 'identity' en vez de 'rag'.
 E3  — process_turn devuelve DecisionResult en vez de tuple (CERRADO).
+Fix P5-Paso4 — el bloque memory lee el subtipo desde el carril en vez de
+  re-detectarlo con detect_memory_intents (CERRADO):
+  - Si route = 'memory:tasks' → intents = ['tasks']  (Capa 1, 0 trabajo extra)
+  - Si route = 'memory'       → fallback a detect_memory_intents (Capa 2)
+  - route se normaliza a 'memory' antes de _record_metric para no romper métricas.
+  - La condición pasa de `route == "memory"` a
+    `route == "memory" or route.startswith("memory:")`.
 """
 from __future__ import annotations
 
@@ -662,19 +669,34 @@ def process_turn(
         )
 
     # ── memory ──────────────────────────────────────────────────────────────
-    if route == "memory":
+    # Fix P5-Paso4: lee subtipo desde el carril si está disponible (Capa 1).
+    # Fallback a detect_memory_intents si el carril es 'memory' plano (Capa 2).
+    if route == "memory" or route.startswith("memory:"):
         t0 = time.perf_counter()
-        intents = detect_memory_intents(user_input)
+
+        # Extraer subtipo del carril (ej. 'memory:tasks' → 'tasks')
+        if ":" in route:
+            subtype = route.split(":", 1)[1]
+            intents = [subtype]
+            log.debug("[memory] subtipo desde carril: %s", subtype)
+        else:
+            # Capa 2 o legacy — re-detectar como antes
+            intents = detect_memory_intents(user_input)
+            log.debug("[memory] subtipo re-detectado: %s", intents)
+
         memory_intent = intents[0] if intents else "memory_query"
         if len(intents) > 1:
             memory_intent = "multi:" + "+".join(intents)
+
         answer = _decide_memory(user_input, intents=intents, chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
         tokens_est = int(len(answer.split()) * 1.3)
-        _record_metric(route=route, intent_type=memory_intent,
+
+        # Normalizar route a "memory" para métricas consistentes
+        _record_metric(route="memory", intent_type=memory_intent,
                        llm_ms=llm_ms, tokens_est=tokens_est)
         return DecisionResult(
-            route=route,
+            route="memory",
             response=answer,
             cached=False,
             source="json",
