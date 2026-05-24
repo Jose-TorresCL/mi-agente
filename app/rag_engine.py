@@ -1,14 +1,18 @@
 """Motor RAG — recuperación de documentos y construcción de la chain.
 
-Responsabilidad única: todo lo relacionado con ChromaDB y LangChain.
-Ningún otro módulo debería importar langchain_chroma ni ChatOllama directamente.
+Responsabilidad única: todo lo relacionado con ChromaDB y LangChain RAG.
+Ningún módulo debe importar langchain_chroma ni OllamaEmbeddings directamente.
 
-Clientes LLM disponibles (Fix C2 — cliente unificado):
-  build_chain()    → chain LangChain RAG completa (para process_turn RAG)
-  generate_raw()   → llamada directa al LLM singleton sin RAG ni chain.
-                     Para síntesis de memoria, resumen episódico y cualquier
-                     llamada LLM que no necesite recuperación vectorial.
-                     Mismo modelo, mismos timeouts, mismo logging centralizado.
+El cliente LLM (ChatOllama) vive en app/llm_client.py.
+Este módulo re-exporta get_llm y generate_raw por compatibilidad:
+    from app.rag_engine import generate_raw   ← sigue funcionando
+    from app.llm_client import generate_raw   ← forma canónica nueva
+
+Funciones RAG:
+    load_vector_store()  → carga ChromaDB
+    build_retriever()    → retriever MMR con filtro por doc_type
+    retrieve_context()   → recupera documentos y devuelve texto + source_docs
+    build_chain()        → chain RAG completa (prompt | llm | parser)
 """
 from __future__ import annotations
 
@@ -16,88 +20,14 @@ from typing import Any
 
 from app.config import MODEL_NAME, OLLAMA_URL, CHROMA_DIR
 from app.logger import get_logger
+from app.llm_client import get_llm, generate_raw  # noqa: F401 — re-exporta para compatibilidad
 
 from langchain_chroma import Chroma
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage
 
 log = get_logger(__name__)
-
-
-# ─────────────────────────────────────────────
-# Singleton LLM
-# ─────────────────────────────────────────────
-
-_llm_instance: ChatOllama | None = None
-
-
-def get_llm() -> ChatOllama:
-    """Devuelve el LLM singleton. Se crea solo la primera vez."""
-    global _llm_instance
-    if _llm_instance is None:
-        _llm_instance = ChatOllama(
-            model=MODEL_NAME,
-            base_url=OLLAMA_URL,
-            temperature=0.1,
-        )
-        log.debug("LLM singleton inicializado: %s", MODEL_NAME)
-    return _llm_instance
-
-
-# ─────────────────────────────────────────────
-# Fix C2 — cliente LLM unificado (sin RAG)
-# ─────────────────────────────────────────────
-
-def generate_raw(
-    prompt: str,
-    temperature: float = 0.3,
-    num_predict: int = 150,
-    timeout: int = 30,
-) -> str | None:
-    """Llama al LLM singleton con un prompt libre, sin RAG ni chain LangChain.
-
-    Usa el mismo ChatOllama singleton que build_chain(), garantizando:
-    - Un único cliente LLM en todo el proyecto (Fix C2).
-    - El mismo modelo (MODEL_NAME de config.py).
-    - Logging centralizado con el mismo get_logger.
-    - Manejo de errores uniforme: devuelve None en caso de fallo.
-
-    Args:
-        prompt:      Texto completo del prompt a enviar al LLM.
-        temperature: Temperatura de generación (default 0.3, más conservador
-                     que RAG que usa 0.1).
-        num_predict: Máximo de tokens a generar.
-        timeout:     Segundos antes de abortar la llamada.
-
-    Returns:
-        Texto generado por el LLM, o None si la llamada falló.
-
-    Uso típico:
-        answer = generate_raw(prompt, temperature=0.3, num_predict=150)
-        if answer is None:
-            return fallback_string
-    """
-    try:
-        llm = get_llm()
-        # ChatOllama acepta opciones extra vía bind().
-        # Creamos una instancia temporal con los parámetros ajustados
-        # sin tocar el singleton base (que mantiene temperature=0.1 para RAG).
-        llm_temp = ChatOllama(
-            model=MODEL_NAME,
-            base_url=OLLAMA_URL,
-            temperature=temperature,
-            num_predict=num_predict,
-            timeout=timeout,
-        )
-        result = llm_temp.invoke([HumanMessage(content=prompt)])
-        text = result.content.strip() if hasattr(result, "content") else str(result).strip()
-        log.debug("generate_raw: %d chars generados", len(text))
-        return text if text else None
-    except Exception as exc:
-        log.warning("generate_raw falló: %s", exc)
-        return None
 
 
 # ─────────────────────────────────────────────
