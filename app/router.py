@@ -85,7 +85,7 @@ Fix P5-Paso1:
   VALID_LANES actualizado con los subtipos para que _route_by_embeddings
   no los rechace cuando la Capa 2 empiece a propagarlos.
 
-Fix B3 (este commit):
+Fix B3:
   Bug1 — extract_file_path disparaba tool_read_file para cualquier pregunta
   que mencionara un archivo (ej: '¿qué hace intelligence.py?'). Ahora se
   requiere que haya un verbo lector explícito (leer, abre, muéstrame, ver,
@@ -97,11 +97,17 @@ Fix B3 (este commit):
   'que es el', 'que es la', 'que es un', 'que es una'. Son señales
   inequívocamente documentales que la Capa 1 debe interceptar.
 
-Fix B4 (este commit):
+Fix B4:
   'para que sirve fidelity_check.py' llegaba a Capa 2 y se clasificaba
   como memory:project_facts (similitud 0.71). Agregado 'para que sirve'
   a RAG_HINTS para que la Capa 1 lo intercepte antes de embeddings.
   'para que sirves' (identity) se evalúa antes de RAG_HINTS → sin colisión.
+
+Fix C1 (este commit):
+  from app.tools import extract_file_path movido de nivel de módulo a
+  import local dentro de _route_by_keywords(). Rompe el ciclo:
+    router → tools → memory_manager → router (💥 antes)
+  Mismo comportamiento funcional, sin ImportError al cargar el módulo.
 """
 from __future__ import annotations
 
@@ -111,7 +117,6 @@ from pathlib import Path
 
 from app.config import MODEL_NAME, OLLAMA_URL
 from app.text_utils import _normalize
-from app.tools import extract_file_path
 from app.logger import get_logger
 from app import intent_index
 
@@ -367,6 +372,9 @@ def _handle_unsupported(question: str) -> str:
 
 def _route_by_keywords(question: str) -> str | None:
     """Capa 1: clasificación instantánea por keywords."""
+    # Fix C1: import local para evitar ciclo router → tools → memory_manager → router
+    from app.tools import extract_file_path
+
     q = _normalize(question)
 
     if q in {"!estado", "!estatus", "!status"}:
