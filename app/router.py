@@ -97,6 +97,12 @@ Fix B3 (este commit):
   clasificaba como memory:work_state (similitud 0.71). Agregados a RAG_HINTS:
   'que es el', 'que es la', 'que es un', 'que es una'. Son señales
   inequívocamente documentales que la Capa 1 debe interceptar.
+
+Fix B4 (este commit):
+  'para que sirve fidelity_check.py' llegaba a Capa 2 y se clasificaba
+  como memory:project_facts (similitud 0.71). Agregado 'para que sirve'
+  a RAG_HINTS para que la Capa 1 lo intercepte antes de embeddings.
+  'para que sirves' (identity) se evalúa antes de RAG_HINTS → sin colisión.
 """
 from __future__ import annotations
 
@@ -327,6 +333,11 @@ TOOL_UNSUPPORTED_KEYWORDS = [
 #
 # Fix B3 — Bug2: agregados 'que es el', 'que es la', 'que es un', 'que es una'.
 # Capturan preguntas como '¿qué es el retriever?' antes de llegar a embeddings.
+#
+# Fix B4: agregado 'para que sirve'.
+# 'para que sirve fidelity_check.py' llegaba a Capa 2 → memory:project_facts (sim=0.71).
+# No colisiona con identity porque 'para que sirves' (con 's') está en
+# AGENT_IDENTITY_KEYWORDS y se evalúa antes.
 RAG_HINTS = [
     "segun los documentos",
     "segun la documentacion",
@@ -338,6 +349,8 @@ RAG_HINTS = [
     "diferencia entre",
     # Fix B3 — Bug2: preguntas de definición/concepto → inequívocamente documentales
     "que es el", "que es la", "que es un", "que es una",
+    # Fix B4: preguntas de propósito sobre archivos/módulos → inequívocamente documentales
+    "para que sirve",
 ]
 
 # Fix P5-Paso1: incluye los subtipos 'memory:*' para que _route_by_embeddings
@@ -537,6 +550,7 @@ def route_query(question: str) -> str:
     Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS.
     Fix P5-Paso1: memory ahora incluye subtipo — ver _route_by_keywords.
     Fix B3: extract_file_path requiere verbo lector; RAG_HINTS incluye 'que es el/la/un/una'.
+    Fix B4: RAG_HINTS incluye 'para que sirve' — evita falso positivo en Capa 2.
     """
     if _normalize(question) in _EXIT_WORDS:
         return "exit"
