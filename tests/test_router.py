@@ -9,6 +9,8 @@ Cubre:
   - Casos reales que fallaron en sesión (documentados con comentario)
   - fix #8: frases de estado natural → memory
   - fix #9: frases de identidad → memory
+  - Fix P5-Paso1: memory ahora retorna 'memory:<subtipo>' (ej: 'memory:profile')
+  - Fix B3: 'para qué sirve X.py' y 'explica ...' caen a embeddings/fallback → rag vía route_query
 
 NO requiere Ollama ni Chroma: sólo se prueba _route_by_keywords() y classify_memory_query().
 Si el índice no existe, las capas 2 y 3 son ignoradas correctamente.
@@ -166,7 +168,8 @@ class TestUpdateWorkState:
 class TestRAGHints:
     def test_que_hace_con_archivo_py(self):
         """CASO QUE FALLÓ: '¿qué hace router.py?' iba a tool_read_file.
-        Ahora RAG_HINTS tiene prioridad sobre extract_file_path.
+        Fix B3: sin verbo lector explícito, la mención de archivo no dispara tool_read_file.
+        'que hace' está en RAG_HINTS → carril rag vía Capa 1.
         """
         assert kw("¿qué hace router.py?") == "rag"
 
@@ -177,11 +180,18 @@ class TestRAGHints:
         assert kw("cómo funciona Chroma") == "rag"
 
     def test_para_que_sirve_con_archivo(self):
-        """Igual que el bug del router — pero con fidelity_check.py."""
-        assert kw("para qué sirve fidelity_check.py") == "rag"
+        """Fix R4+R7 eliminó 'para que sirve' de RAG_HINTS (demasiado genérica).
+        Capa 1 devuelve None → Capa 2/fallback resuelve como rag.
+        Se prueba con route_query() para cubrir el flujo completo.
+        """
+        assert route_query("para qué sirve fidelity_check.py") == "rag"
 
     def test_explica(self):
-        assert kw("explica el flujo del agente") == "rag"
+        """Fix R4+R7 eliminó 'explicame' de RAG_HINTS.
+        Capa 1 devuelve None → Capa 2/fallback resuelve como rag.
+        Se prueba con route_query() para cubrir el flujo completo.
+        """
+        assert route_query("explica el flujo del agente") == "rag"
 
     def test_arquitectura(self):
         assert kw("cuál es la arquitectura del sistema") == "rag"
@@ -260,9 +270,9 @@ class TestClassifyMemoryQuery:
         assert classify_memory_query("qué tengo pendiente") == "tasks"
 
     def test_tareas_con_signal_sugestion_va_a_rag(self):
-        """'qué tareas podríamos crear' tiene signal de sugerencia → debe ir a rag."""
+        """'qué tareas podríamos crear' tiene signal de sugerencia → no debe ir a memory."""
         result = _route_by_keywords("qué tareas podríamos crear")
-        assert result != "memory"
+        assert result is None or not result.startswith("memory")
 
     def test_fase_actual(self):
         assert classify_memory_query("en qué fase estamos") == "project_facts"
@@ -275,18 +285,20 @@ class TestClassifyMemoryQuery:
 
 
 # ─────────────────────────────────────────────────────────────
-# 10. CARRIL MEMORY VÍA route_query (integración Capa 1)
+# 10. CARRIL MEMORY VÍA route_query — Fix P5-Paso1: subtipo
+# Antes retornaba 'memory', ahora retorna 'memory:<subtipo>'.
+# Los tests usan startswith("memory") para ser robustos ante futuros subtipos.
 # ─────────────────────────────────────────────────────────────
 
 class TestMemoryViaRouteQuery:
     def test_ponme_al_dia(self):
-        """'ponme al día' debe ir a memory, no a rag."""
+        """'ponme al día' debe ir a memory (tasks), no a rag."""
         lane = _route_by_keywords("ponme al día")
-        assert lane == "memory"
+        assert lane is not None and lane.startswith("memory")
 
     def test_mis_tareas_pendientes(self):
         lane = _route_by_keywords("mis tareas pendientes")
-        assert lane == "memory"
+        assert lane is not None and lane.startswith("memory")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -308,7 +320,10 @@ class TestEdgeCases:
         assert kw("NUEVA TAREA: revisar el logger") == "tool_create_task"
 
     def test_tilde_no_rompe_keyword(self):
-        assert kw("Completé la tarea del router") == "tool_update_work_state"
+        """Fix N3: 'Completé la tarea del router' matchea tool_complete_task
+        (complete la tarea → TOOL_COMPLETE_TASK_KEYWORDS), no tool_update_work_state.
+        """
+        assert kw("Completé la tarea del router") == "tool_complete_task"
 
     def test_route_query_nunca_devuelve_none(self):
         result = route_query("una frase completamente aleatoria xyz123")
@@ -323,6 +338,7 @@ class TestEdgeCases:
 
 # ─────────────────────────────────────────────────────────────
 # 12. KEYWORDS NUEVAS — fix #8 (estado) y fix #9 (identidad)
+# Fix P5-Paso1: ahora retornan 'memory:<subtipo>', se verifica con startswith.
 # ─────────────────────────────────────────────────────────────
 
 class TestKeywordsNuevas:
@@ -333,26 +349,34 @@ class TestKeywordsNuevas:
 
     # fix #9 — identidad → memory (classify → profile)
     def test_quien_soy_yo(self):
-        assert kw("quién soy yo") == "memory"
+        lane = kw("quién soy yo")
+        assert lane is not None and lane.startswith("memory")
 
     def test_quien_soy_sin_tilde(self):
-        assert kw("quien soy yo") == "memory"
+        lane = kw("quien soy yo")
+        assert lane is not None and lane.startswith("memory")
 
     def test_como_me_llamo(self):
-        assert kw("cómo me llamo") == "memory"
+        lane = kw("cómo me llamo")
+        assert lane is not None and lane.startswith("memory")
 
     def test_mi_nombre(self):
-        assert kw("mi nombre") == "memory"
+        lane = kw("mi nombre")
+        assert lane is not None and lane.startswith("memory")
 
     # fix #8 — estado natural → memory (classify → work_state)
     def test_que_hago_hoy(self):
-        assert kw("qué hago hoy") == "memory"
+        lane = kw("qué hago hoy")
+        assert lane is not None and lane.startswith("memory")
 
     def test_cual_es_el_plan(self):
-        assert kw("cuál es el plan") == "memory"
+        lane = kw("cuál es el plan")
+        assert lane is not None and lane.startswith("memory")
 
     def test_que_hicimos(self):
-        assert kw("qué hicimos") == "memory"
+        lane = kw("qué hicimos")
+        assert lane is not None and lane.startswith("memory")
 
     def test_cual_es_mi_foco(self):
-        assert kw("cuál es mi foco") == "memory"
+        lane = kw("cuál es mi foco")
+        assert lane is not None and lane.startswith("memory")
