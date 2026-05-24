@@ -20,11 +20,12 @@ Tipos cubiertos:
   8. rag                → preguntas sobre documentos/código
   9. unsupported        → preguntas cuantitativas aún no soportadas
 
+Nota: desde el sprint router.py, route_query() puede devolver 'memory:subtipo'
+(ej: 'memory:profile', 'memory:tasks'). Los 4 casos del carril 'memory' usan
+startswith('memory') como aserción para ser compatibles con ambas formas.
+
 Cómo correr:
     pytest tests/test_routing_matrix.py -v
-
-Nota: route_query() depende de SESSION_STATS (contador de sesión) pero eso
-no afecta el carril retornado — solo actualiza contadores internos.
 """
 import pytest
 from app.router import route_query
@@ -72,13 +73,11 @@ ROUTING_MATRIX = [
     ("cierra la tarea T-2",             "tool_complete_task","complete_task: keyword 'cierra'"),
 
     # ── 7. memory ──────────────────────────────────────────────────────────
-    # sub-tipo: profile
+    # Los 4 casos de memory usan expected_lane='memory' y el assert usa
+    # startswith('memory') para aceptar 'memory' o 'memory:subtipo'.
     ("¿cuál es mi perfil?",             "memory",            "memory/profile: pregunta de perfil"),
-    # sub-tipo: work_state
     ("¿cuál es mi foco actual?",        "memory",            "memory/work_state: foco actual"),
-    # sub-tipo: tasks
     ("¿qué tareas tengo pendientes?",   "memory",            "memory/tasks: tareas pendientes"),
-    # sub-tipo: episode
     ("¿qué aprendí la sesión anterior?","memory",            "memory/episode: episodio pasado"),
 
     # ── 8. rag ─────────────────────────────────────────────────────────────
@@ -108,12 +107,21 @@ def test_routing_matrix(question: str, expected_lane: str, description: str):
 
     Evaluación nivel 1 según arXiv:2025 Assessment Framework:
     'routing correcto' es el prerequisito de cualquier evaluación de calidad.
+
+    Casos de carril 'memory' aceptan 'memory' o 'memory:subtipo' (startswith).
     """
     actual_lane = route_query(question)
-    assert actual_lane == expected_lane, (
+
+    # Carril memory: acepta 'memory' o 'memory:subtipo'
+    if expected_lane == "memory":
+        ok = actual_lane.startswith("memory")
+    else:
+        ok = actual_lane == expected_lane
+
+    assert ok, (
         f"\n[FALLO] {description}"
         f"\n  Pregunta:   '{question}'"
-        f"\n  Esperado:   '{expected_lane}'"
+        f"\n  Esperado:   '{expected_lane}' (o 'memory:subtipo')"
         f"\n  Obtenido:   '{actual_lane}'"
         f"\n  → Revisar keywords en router.py o umbral de embeddings."
     )

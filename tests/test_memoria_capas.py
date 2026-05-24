@@ -10,6 +10,8 @@
 #     - workstate -> work_state.json
 #     - memory_store no expone load_json (es _read_json privado) -> test via _read_json
 #     - router usa route_query (confirmado)
+#     - route_query puede devolver 'memory:subtipo' (ej: 'memory:profile')
+#       → los asserts de carril usan startswith('memory')
 
 import json
 import pytest
@@ -118,7 +120,6 @@ class TestCapaHistorialConversacion:
         """
         memory.json debe ser un dict con clave 'messages'.
         Formato actual: {"messages": [{"role": "human"|"ai", "content": "..."}]}
-        (distinto al formato LangChain antiguo de lista plana)
         """
         archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
@@ -136,7 +137,6 @@ class TestCapaHistorialConversacion:
     def test_memory_mensajes_tienen_role_y_content(self):
         """
         Cada mensaje debe tener 'role' (human/ai) y 'content'.
-        Formato actual del proyecto (definido en memory_store.py:append_message).
         """
         archivo = STORAGE_DIR / "memory.json"
         if not archivo.exists():
@@ -251,13 +251,11 @@ class TestCapaMemoryStore:
 
     def test_read_json_privado_no_lanza_con_archivo_ausente(self):
         """
-        _read_json (helper interno de memory_store) debe devolver el default
-        sin lanzar excepción cuando el archivo no existe.
-        Esto garantiza degradación elegante en toda la capa de persistencia.
+        _read_json debe devolver el default sin lanzar excepción cuando el archivo no existe.
         """
         import app.memory_store as ms
         from pathlib import Path
-        import tempfile, os
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             ruta_inexistente = Path(tmp) / "no_existe.json"
@@ -277,6 +275,8 @@ class TestCapaMemoryStore:
 
 # ---------------------------------------------------------------------------
 # CAPA 5 — Router
+# Nota: route_query() ahora puede devolver 'memory:subtipo' (ej: 'memory:profile').
+# Los asserts de carril memoria usan startswith('memory') para cubrir ambas formas.
 # ---------------------------------------------------------------------------
 
 class TestCapaRouter:
@@ -296,10 +296,13 @@ class TestCapaRouter:
         assert resultado == "rag", f"Esperado 'rag', obtuvo '{resultado}'"
 
     def test_router_pregunta_estado_retorna_memoria(self):
-        """Preguntas sobre estado del proyecto deben clasificarse en carril memoria/estado."""
+        """
+        Preguntas sobre estado del proyecto deben clasificarse en carril memoria.
+        Acepta 'memory' o 'memory:subtipo' (ej: 'memory:project_facts').
+        """
         from app.router import route_query
         resultado = route_query("¿en qué fase estamos?")
-        assert resultado in ("memory", "estado", "general"), (
+        assert resultado.startswith("memory") or resultado in ("estado", "general"), (
             f"Esperado carril de memoria/estado, obtuvo '{resultado}'"
         )
 
