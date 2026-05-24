@@ -47,10 +47,16 @@ Interfaces públicas:
 Anotaciones MemoryType (8D):
   Cada función pública indica qué capa de memoria accede.
   Ver app.schemas.MemoryType para la definición del enum.
+
+Fix N1-MM:
+  detect_memory_intents ahora usa _normalize() importada desde app.router.
+  Mismo normalizador que Capa 1: minúsculas + sin tildes + espacios comprimidos.
+  Eliminados pares duplicados (con/sin tilde) de _INTENT_SIGNALS.
 """
 from __future__ import annotations
 
 from app.logger import get_logger
+from app.router import _normalize
 from app.memory_store import (
     load_profile,
     load_project_facts,
@@ -70,76 +76,66 @@ log = get_logger(__name__)
 
 # ─────────────────────────────────────────────
 # R4-B: Señales de co-ocurrencia por tipo
-# Cada tipo tiene sus propias señales de detección.
-# Se evalúan de forma independiente para detectar intenciones múltiples.
+# Fix N1-MM: solo versiones SIN tilde — _normalize() equipara las variantes.
 # ─────────────────────────────────────────────
 
 _INTENT_SIGNALS: dict[str, list[str]] = {
     "profile": [
-        "mi perfil", "cómo soy", "como soy", "quién soy", "quien soy",
+        "mi perfil", "como soy", "quien soy",
         "mi nombre", "mi nivel", "mi estilo",
     ],
     "work_state": [
-        "foco actual", "foco", "siguiente paso", "en qué estoy", "en que estoy",
-        "qué estoy haciendo", "que estoy haciendo", "estado actual",
-        "qué hago", "que hago", "en qué vamos", "en que vamos",
-        "qué sigue", "que sigue", "en qué quedamos", "en que quedamos",
+        "foco actual", "foco", "siguiente paso",
+        "en que estoy", "que estoy haciendo",
+        "estado actual", "que hago", "en que vamos",
+        "que sigue", "en que quedamos",
     ],
     "tasks": [
-        "tareas", "pendientes", "tarea", "qué tengo", "que tengo",
-        "qué debo", "que debo",
+        "tareas", "pendientes", "tarea",
+        "que tengo", "que debo",
     ],
     "project_facts": [
-        "fase del proyecto", "fase actual", "hechos del proyecto",
-        "nombre del proyecto", "datos del proyecto",
+        "fase del proyecto", "fase actual",
+        "hechos del proyecto", "nombre del proyecto",
+        "datos del proyecto",
     ],
     "episode": [
-        "sesión anterior", "sesion anterior", "última sesión", "ultima sesion",
-        "qué aprendí", "que aprendi", "qué trabajamos", "que trabajamos",
-        "qué avancé", "que avance", "la semana pasada", "ayer",
+        "sesion anterior", "ultima sesion",
+        "que aprendi", "que trabajamos",
+        "que avance", "la semana pasada", "ayer",
         "antes", "historial", "aprendimos",
     ],
 }
 
 # Orden de presentación cuando se componen múltiples tipos.
-# Define qué capa va primero en el contexto combinado.
 _INTENT_ORDER = ["episode", "work_state", "tasks", "project_facts", "profile"]
 
 
 def detect_memory_intents(question: str) -> list[str]:
     """Detecta todos los tipos de memoria relevantes para una pregunta.
 
-    R4-B: Implementación del paso de 'reactivo' a 'adaptativo'.
-    En vez de devolver UN tipo (como classify_memory_query), detecta
-    TODOS los tipos cuyas señales aparecen en la pregunta.
+    R4-B: En vez de devolver UN tipo, detecta TODOS los tipos cuyas
+    señales aparecen en la pregunta.
+
+    Fix N1-MM: aplica _normalize() (mismo que Capa 1 del router) antes
+    del matching. Elimina fallos por tildes, mayúsculas o espacios dobles.
 
     Ejemplo:
-        '¿qué aprendí la sesión pasada y cuál es el foco actual?'
+        '¿Qué aprendí la sesión pasada y cuál es el foco actual?'
         → ['episode', 'work_state']
 
-        '¿cuál es mi foco?'
+        '¿Cuál es mi foco?'
         → ['work_state']
 
-        '¿cuál es mi nombre?'
-        → ['profile']
-
-    El orden de la lista respeta _INTENT_ORDER para consistencia
-    en la composición del contexto.
-
-    Args:
-        question: Pregunta del usuario en lenguaje natural.
-
     Returns:
-        Lista de tipos detectados (puede estar vacía si ninguno aplica).
-        Nunca lanza excepciones.
+        Lista de tipos detectados en orden canónico (_INTENT_ORDER).
+        Puede estar vacía. Nunca lanza excepciones.
     """
-    q = question.lower().strip()
+    q = _normalize(question)   # minúsculas + sin tildes + espacios comprimidos
     detected = set()
     for intent_type, signals in _INTENT_SIGNALS.items():
         if any(signal in q for signal in signals):
             detected.add(intent_type)
-
-    # Devolver en orden canónico para reproducibilidad
     return [t for t in _INTENT_ORDER if t in detected]
 
 
@@ -147,24 +143,14 @@ def get_composed_context(intents: list[str]) -> str:
     """Compone contexto de múltiples capas de memoria.
 
     R4-B: Ensamblador de contexto multi-capa.
-    Cada capa se separa con un divisor legible para el LLM.
-
-    Ejemplo con intents=['episode', 'work_state']:
-        === Sesiones anteriores ===
-        Sesión anterior (2026-05-18, 12 turnos): ...
-
-        === Estado de trabajo ===
-        Foco actual: implementar R4
-        Siguiente paso: agregar tests
+    Cada sección se separa con un divisor legible para el LLM.
 
     Args:
         intents: Lista de tipos de memoria a componer.
-                 Se respeta el orden recibido.
 
     Returns:
         String de contexto listo para inyectar en prompt.
-        Secciones con contenido vacío se omiten.
-        Nunca lanza excepciones.
+        Secciones vacías se omiten. Nunca lanza excepciones.
     """
     _LABELS = {
         "profile":       "Perfil del usuario",
@@ -189,85 +175,35 @@ def get_composed_context(intents: list[str]) -> str:
 # ─────────────────────────────────────────────
 
 def get_full_context() -> str:  # MemoryType: WORKING + SEMANTIC + EPISODIC
-    """Contexto completo: perfil + facts + work_state + tareas + episodio.
-
-    Usar en RAG y en respuestas que necesitan todo el contexto del proyecto.
-    Never raises.
-    """
+    """Contexto completo: perfil + facts + work_state + tareas + episodio."""
     return build_memory_context()
 
 
-def get_context_for(intent_type: str) -> str:  # MemoryType: dispatch (WORKING | SEMANTIC | EPISODIC)
-    """Recuperación selectiva real por tipo de consulta de memoria (6B).
-
-    Dado el tipo devuelto por classify_memory_query(), retorna solo la
-    capa de contexto relevante — sin datos innecesarios en el prompt.
-
-    Mapeo:
-      'profile'       → get_semantic_context()   (perfil + facts)  → SEMANTIC
-      'project_facts' → get_semantic_context()   (facts + perfil)  → SEMANTIC
-      'work_state'    → get_working_context()    (workstate + tareas pendientes) → WORKING
-      'tasks'         → get_working_context()    (tareas pendientes) → WORKING
-      'episode'       → get_episodic_context()   (último episodio)  → EPISODIC
-      desconocido     → '' (string vacío — el decisor maneja el fallback)
-
-    Args:
-        intent_type: Tipo de consulta de memoria. Ej: 'profile', 'tasks',
-                     'work_state', 'project_facts', 'episode'.
-
-    Returns:
-        String de contexto listo para inyectar en prompt, o '' si el tipo
-        no es reconocido.
-
-    Never raises.
-    """
+def get_context_for(intent_type: str) -> str:  # MemoryType: dispatch
+    """Recuperación selectiva por tipo de consulta de memoria (6B)."""
     if intent_type in ("profile", "project_facts"):
         return get_semantic_context()
-
     if intent_type in ("work_state", "tasks"):
         return get_working_context()
-
     if intent_type == "episode":
         return get_episodic_context()
-
     log.debug("get_context_for: tipo desconocido '%s' — devolviendo vacío", intent_type)
     return ""
 
 
-def get_selective_context(route: str) -> str:  # MemoryType: dispatch (WORKING | SEMANTIC | EPISODIC)
-    """Contexto de memoria ajustado al carril del router (ADR-004).
-
-    Objetivo: reducir tokens innecesarios en el prompt según el tipo
-    de pregunta, sin perder información relevante.
-
-    Mapeo de carriles:
-      "rag"     → perfil mínimo (nombre, nivel, proyecto) — ~3 líneas.  → SEMANTIC
-      "estado"  → get_working_context() — workstate + tareas pendientes. → WORKING
-      "memoria" → get_semantic_context() + get_episodic_context().       → SEMANTIC + EPISODIC
-      cualquier → get_full_context() como fallback seguro.
-
-    Args:
-        route: Carril devuelto por route_query(). Ej: 'rag', 'estado',
-               'memoria', 'save_fact', 'add_task', etc.
-
-    Returns:
-        String listo para inyectar en el system prompt.
-    Never raises.
-    """
+def get_selective_context(route: str) -> str:  # MemoryType: dispatch
+    """Contexto de memoria ajustado al carril del router (ADR-004)."""
     if route == "rag":
         profile = load_profile()
         if not profile:
             return ""
         lines = []
-        name = profile.get("user_name", "")
-        level = profile.get("user_level", "")
+        name    = profile.get("user_name", "")
+        level   = profile.get("user_level", "")
         project = profile.get("project_type", "")
-        if name:
-            lines.append(f"Usuario: {name}")
-        if level:
-            lines.append(f"Nivel: {level}")
-        if project:
-            lines.append(f"Proyecto: {project}")
+        if name:    lines.append(f"Usuario: {name}")
+        if level:   lines.append(f"Nivel: {level}")
+        if project: lines.append(f"Proyecto: {project}")
         return "\n".join(lines)
 
     if route == "estado":
@@ -281,27 +217,20 @@ def get_selective_context(route: str) -> str:  # MemoryType: dispatch (WORKING |
 
 
 def get_working_context() -> str:  # MemoryType: WORKING
-    """Contexto operacional: work_state + tareas pendientes.
-
-    Usar cuando la pregunta es sobre qué hacer ahora.
-    Never raises.
-    """
-    ws = load_work_state()
+    """Contexto operacional: work_state + tareas pendientes."""
+    ws         = load_work_state()
     tasks_data = load_tasks()
-    tasks = tasks_data.get("tasks", []) if tasks_data else []
-    pending = [t for t in tasks if t.get("status") not in ("done", "completed")][:3]
+    tasks      = tasks_data.get("tasks", []) if tasks_data else []
+    pending    = [t for t in tasks if t.get("status") not in ("done", "completed")][:3]
 
     lines: list[str] = []
     if ws:
-        foco = ws.get("current_focus", "")
+        foco     = ws.get("current_focus", "")
         siguiente = ws.get("next_step", "")
-        ultimo = ws.get("last_completed", "")
-        if foco:
-            lines.append(f"Foco actual: {foco}")
-        if siguiente:
-            lines.append(f"Siguiente paso: {siguiente}")
-        if ultimo:
-            lines.append(f"Último completado: {ultimo}")
+        ultimo   = ws.get("last_completed", "")
+        if foco:     lines.append(f"Foco actual: {foco}")
+        if siguiente: lines.append(f"Siguiente paso: {siguiente}")
+        if ultimo:   lines.append(f"Último completado: {ultimo}")
         blockers = ws.get("current_blockers", [])
         if blockers:
             lines.append(f"Bloqueos: {', '.join(blockers)}")
@@ -318,17 +247,13 @@ def get_working_context() -> str:  # MemoryType: WORKING
 
 
 def get_semantic_context() -> str:  # MemoryType: SEMANTIC
-    """Contexto de conocimiento estable: project_facts + perfil.
-
-    Usar cuando la pregunta es sobre el proyecto en general.
-    Never raises.
-    """
+    """Contexto de conocimiento estable: project_facts + perfil."""
     profile = load_profile()
-    facts = load_project_facts()
+    facts   = load_project_facts()
 
     lines: list[str] = []
     if profile:
-        name = profile.get("user_name", "")
+        name  = profile.get("user_name", "")
         level = profile.get("user_level", "")
         if name or level:
             lines.append(f"Usuario: {name} ({level})")
@@ -342,11 +267,7 @@ def get_semantic_context() -> str:  # MemoryType: SEMANTIC
 
 
 def get_episodic_context() -> str:  # MemoryType: EPISODIC
-    """Contexto de sesión anterior: resumen del último episodio.
-
-    Devuelve string vacío si no hay episodio previo.
-    Never raises.
-    """
+    """Contexto de sesión anterior: resumen del último episodio."""
     ep = load_last_episode()
     if not ep:
         return ""
@@ -357,32 +278,14 @@ def get_episodic_context() -> str:  # MemoryType: EPISODIC
 
 
 # ─────────────────────────────────────────────
-# Lectura directa — para carriles memory en chat_core
+# Lectura directa
 # ─────────────────────────────────────────────
 
-def get_profile() -> dict:  # MemoryType: SEMANTIC
-    """Devuelve el perfil del usuario. Dict vacío si no existe."""
-    return load_profile()
-
-
-def get_project_facts() -> dict:  # MemoryType: SEMANTIC
-    """Devuelve los hechos del proyecto. Dict vacío si no existe."""
-    return load_project_facts()
-
-
-def get_tasks() -> dict:  # MemoryType: WORKING
-    """Devuelve el dict completo de tareas. {'tasks': [...]} si no existe."""
-    return load_tasks() or {"tasks": []}
-
-
-def get_work_state() -> dict:  # MemoryType: WORKING
-    """Devuelve el estado de trabajo. Dict vacío si no existe."""
-    return load_work_state()
-
-
-def get_last_episode() -> dict | None:  # MemoryType: EPISODIC
-    """Devuelve el último episodio o None si no existe."""
-    return load_last_episode()
+def get_profile() -> dict:          return load_profile()
+def get_project_facts() -> dict:    return load_project_facts()
+def get_tasks() -> dict:            return load_tasks() or {"tasks": []}
+def get_work_state() -> dict:       return load_work_state()
+def get_last_episode() -> dict | None: return load_last_episode()
 
 
 # ─────────────────────────────────────────────
@@ -394,18 +297,10 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
 
     Reglas:
     1. key y value deben ser no-vacíos.
-    2. Guardia anti-duplicado semántico: si ya existe algún hecho con
-       exactamente el mismo valor (ignorando la key), no escribe y retorna False.
-    3. Si la key ya existe con un valor distinto, actualiza.
+    2. Guardia anti-duplicado: si ya existe el mismo valor, no escribe.
+    3. Si la key ya existe con valor distinto, actualiza.
 
-    Fix B2-ext: fuerza str() sobre existing_value antes de .strip() para
-    evitar 'int object has no attribute strip' cuando project_facts.json
-    contiene valores no-string guardados previamente.
-
-    Returns:
-        True si se guardó correctamente.
-        False si key o value están vacíos, o si el valor ya existe.
-    Never raises.
+    Returns True si guardó, False si rechazó. Never raises.
     """
     if not key.strip() or not value.strip():
         log.warning("save_fact rechazado: key=%r value=%r", key, value)
@@ -414,8 +309,6 @@ def save_fact(key: str, value: str) -> bool:  # MemoryType: SEMANTIC
     existing_facts = load_project_facts()
     value_normalized = value.strip().lower()
     for existing_key, existing_value in existing_facts.items():
-        # Fix B2-ext: convertir a str antes de .strip() — project_facts puede
-        # contener valores int/float si fueron guardados con tipo incorrecto.
         existing_value_str = str(existing_value).strip().lower()
         if existing_value_str == value_normalized:
             if existing_key == key.strip():
@@ -446,15 +339,13 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:  
 
     Reglas:
     1. title debe ser no-vacío. priority inválido → 'medium'.
-    2. Guardia anti-duplicado: mismo título pendiente → devuelve ID existente.
+    2. Anti-duplicado: mismo título pendiente → devuelve ID existente.
 
-    Returns:
-        str con el ID generado o el ID existente si duplicado.
-    Never raises.
+    Returns str con ID. Never raises.
     """
-    title = title.strip()
+    title    = title.strip()
     priority = priority.strip().lower()
-    notes = notes.strip()
+    notes    = notes.strip()
 
     if not title:
         log.warning("create_task ignorado: title vacío")
@@ -464,17 +355,14 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:  
     if priority not in valid_priorities:
         priority = "medium"
 
-    existing_tasks = load_tasks()
-    title_normalized = title.lower()
+    existing_tasks    = load_tasks()
+    title_normalized  = title.lower()
     for task in existing_tasks.get("tasks", []):
         if (
             task.get("title", "").strip().lower() == title_normalized
             and task.get("status") not in ("done", "completed")
         ):
-            log.info(
-                "create_task omitido (ya existe pendiente '%s'): %s",
-                task["id"], title,
-            )
+            log.info("create_task omitido (ya existe pendiente '%s'): %s", task["id"], title)
             return task["id"]
 
     task_id = add_task(title=title, priority=priority, notes=notes)
