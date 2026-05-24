@@ -16,6 +16,11 @@ Convención:
 Fix B2:
   _handle_save_fact retorna mensaje claro si content queda vacío tras
   limpiar prefijos, en lugar de pasar string vacío a memory_manager.
+
+Brecha 2 (este commit):
+  _handle_set_session_goal extrae el objetivo del texto libre del usuario
+  y llama a memory_manager.set_session_goal(). intelligence.py no necesita
+  cambio porque el bloque 'if route in TOOLS' ya maneja el carril.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from app.tools import (
     suggest_next_step,
     extract_task_id,
 )
+from app import memory_manager
 
 
 # ── Handlers ────────────────────────────────────────────────────────────────
@@ -47,8 +53,6 @@ def _handle_save_fact(user_input: str) -> str:
             content = content[len(prefix):].strip()
             break
 
-    # Fix B2: si tras limpiar prefijos el contenido quedó vacío, avisar
-    # claramente en lugar de pasar un string vacío a memory_manager.
     if not content:
         return (
             "No entendí qué hecho querías guardar. "
@@ -104,7 +108,57 @@ def _handle_read_file(user_input: str) -> str:
     return read_project_file(path)
 
 
-# ── Registro ─────────────────────────────────────────────────────────────────
+def _handle_set_session_goal(user_input: str) -> str:
+    """Brecha 2: extrae el objetivo del texto libre y lo guarda en work_state.
+
+    Limpia los prefijos de activación para guardar solo el contenido real.
+    Ejemplo: 'mi objetivo hoy es cerrar el Eje 1' → guarda 'cerrar el Eje 1'.
+    Los prefijos se evalúan de mayor a menor longitud para evitar coincidencias
+    parciales (ej. 'mi objetivo hoy' no debe comer 'mi objetivo hoy es X').
+    """
+    prefixes = [
+        "mi objetivo hoy es",
+        "mi objetivo para hoy es",
+        "objetivo de esta sesion es",
+        "objetivo de esta sesión es",
+        "objetivo de hoy es",
+        "objetivo de hoy:",
+        "quiero lograr hoy",
+        "quiero lograr esta sesion",
+        "quiero lograr esta sesión",
+        "meta de hoy es",
+        "meta de esta sesion es",
+        "meta de esta sesión es",
+        "hoy quiero",
+        "en esta sesion quiero",
+        "en esta sesión quiero",
+        "define mi objetivo:",
+        "define mi objetivo",
+        "guarda mi objetivo:",
+        "guarda mi objetivo",
+        "mi meta hoy es",
+        "mi meta hoy",
+        "mi objetivo hoy",
+        "objetivo de hoy",
+    ]
+    content = user_input.strip()
+    content_lower = content.lower()
+    for prefix in sorted(prefixes, key=len, reverse=True):  # más largos primero
+        if content_lower.startswith(prefix):
+            content = content[len(prefix):].strip().lstrip(":").strip()
+            break
+
+    if not content:
+        return (
+            "No entendí cuál es tu objetivo. "
+            "Prueba con: 'mi objetivo hoy es cerrar el Eje 1'."
+        )
+
+    memory_manager.set_session_goal(content)
+    return f"✅ Objetivo de sesión guardado: '{content}'"
+
+
+# ── Registro ──────────────────────────────────────────────────────────────────
 
 TOOLS: dict[str, dict] = {
     "tool_list_files": {
@@ -142,6 +196,12 @@ TOOLS: dict[str, dict] = {
         "carril":      "tool_update_work_state",
         "descripcion": "Actualiza work_state.json",
         "handler":     _handle_update_work_state,
+    },
+    "tool_set_session_goal": {
+        "fn":          memory_manager.set_session_goal,
+        "carril":      "tool_set_session_goal",
+        "descripcion": "Guarda el objetivo de la sesión actual en work_state.json",
+        "handler":     _handle_set_session_goal,
     },
 }
 
