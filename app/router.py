@@ -108,6 +108,12 @@ Fix C1 (este commit):
   import local dentro de _route_by_keywords(). Rompe el ciclo:
     router → tools → memory_manager → router (💥 antes)
   Mismo comportamiento funcional, sin ImportError al cargar el módulo.
+
+Brecha 2 (este commit):
+  Nuevo carril 'tool_set_session_goal' para que el usuario pueda escribir
+  frases como 'mi objetivo hoy es X' y Lautaro las guarde en work_state.
+  Keywords en TOOL_SET_SESSION_GOAL_KEYWORDS, evaluadas en Capa 1 junto
+  a los otros tool_*. VALID_LANES actualizado.
 """
 from __future__ import annotations
 
@@ -163,7 +169,10 @@ _EXIT_WORDS = {
 # Carriles de escritura
 # ─────────────────────────────────────────────
 
-_WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "tool_update_work_state"}
+_WRITE_LANES = {
+    "tool_save_fact", "tool_create_task", "tool_complete_task",
+    "tool_update_work_state", "tool_set_session_goal",
+}
 
 
 # ─────────────────────────────────────────────
@@ -300,6 +309,25 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
 ]
 
+# Brecha 2: keywords para guardar el objetivo de la sesión actual.
+# Frases intencionalmente distintas de MEMORY_WORK_STATE_KEYWORDS
+# (que son consultas de lectura) para evitar colisión.
+TOOL_SET_SESSION_GOAL_KEYWORDS = [
+    "mi objetivo hoy es",
+    "mi objetivo para hoy es",
+    "objetivo de esta sesion",
+    "objetivo de hoy",
+    "quiero lograr hoy",
+    "quiero lograr esta sesion",
+    "meta de hoy es",
+    "meta de esta sesion",
+    "hoy quiero",
+    "en esta sesion quiero",
+    "define mi objetivo",
+    "guarda mi objetivo",
+    "mi meta hoy",
+]
+
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
@@ -325,6 +353,7 @@ RAG_HINTS = [
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
+    "tool_set_session_goal",   # Brecha 2
     "memory",
     "memory:profile", "memory:work_state", "memory:tasks",
     "memory:project_facts", "memory:episode",
@@ -355,7 +384,7 @@ def classify_memory_query(question: str) -> str | None:
 
 def _is_question(text: str) -> bool:
     stripped = text.strip()
-    return stripped.startswith(("¿", "?")) or stripped.endswith("?")
+    return stripped.startswith(("\u00bf", "?")) or stripped.endswith("?")
 
 
 def _handle_unsupported(question: str) -> str:
@@ -363,9 +392,9 @@ def _handle_unsupported(question: str) -> str:
         "Todavía no tengo una herramienta para calcular métricas del código "
         "(líneas, funciones, tamaño de archivos) de forma precisa.\n\n"
         "Puedes obtener ese dato en tu terminal:\n"
-        "  • PowerShell:  `Get-ChildItem app/ -Recurse -Filter *.py | "
+        "  \u2022 PowerShell:  `Get-ChildItem app/ -Recurse -Filter *.py | "
         "ForEach-Object { (Get-Content $_).Count } | Measure-Object -Sum`\n"
-        "  • Git Bash / WSL:  `find app/ -name '*.py' | xargs wc -l`\n\n"
+        "  \u2022 Git Bash / WSL:  `find app/ -name '*.py' | xargs wc -l`\n\n"
         "Pronto tendré la herramienta `tool_code_stats` para responder esto directamente."
     )
 
@@ -380,26 +409,27 @@ def _route_by_keywords(question: str) -> str | None:
     if q in {"!estado", "!estatus", "!status"}:
         return "!estado"
 
-    if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
-    if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
+    if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):                return "tool_save_fact"
+    if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):              return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
-            or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
-    if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
+            or _COMPLETE_TASK_PATTERN.search(q):                    return "tool_complete_task"
+    if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):         return "tool_set_session_goal"  # Brecha 2
+    if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):        return "tool_update_work_state"
 
-    if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
+    if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):              return "unsupported"
 
     if extract_file_path(question) is not None and _has_read_verb(q):
         return "tool_read_file"
-    if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
-    if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
+    if any(k in q for k in TOOL_LIST_KEYWORDS):                     return "tool_list_files"
+    if any(k in q for k in TOOL_READ_KEYWORDS):                     return "tool_read_file"
 
-    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
+    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):                return "identity"
 
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
 
-    if any(k in q for k in RAG_HINTS):                        return "rag"
+    if any(k in q for k in RAG_HINTS):                              return "rag"
 
     return None
 
@@ -450,21 +480,21 @@ def format_estado() -> str:
         ttl_line = f"  TTL caché:       {stats['ttl_hours']}h\n"
 
     return (
-        f"\n{'─' * 40}\n"
+        f"\n{'\u2500' * 40}\n"
         f" Estado de sesión\n"
-        f"{'─' * 40}\n"
+        f"{'\u2500' * 40}\n"
         f"  Consultas totales: {SESSION_STATS['total']}\n"
         f"  → Capa 1 (kw):    {SESSION_STATS['kw']}  ({kw_pct}%)\n"
         f"  → Capa 2 (emb):   {SESSION_STATS['emb']}  ({emb_pct}%)\n"
         f"  → Fallback (rag): {SESSION_STATS['llm']}  ({llm_pct}%)\n"
-        f"{'─' * 40}\n"
+        f"{'\u2500' * 40}\n"
         f" Caché semántica\n"
-        f"{'─' * 40}\n"
+        f"{'\u2500' * 40}\n"
         f"  Hits:             {stats.get('hits', 0)}\n"
         f"  Misses:           {stats.get('misses', 0)}\n"
         f"  Entradas:         {stats.get('entries', 0)}\n"
         f"{ttl_line}"
-        f"{'─' * 40}\n"
+        f"{'\u2500' * 40}\n"
     )
 
 
