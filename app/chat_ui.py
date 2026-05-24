@@ -35,6 +35,8 @@ def print_welcome() -> None:
 
 _STATE_ICON = {
     "blocked":    "⛔",
+    "momentum":   "🚀",
+    "recovering": "⚠️ ",
     "overloaded": "📋",
     "stale":      "🕰️ ",
     "focused":    "🎯",
@@ -43,6 +45,8 @@ _STATE_ICON = {
 
 _STATE_LABEL = {
     "blocked":    "Hay bloqueos activos",
+    "momentum":   "Buena racha — sesión anterior exitosa",
+    "recovering": "Sesión anterior incompleta — revisar antes de avanzar",
     "overloaded": "Muchas tareas abiertas",
     "stale":      "Hay tareas estancadas",
     "focused":    "Foco claro",
@@ -85,7 +89,6 @@ def mostrar_briefing(briefing: dict) -> None:
     else:
         stale_suffix = f" ([yellow]{n_stale} estancadas[/yellow])" if n_stale else ""
         console.print(f"  [bold]📋 Tareas abiertas:[/bold] {n_open}{stale_suffix}")
-        # Mostrar hasta 3 tareas con prioridad high primero
         sorted_tasks = sorted(
             all_open,
             key=lambda t: ("high" not in t.get("priority", ""), t.get("created_at", "")),
@@ -111,7 +114,6 @@ def mostrar_briefing(briefing: dict) -> None:
         ep_carril  = ep.get("carril_dominante", "")
         ep_summary = ep.get("summary", "")
 
-        # Calcular días desde la sesión anterior
         try:
             delta = (datetime.now().date() - datetime.fromisoformat(ep_date).date()).days
             if delta == 0:
@@ -123,10 +125,9 @@ def mostrar_briefing(briefing: dict) -> None:
         except (ValueError, TypeError):
             cuando = ep_date
 
-        # Ícono según resultado de sesión (Paso A: usar campo exitoso)
         resultado_icon = (
-            "✅" if ep_exitoso == "true"
-            else "⚠️ " if ep_exitoso == "false"
+            "✅" if ep_exitoso in (True, "true")
+            else "⚠️ " if ep_exitoso in (False, "false")
             else "📅"
         )
 
@@ -136,7 +137,6 @@ def mostrar_briefing(briefing: dict) -> None:
             f"[dim]{cuando} · {ep_turns} turnos{carril_str}[/dim]"
         )
         if ep_summary:
-            # Truncar resumen largo
             resumen_corto = ep_summary[:120] + "…" if len(ep_summary) > 120 else ep_summary
             console.print(f"    [dim italic]{resumen_corto}[/dim italic]")
     else:

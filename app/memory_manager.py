@@ -56,6 +56,11 @@ Fix N1-MM:
   detect_memory_intents ahora usa _normalize() importada desde app.text_utils.
   Mismo normalizador que Capa 1: minúsculas + sin tildes + espacios comprimidos.
   Eliminados pares duplicados (con/sin tilde) de _INTENT_SIGNALS.
+
+Nivel 4 (este commit):
+  _classify_session_state: patrones momentum y recovering basados en
+  last_ep.exitoso. Permiten que el briefing de arranque use la memoria
+  episódica para contextualizar el estado — sin LLM.
 """
 from __future__ import annotations
 
@@ -202,7 +207,7 @@ def get_working_context() -> str:
         ultimo    = ws.get("last_completed", "")
         if foco:      lines.append(f"Foco actual: {foco}")
         if siguiente: lines.append(f"Siguiente paso: {siguiente}")
-        if ultimo:    lines.append(f"\u00daltimo completado: {ultimo}")
+        if ultimo:    lines.append(f"Último completado: {ultimo}")
         blockers = ws.get("current_blockers", [])
         if blockers:
             lines.append(f"Bloqueos: {', '.join(blockers)}")
@@ -287,10 +292,16 @@ def _classify_session_state(
 
     Patrones (en orden de prioridad):
       blocked    → hay bloqueos activos
+      momentum   → sesión anterior exitosa + sin bloqueos + foco activo
+      recovering → sesión anterior no exitosa + sin bloqueos
       overloaded → 5+ tareas abiertas
       stale      → hay tareas sin tocar en >7 días
       focused    → foco definido y pocas tareas
       drifting   → estado ambiguo, sin foco claro
+
+    momentum y recovering se evalúan después de blocked para no interferir
+    con bloqueos activos, pero antes de overloaded/stale para que la señal
+    episódica tenga peso cuando la sesión está relativamente limpia.
     """
     blockers   = ws.get("current_blockers", [])
     all_open   = task_classes["all_open"]
@@ -299,6 +310,16 @@ def _classify_session_state(
 
     if blockers:
         return "blocked"
+
+    # Nivel 4: usar campo exitoso del episodio anterior
+    if last_ep is not None:
+        ep_exitoso = last_ep.get("exitoso", "unmarked")
+        if ep_exitoso is True or ep_exitoso == "true":
+            if foco:  # solo momentum si hay foco activo
+                return "momentum"
+        elif ep_exitoso is False or ep_exitoso == "false":
+            return "recovering"
+
     if len(all_open) >= 5:
         return "overloaded"
     if stale_list:
@@ -323,7 +344,7 @@ def get_session_briefing() -> dict:
       tasks          → dict: clasificación fresh/aging/stale/all_open
       last_episode   → dict | None: episodio anterior con todos sus campos
                         incluyendo exitoso y carril_dominante (Paso A)
-      session_state  → str: patrón clasificado (blocked/overloaded/stale/focused/drifting)
+      session_state  → str: patrón clasificado
       suggestion     → str: acción concreta sugerida según el patrón
     """
     ws         = load_work_state()
@@ -334,7 +355,6 @@ def get_session_briefing() -> dict:
     task_classes = _classify_tasks(tasks)
     state        = _classify_session_state(ws, task_classes, last_ep)
 
-    # Generar sugerencia concreta según el patrón
     suggestion = _build_suggestion(state, ws, task_classes)
 
     return {
@@ -355,6 +375,21 @@ def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
     if state == "blocked":
         blocker = ws["current_blockers"][0]
         return f"¿Empezamos por desbloquear '{blocker}'?"
+
+    if state == "momentum":
+        next_step = ws.get("next_step", "")
+        if next_step:
+            return f"Buena racha. ¿Seguimos con: '{next_step}'?"
+        session_goal = ws.get("session_goal", "")
+        if session_goal:
+            return f"Buena racha. Objetivo de hoy: '{session_goal}'. ¿Comenzamos?"
+        return "Buena racha. ¿Por dónde seguimos?"
+
+    if state == "recovering":
+        next_step = ws.get("next_step", "")
+        if next_step:
+            return f"La sesión anterior no se completó. ¿Retomamos con: '{next_step}'?"
+        return "La sesión anterior no fue exitosa. ¿Revisamos qué quedó sin cerrar?"
 
     if state == "overloaded":
         all_open = task_classes["all_open"]
