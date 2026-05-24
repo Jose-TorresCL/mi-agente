@@ -13,10 +13,24 @@ Uso:
   python build_intent_index.py
 
 Salida esperada:
-  INFO: 88 ejemplos cargados desde data/intent_examples.json
+  INFO: 98 ejemplos cargados desde data/intent_examples.json
   INFO: Embebiendo frases con nomic-embed-text...
-  INFO: [88/88] completado
-  ✅ Índice de intenciones guardado en storage/intent_index (88 vectores)
+  INFO: [98/98] completado
+  ✅ Índice de intenciones guardado en storage/intent_index (98 vectores)
+
+Fix P5-Paso2:
+  Los ejemplos de memoria ahora usan subtipos explícitos en metadata['lane']:
+    memory:work_state, memory:tasks, memory:project_facts,
+    memory:profile, memory:episode.
+  Los ejemplos de identidad del agente usan lane='identity'.
+  Esto permite que la Capa 2 (embeddings) propague el subtipo directamente
+  a intelligence.py sin pasar por detect_memory_intents().
+  VALID_LANES en router.py ya acepta todos los subtipos (Fix P5-Paso1).
+  intelligence.py ya los lee con route.startswith('memory:') (Fix P5-Paso4).
+
+  IMPORTANTE: después de hacer git pull, ejecutar:
+    python build_intent_index.py
+  para reconstruir el índice con los nuevos subtipos.
 """
 from __future__ import annotations
 
@@ -54,6 +68,10 @@ def build_documents(examples: list[dict]) -> list[Document]:
 
     El texto es la frase, el metadato 'lane' es la etiqueta de carril.
     Chroma almacena el texto como contenido y el metadato para filtrarlo.
+
+    Fix P5-Paso2: los ejemplos de memoria ya traen el subtipo en 'lane'
+    (ej. 'memory:tasks') directamente desde intent_examples.json.
+    No se hace ninguna transformación aquí — se guarda tal cual.
     """
     return [
         Document(

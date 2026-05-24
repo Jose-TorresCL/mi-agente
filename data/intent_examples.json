@@ -81,61 +81,81 @@
   { "text": "ver project_facts.json",                              "lane": "tool_read_file" },
   { "text": "lee el episodic_memory.json",                         "lane": "tool_read_file" },
 
-  // ── memory ─────────────────────────────────────────────────────
-  // Frases sobre estado actual, tareas EXISTENTES, hechos guardados o perfil.
-  { "text": "en qué fase estamos",                                 "lane": "memory" },
-  { "text": "qué tengo pendiente",                                 "lane": "memory" },
-  { "text": "ponme al día de lo que tengo pendiente",              "lane": "memory" },
-  { "text": "cuál es mi foco actual",                              "lane": "memory" },
-  { "text": "qué estoy haciendo ahora",                            "lane": "memory" },
-  { "text": "cuál es el siguiente paso",                           "lane": "memory" },
-  { "text": "en qué quedamos la última vez",                       "lane": "memory" },
-  { "text": "dime el estado actual del proyecto",                  "lane": "memory" },
-  { "text": "cuáles son los hechos del proyecto",                  "lane": "memory" },
-  { "text": "cómo prefiero trabajar",                              "lane": "memory" },
-  { "text": "ponme al día de lo que hice ayer",                    "lane": "memory" },
-  { "text": "qué tareas hay abiertas",                             "lane": "memory" },
-  { "text": "resumen del proyecto",                                "lane": "memory" },
-  { "text": "qué decidimos sobre el router",                       "lane": "memory" },
-  { "text": "qué tareas tengo pendientes",                         "lane": "memory" },
-  { "text": "cuáles son mis tareas actuales",                      "lane": "memory" },
-  { "text": "qué hay en mi lista de tareas",                       "lane": "memory" },
-  // ← fix #8: variaciones naturales de 'estado'
-  { "text": "qué hago hoy",                                        "lane": "memory" },
-  { "text": "cuál es el plan para hoy",                            "lane": "memory" },
-  { "text": "qué hicimos ayer",                                    "lane": "memory" },
-  { "text": "en qué estamos ahora",                                "lane": "memory" },
-  { "text": "cuál es mi foco de trabajo",                          "lane": "memory" },
-  { "text": "qué estoy trabajando actualmente",                    "lane": "memory" },
-  { "text": "en qué estaba trabajando",                            "lane": "memory" },
-  { "text": "ponme al día de hoy",                                 "lane": "memory" },
-  // ← fix #9: variaciones de identidad
-  { "text": "quién soy yo",                                        "lane": "memory" },
-  { "text": "cómo me llamo",                                       "lane": "memory" },
-  { "text": "cuál es mi nombre",                                   "lane": "memory" },
-  // ← Día 1: identidad del agente
-  { "text": "quién eres tú",                                       "lane": "memory" },
-  { "text": "cómo te llamas",                                       "lane": "memory" },
-  { "text": "quién es lautaro",                                    "lane": "memory" },
-  { "text": "qué eres tú",                                         "lane": "memory" },
-  { "text": "preséntate",                                          "lane": "memory" },
-  { "text": "cuál es tu nombre",                                   "lane": "memory" },
-  // ← Día 1: métricas del proyecto
-  { "text": "cuántos tests pasaron",                               "lane": "memory" },
-  { "text": "resultado de los tests",                              "lane": "memory" },
-  { "text": "cuántos tests hay",                                   "lane": "memory" },
-  { "text": "cuál es el score del fidelity check",                 "lane": "memory" },
-  { "text": "qué porcentaje de tests pasó",                        "lane": "memory" },
-  { "text": "dame las métricas del proyecto",                      "lane": "memory" },
-  // ← Fix D: variantes de '¿cómo va el proyecto?' que iban a RAG por error
-  { "text": "cómo va el proyecto",                                 "lane": "memory" },
-  { "text": "cómo está el proyecto",                               "lane": "memory" },
-  { "text": "cómo anda el proyecto",                               "lane": "memory" },
-  { "text": "cómo vamos con el proyecto",                          "lane": "memory" },
-  { "text": "qué tal va el proyecto",                              "lane": "memory" },
-  { "text": "cuéntame del proyecto",                               "lane": "memory" },
-  { "text": "dame un update del proyecto",                         "lane": "memory" },
-  { "text": "dame una actualización del proyecto",                 "lane": "memory" },
+  // ── memory:work_state ─────────────────────────────────────────────
+  // Fix P5-Paso2: subtipos explícitos para que Capa 2 propague memory:subtipo.
+  // Frases sobre foco actual, siguiente paso, bloqueos o estado de trabajo.
+  { "text": "cuál es mi foco actual",                              "lane": "memory:work_state" },
+  { "text": "qué estoy haciendo ahora",                            "lane": "memory:work_state" },
+  { "text": "cuál es el siguiente paso",                           "lane": "memory:work_state" },
+  { "text": "en qué quedamos la última vez",                       "lane": "memory:work_state" },
+  { "text": "qué hago hoy",                                        "lane": "memory:work_state" },
+  { "text": "cuál es el plan para hoy",                            "lane": "memory:work_state" },
+  { "text": "en qué estamos ahora",                                "lane": "memory:work_state" },
+  { "text": "cuál es mi foco de trabajo",                          "lane": "memory:work_state" },
+  { "text": "qué estoy trabajando actualmente",                    "lane": "memory:work_state" },
+  { "text": "en qué estaba trabajando",                            "lane": "memory:work_state" },
+  { "text": "cómo va el proyecto",                                 "lane": "memory:work_state" },
+  { "text": "cómo está el proyecto",                               "lane": "memory:work_state" },
+  { "text": "cómo anda el proyecto",                               "lane": "memory:work_state" },
+  { "text": "cómo vamos con el proyecto",                          "lane": "memory:work_state" },
+  { "text": "qué tal va el proyecto",                              "lane": "memory:work_state" },
+  { "text": "dame un update del proyecto",                         "lane": "memory:work_state" },
+  { "text": "dame una actualización del proyecto",                 "lane": "memory:work_state" },
+
+  // ── memory:tasks ──────────────────────────────────────────────────
+  // Frases sobre tareas pendientes, abiertas o completadas.
+  { "text": "qué tengo pendiente",                                 "lane": "memory:tasks" },
+  { "text": "ponme al día de lo que tengo pendiente",              "lane": "memory:tasks" },
+  { "text": "qué tareas hay abiertas",                             "lane": "memory:tasks" },
+  { "text": "qué tareas tengo pendientes",                         "lane": "memory:tasks" },
+  { "text": "cuáles son mis tareas actuales",                      "lane": "memory:tasks" },
+  { "text": "qué hay en mi lista de tareas",                       "lane": "memory:tasks" },
+  { "text": "ponme al día de hoy",                                 "lane": "memory:tasks" },
+  { "text": "qué hicimos ayer",                                    "lane": "memory:tasks" },
+
+  // ── memory:project_facts ──────────────────────────────────────────
+  // Frases sobre hechos estables del proyecto: fase, nombre, sprint, decisiones.
+  { "text": "en qué fase estamos",                                 "lane": "memory:project_facts" },
+  { "text": "dime el estado actual del proyecto",                  "lane": "memory:project_facts" },
+  { "text": "cuáles son los hechos del proyecto",                  "lane": "memory:project_facts" },
+  { "text": "resumen del proyecto",                                "lane": "memory:project_facts" },
+  { "text": "qué decidimos sobre el router",                       "lane": "memory:project_facts" },
+  { "text": "cuéntame del proyecto",                               "lane": "memory:project_facts" },
+  { "text": "cuántos tests pasaron",                               "lane": "memory:project_facts" },
+  { "text": "resultado de los tests",                              "lane": "memory:project_facts" },
+  { "text": "cuántos tests hay",                                   "lane": "memory:project_facts" },
+  { "text": "cuál es el score del fidelity check",                 "lane": "memory:project_facts" },
+  { "text": "qué porcentaje de tests pasó",                        "lane": "memory:project_facts" },
+  { "text": "dame las métricas del proyecto",                      "lane": "memory:project_facts" },
+
+  // ── memory:profile ────────────────────────────────────────────────
+  // Frases sobre el perfil del usuario: nombre, estilo, nivel, preferencias.
+  { "text": "cómo prefiero trabajar",                              "lane": "memory:profile" },
+  { "text": "quién soy yo",                                        "lane": "memory:profile" },
+  { "text": "cómo me llamo",                                       "lane": "memory:profile" },
+  { "text": "cuál es mi nombre",                                   "lane": "memory:profile" },
+
+  // ── memory:episode ────────────────────────────────────────────────
+  // Frases sobre sesiones anteriores, historial de trabajo o aprendizajes pasados.
+  { "text": "ponme al día de lo que hice ayer",                    "lane": "memory:episode" },
+  { "text": "qué hicimos la última sesión",                        "lane": "memory:episode" },
+  { "text": "qué aprendimos la semana pasada",                     "lane": "memory:episode" },
+  { "text": "resumen de la sesión anterior",                       "lane": "memory:episode" },
+  { "text": "en qué terminamos la última vez",                     "lane": "memory:episode" },
+
+  // ── identity ──────────────────────────────────────────────────────
+  // Fix P5-Paso2: ejemplos de identidad del agente como carril propio.
+  // Antes estaban en 'memory' — ahora van directo a 'identity'.
+  { "text": "quién eres tú",                                       "lane": "identity" },
+  { "text": "cómo te llamas",                                      "lane": "identity" },
+  { "text": "quién es lautaro",                                    "lane": "identity" },
+  { "text": "qué eres tú",                                         "lane": "identity" },
+  { "text": "preséntate",                                          "lane": "identity" },
+  { "text": "cuál es tu nombre",                                   "lane": "identity" },
+  { "text": "qué puedes hacer",                                    "lane": "identity" },
+  { "text": "qué sabes hacer",                                     "lane": "identity" },
+  { "text": "para qué sirves",                                     "lane": "identity" },
+  { "text": "cuáles son tus capacidades",                          "lane": "identity" },
 
   // ── rag ───────────────────────────────────────────────────────
   // Preguntas conceptuales, técnicas, sugerencias o documentales sobre el sistema.
