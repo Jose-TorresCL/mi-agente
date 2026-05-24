@@ -37,9 +37,13 @@ Interfaces públicas:
     get_work_state()        → dict del estado de trabajo
     get_last_episode()      → dict del último episodio | None
 
+  Session Intelligence (Paso D):
+    get_session_briefing()  → dict con estado clasificado para mostrar al arranque
+
   Escritura con reglas:
     save_fact(key, value)           → bool (False si key/value vacíos o valor duplicado)
     update_state(field, value)      → None
+    set_session_goal(goal)          → None  (Paso B)
     create_task(title, priority)    → str con ID generado (o ID existente si título duplicado)
     complete_task(task_id)          → None
     record_episode(summary, turns)  → None
@@ -52,10 +56,10 @@ Fix N1-MM:
   detect_memory_intents ahora usa _normalize() importada desde app.text_utils.
   Mismo normalizador que Capa 1: minúsculas + sin tildes + espacios comprimidos.
   Eliminados pares duplicados (con/sin tilde) de _INTENT_SIGNALS.
-  (Antes importaba desde app.router — causó ciclo de importación.)
 """
 from __future__ import annotations
 
+from datetime import datetime
 from app.logger import get_logger
 from app.text_utils import _normalize
 from app.memory_store import (
@@ -68,6 +72,7 @@ from app.memory_store import (
     add_task,
     update_task_status,
     update_work_state,
+    update_session_goal,
     save_episode,
 )
 from app.memory_context import build_memory_context
@@ -243,6 +248,142 @@ def get_episodic_context() -> str:
 
 
 # ─────────────────────────────────────────────
+# Session Intelligence — Paso D
+# ─────────────────────────────────────────────
+
+def _days_since(iso_date: str) -> int | None:
+    """Calcula días desde una fecha ISO. Devuelve None si no puede parsear."""
+    try:
+        dt = datetime.fromisoformat(iso_date)
+        return (datetime.now() - dt).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _classify_tasks(tasks: list[dict]) -> dict:
+    """Clasifica tareas abiertas en fresh / aging / stale según updated_at o created_at."""
+    open_tasks = [t for t in tasks if t.get("status") not in ("done", "completed")]
+    fresh, aging, stale = [], [], []
+    for t in open_tasks:
+        ref_date = t.get("updated_at") or t.get("created_at", "")
+        days = _days_since(ref_date)
+        if days is None:
+            aging.append(t)
+        elif days <= 2:
+            fresh.append(t)
+        elif days <= 7:
+            aging.append(t)
+        else:
+            stale.append(t)
+    return {"fresh": fresh, "aging": aging, "stale": stale, "all_open": open_tasks}
+
+
+def _classify_session_state(
+    ws: dict,
+    task_classes: dict,
+    last_ep: dict | None,
+) -> str:
+    """Determina el patrón de sesión actual. Sin LLM — solo reglas sobre JSON.
+
+    Patrones (en orden de prioridad):
+      blocked    → hay bloqueos activos
+      overloaded → 5+ tareas abiertas
+      stale      → hay tareas sin tocar en >7 días
+      focused    → foco definido y pocas tareas
+      drifting   → estado ambiguo, sin foco claro
+    """
+    blockers   = ws.get("current_blockers", [])
+    all_open   = task_classes["all_open"]
+    stale_list = task_classes["stale"]
+    foco       = ws.get("current_focus", "").strip()
+
+    if blockers:
+        return "blocked"
+    if len(all_open) >= 5:
+        return "overloaded"
+    if stale_list:
+        return "stale"
+    if foco and len(all_open) <= 3:
+        return "focused"
+    return "drifting"
+
+
+def get_session_briefing() -> dict:
+    """Paso D: construye el estado completo de arranque de sesión.
+
+    Reúne datos de las 3 capas de memoria y los clasifica sin LLM.
+    Diseñado para ejecutarse en < 200ms (solo lectura de JSON).
+
+    Returns dict con:
+      foco           → str: foco actual de work_state
+      session_goal   → str: objetivo específico de esta sesión (puede estar vacío)
+      next_step      → str: siguiente paso registrado
+      last_completed → str: último completado
+      blockers       → list[str]: bloqueos activos
+      tasks          → dict: clasificación fresh/aging/stale/all_open
+      last_episode   → dict | None: episodio anterior con todos sus campos
+                        incluyendo exitoso y carril_dominante (Paso A)
+      session_state  → str: patrón clasificado (blocked/overloaded/stale/focused/drifting)
+      suggestion     → str: acción concreta sugerida según el patrón
+    """
+    ws         = load_work_state()
+    tasks_data = load_tasks()
+    tasks      = tasks_data.get("tasks", []) if tasks_data else []
+    last_ep    = load_last_episode()  # Paso A: incluye exitoso + carril_dominante
+
+    task_classes = _classify_tasks(tasks)
+    state        = _classify_session_state(ws, task_classes, last_ep)
+
+    # Generar sugerencia concreta según el patrón
+    suggestion = _build_suggestion(state, ws, task_classes)
+
+    return {
+        "foco":           ws.get("current_focus", ""),
+        "session_goal":   ws.get("session_goal", ""),
+        "next_step":      ws.get("next_step", ""),
+        "last_completed": ws.get("last_completed", ""),
+        "blockers":       ws.get("current_blockers", []),
+        "tasks":          task_classes,
+        "last_episode":   last_ep,
+        "session_state":  state,
+        "suggestion":     suggestion,
+    }
+
+
+def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
+    """Construye la propuesta de acción concreta para el estado clasificado."""
+    if state == "blocked":
+        blocker = ws["current_blockers"][0]
+        return f"¿Empezamos por desbloquear '{blocker}'?"
+
+    if state == "overloaded":
+        all_open = task_classes["all_open"]
+        oldest   = min(all_open, key=lambda t: t.get("created_at", ""), default=None)
+        if oldest:
+            return f"¿Cerramos o descartamos '{oldest['title']}'?"
+        return "¿Hacemos limpieza de tareas pendientes?"
+
+    if state == "stale":
+        stale    = task_classes["stale"]
+        oldest_s = min(stale, key=lambda t: t.get("updated_at") or t.get("created_at", ""), default=None)
+        if oldest_s:
+            return f"Tarea sin tocar hace más de 7 días: '{oldest_s['title']}' — ¿la cerramos o descartamos?"
+        return "Hay tareas estancadas. ¿Las revisamos?"
+
+    if state == "focused":
+        next_step = ws.get("next_step", "")
+        if next_step:
+            return f"¿Arrancamos con: '{next_step}'?"
+        session_goal = ws.get("session_goal", "")
+        if session_goal:
+            return f"Objetivo de hoy: '{session_goal}'. ¿Comenzamos?"
+        return "Todo en orden. ¿Por dónde empezamos?"
+
+    # drifting
+    return "Foco no definido. ¿Quieres revisar el estado del proyecto o definir el objetivo de hoy?"
+
+
+# ─────────────────────────────────────────────
 # Lectura directa
 # ─────────────────────────────────────────────
 
@@ -287,6 +428,21 @@ def update_state(field: str, value: str) -> None:
         return
     update_work_state(field.strip(), value.strip())
     log.debug("work_state actualizado: %s = %s", field, value)
+
+
+def set_session_goal(goal: str) -> None:
+    """Paso B: guarda el objetivo específico de esta sesión.
+
+    Wrapper de memory_manager → memory_store para mantener
+    la arquitectura de capas. Nunca llama a memory_store directamente
+    desde fuera de este módulo.
+    """
+    goal = goal.strip()
+    if not goal:
+        log.warning("set_session_goal ignorado: goal vacío")
+        return
+    update_session_goal(goal)
+    log.debug("session_goal actualizado: %s", goal)
 
 
 def create_task(title: str, priority: str = "medium", notes: str = "") -> str:

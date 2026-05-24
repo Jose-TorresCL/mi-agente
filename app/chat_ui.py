@@ -1,8 +1,10 @@
 from pathlib import Path
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from rich.rule import Rule
 
 console = Console()
 DEBUG_RETRIEVAL = True
@@ -25,6 +27,130 @@ def print_welcome() -> None:
         border_style="cyan",
         padding=(0, 2),
     ))
+
+
+# ──────────────────────────────────────────────
+# Session Intelligence Briefing (Paso D)
+# ──────────────────────────────────────────────
+
+_STATE_ICON = {
+    "blocked":    "⛔",
+    "overloaded": "📋",
+    "stale":      "🕰️ ",
+    "focused":    "🎯",
+    "drifting":   "🧭",
+}
+
+_STATE_LABEL = {
+    "blocked":    "Hay bloqueos activos",
+    "overloaded": "Muchas tareas abiertas",
+    "stale":      "Hay tareas estancadas",
+    "focused":    "Foco claro",
+    "drifting":   "Sin foco definido",
+}
+
+
+def mostrar_briefing(briefing: dict) -> None:
+    """Muestra el resumen de arranque de sesión con Session Intelligence.
+
+    Diseño:
+      - Siempre muestra: foco, tareas abiertas, último episodio
+      - Si hay session_goal: lo muestra como objetivo del día
+      - Siempre muestra: patrón clasificado + sugerencia de acción
+      - Sin LLM, sin Chroma, solo datos JSON ya cargados
+    """
+    state   = briefing.get("session_state", "drifting")
+    icon    = _STATE_ICON.get(state, "💡")
+    label   = _STATE_LABEL.get(state, state)
+    all_open = briefing["tasks"]["all_open"]
+    stale    = briefing["tasks"]["stale"]
+    ep       = briefing.get("last_episode")
+
+    console.print()
+    console.print(Rule(style="dim"))
+
+    # ── Foco y objetivo ──────────────────────────────────────────
+    foco = briefing.get("foco", "")
+    goal = briefing.get("session_goal", "")
+    if foco:
+        console.print(f"  [bold]🎯 Foco:[/bold] {foco}")
+    if goal:
+        console.print(f"  [bold cyan]💡 Objetivo de hoy:[/bold cyan] {goal}")
+
+    # ── Tareas ────────────────────────────────────────────────────
+    n_open  = len(all_open)
+    n_stale = len(stale)
+    if n_open == 0:
+        console.print("  [dim]📋 Sin tareas abiertas.[/dim]")
+    else:
+        stale_suffix = f" ([yellow]{n_stale} estancadas[/yellow])" if n_stale else ""
+        console.print(f"  [bold]📋 Tareas abiertas:[/bold] {n_open}{stale_suffix}")
+        # Mostrar hasta 3 tareas con prioridad high primero
+        sorted_tasks = sorted(
+            all_open,
+            key=lambda t: ("high" not in t.get("priority", ""), t.get("created_at", "")),
+        )[:3]
+        for t in sorted_tasks:
+            pri = t.get("priority", "medium")
+            pri_color = "red" if pri == "high" else "yellow" if pri == "medium" else "dim"
+            console.print(
+                f"    [dim]·[/dim] [{pri_color}]{pri}[/{pri_color}] {t.get('title', '')}"
+                + (" [yellow][estancada][/yellow]" if t in stale else "")
+            )
+
+    # ── Último completado ─────────────────────────────────────────
+    last_done = briefing.get("last_completed", "")
+    if last_done:
+        console.print(f"  [dim]✅ Último completado:[/dim] [dim]{last_done}[/dim]")
+
+    # ── Episodio anterior (Paso A) ────────────────────────────────
+    if ep:
+        ep_date    = ep.get("date", "")
+        ep_turns   = ep.get("turns", 0)
+        ep_exitoso = ep.get("exitoso", "unmarked")
+        ep_carril  = ep.get("carril_dominante", "")
+        ep_summary = ep.get("summary", "")
+
+        # Calcular días desde la sesión anterior
+        try:
+            delta = (datetime.now().date() - datetime.fromisoformat(ep_date).date()).days
+            if delta == 0:
+                cuando = "hoy"
+            elif delta == 1:
+                cuando = "ayer"
+            else:
+                cuando = f"hace {delta} días"
+        except (ValueError, TypeError):
+            cuando = ep_date
+
+        # Ícono según resultado de sesión (Paso A: usar campo exitoso)
+        resultado_icon = (
+            "✅" if ep_exitoso == "true"
+            else "⚠️ " if ep_exitoso == "false"
+            else "📅"
+        )
+
+        carril_str = f" · carril dominante: {ep_carril}" if ep_carril else ""
+        console.print(
+            f"  [dim]{resultado_icon} Última sesión:[/dim] "
+            f"[dim]{cuando} · {ep_turns} turnos{carril_str}[/dim]"
+        )
+        if ep_summary:
+            # Truncar resumen largo
+            resumen_corto = ep_summary[:120] + "…" if len(ep_summary) > 120 else ep_summary
+            console.print(f"    [dim italic]{resumen_corto}[/dim italic]")
+    else:
+        console.print("  [dim]📅 Primera sesión — sin episodios anteriores.[/dim]")
+
+    # ── Diagnóstico + sugerencia ──────────────────────────────────
+    console.print()
+    console.print(f"  {icon} [bold]{label}[/bold]")
+    suggestion = briefing.get("suggestion", "")
+    if suggestion:
+        console.print(f"  [cyan]→ {suggestion}[/cyan]")
+
+    console.print(Rule(style="dim"))
+    console.print()
 
 
 # ──────────────────────────────────────────────

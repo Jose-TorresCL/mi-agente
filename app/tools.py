@@ -8,6 +8,7 @@ Funciones públicas (sin cambio de interfaz):
   tool_create_task()        — crea tarea en tasks.json
   tool_complete_task()      — marca tarea como completada
   tool_update_work_state()  — actualiza work_state.json
+  tool_set_session_goal()   — guarda objetivo de la sesión actual (Paso B)
   suggest_next_step()       — sugerencia post-actualización
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
@@ -30,6 +31,7 @@ from app.memory_manager import (
     create_task as _mm_create_task,
     complete_task as _mm_complete_task,
     get_tasks as _mm_get_tasks,
+    set_session_goal as _mm_set_session_goal,
 )
 
 # Re-exportar helpers — mantiene compatibilidad con todos los imports existentes
@@ -57,16 +59,7 @@ def tool_save_fact(content) -> str:
     dispatcher pasa un argumento con tipo incorrecto.
 
     D3: rechaza contenido vacío antes de llamar a memory_manager.save_fact.
-
-    Args:
-        content: Texto del hecho a guardar. Se convierte a str si no lo es.
-
-    Returns:
-        str con confirmación del hecho guardado, o mensaje de error.
-
-    Never raises.
     """
-    # Fix B2: guard de tipo — convierte a str antes de cualquier operación
     content = str(content).strip()
 
     if not content:
@@ -92,21 +85,9 @@ def tool_save_fact(content) -> str:
 # ─────────────────────────────────────────────
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
-    """Crea una nueva tarea en tasks.json.
-
-    Args:
-        title:    Título de la tarea.
-        priority: 'low' | 'medium' | 'high'. Default 'medium'.
-        notes:    Notas adicionales. Default ''.
-
-    Returns:
-        str con confirmación y el ID generado.
-
-    Never raises.
-    """
-    title = title.strip()
+    title    = title.strip()
     priority = priority.strip().lower()
-    notes = notes.strip()
+    notes    = notes.strip()
 
     if not title:
         return "No pude crear la tarea: falta el título."
@@ -122,16 +103,6 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> s
 # ─────────────────────────────────────────────
 
 def tool_complete_task(task_id: str) -> str:
-    """Marca una tarea existente como completada dado su ID.
-
-    Args:
-        task_id: ID de la tarea (ej: 'T-0506132952').
-
-    Returns:
-        str con confirmación, o mensaje de error si no se encontró.
-
-    Never raises.
-    """
     if not task_id:
         return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
 
@@ -165,19 +136,7 @@ def tool_update_work_state(
     next_step: str | None = None,
     last_completed_step: str | None = None,
 ) -> str:
-    """Actualiza work_state.json desde conversación libre o desde kwargs directos.
-
-    D3: todos los valores vacíos o solo-espacios se ignoran.
-
-    Modo A — texto libre:     tool_update_work_state("actualiza el foco a fase 4")
-    Modo B — kwargs directos: tool_update_work_state(next_step="escribir tests")
-
-    Returns:
-        str con confirmación de los campos actualizados,
-        o advertencia si no se detectó ningún cambio.
-
-    Never raises.
-    """
+    """Actualiza work_state.json desde conversación libre o desde kwargs directos."""
     import json
 
     path = Path("storage/work_state.json")
@@ -188,7 +147,6 @@ def tool_update_work_state(
 
     cambios: list[str] = []
 
-    # ── Modo B: kwargs directos ──────────────────────────────
     if current_focus is not None:
         val = current_focus.strip()
         if val:
@@ -208,7 +166,6 @@ def tool_update_work_state(
             state["last_completed"] = f"{val} — {fecha}"
             cambios.append(f"last_completed → '{val}'")
 
-    # ── Modo A: texto libre ───────────────────────────────────
     if texto:
         texto_lower = texto.lower()
 
@@ -217,7 +174,7 @@ def tool_update_work_state(
             for pat in patrones_foco:
                 m = re.search(pat, texto_lower)
                 if m:
-                    valor = m.group(1).strip().rstrip(".,")
+                    valor = m.group(1).strip().rstrip(".,'")
                     if valor:
                         state["current_focus"] = valor
                         cambios.append(f"current_focus → '{valor}'")
@@ -230,7 +187,7 @@ def tool_update_work_state(
             for pat in patrones_completado:
                 m = re.search(pat, texto_lower)
                 if m:
-                    valor = m.group(1).strip().rstrip(".,")
+                    valor = m.group(1).strip().rstrip(".,'")
                     if valor:
                         fecha = datetime.now().strftime("%d/%m/%Y")
                         state["last_completed"] = f"{valor} — {fecha}"
@@ -244,7 +201,7 @@ def tool_update_work_state(
             for pat in patrones_siguiente:
                 m = re.search(pat, texto_lower)
                 if m:
-                    valor = m.group(1).strip().rstrip(".,")
+                    valor = m.group(1).strip().rstrip(".,'")
                     if valor:
                         state["next_step"] = valor
                         cambios.append(f"next_step → '{valor}'")
@@ -260,6 +217,30 @@ def tool_update_work_state(
         return f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}"
 
     return "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
+
+
+# ─────────────────────────────────────────────
+# Tool: definir objetivo de sesión (Paso B)
+# ─────────────────────────────────────────────
+
+def tool_set_session_goal(content: str) -> str:
+    """Guarda el objetivo específico para la sesión actual.
+
+    A diferencia de tool_update_work_state (que actualiza el foco permanente),
+    esta tool guarda un objetivo concreto para hoy que aparecerá en el
+    session briefing al arranque de la próxima sesión.
+
+    Uso: 'hoy quiero cerrar el Eje 1 del plan'
+         'mi objetivo de hoy es revisar los tests del router'
+
+    Never raises.
+    """
+    content = str(content).strip()
+    if not content:
+        return "No pude guardar el objetivo: el contenido está vacío."
+
+    _mm_set_session_goal(content)
+    return f"✅ Objetivo de sesión guardado: '{content}'"
 
 
 # ─────────────────────────────────────────────
