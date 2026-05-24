@@ -120,14 +120,16 @@ def _run_bateria() -> None:
         esperado = caso["carril_esperado"]
         mem_esperada = caso["memoria_esperada"]
 
-        # Evaluar carril
+        # Evaluar carril — acepta 'memory' o 'memory:subtipo'
         carril_real = route_query(pregunta)
-        carril_ok = carril_real == esperado
+        carril_ok = carril_real == esperado or (
+            esperado == "memory" and carril_real.startswith("memory")
+        )
 
         # Evaluar sub-ruta de memory si aplica
         mem_ok = True
         mem_real = None
-        if mem_esperada is not None and carril_real == "memory":
+        if mem_esperada is not None and carril_real.startswith("memory"):
             mem_real = classify_memory_query(pregunta)
             mem_ok = mem_real == mem_esperada
 
@@ -154,9 +156,9 @@ def _run_bateria() -> None:
         print(f"  Obtenido : carril={carril_real}" + (f", memoria={mem_real}" if mem_real else ""))
         if not ok:
             if not carril_ok:
-                print(f"  ⚠  Carril incorrecto: esperaba '{esperado}', obtuvo '{carril_real}'")
+                print(f"  ⚠  Carril incorrecto: esperaba '{esperado}', obtuvo '{carril_real}'")
             if not mem_ok:
-                print(f"  ⚠  Sub-ruta incorrecta: esperaba '{mem_esperada}', obtuvo '{mem_real}'")
+                print(f"  ⚠  Sub-ruta incorrecta: esperaba '{mem_esperada}', obtuvo '{mem_real}'")
 
     print("\n" + "=" * 60)
     print(f"  RESULTADO: {passed}/9 PASS — {failed}/9 FAIL")
@@ -170,35 +172,38 @@ def _run_bateria() -> None:
 
 # ─────────────────────────────────────────────
 # Tests pytest (uno por caso)
+# Nota: desde el sprint router.py, route_query devuelve 'memory:subtipo'
+# (ej: 'memory:profile', 'memory:tasks'). Los asserts usan startswith()
+# para ser compatibles con ambas formas.
 # ─────────────────────────────────────────────
 
 def test_P1_perfil_carril():
-    """P1: ¿Cuál es mi estilo preferido? → memory"""
-    assert route_query("¿Cuál es mi estilo preferido?") == "memory"
+    """P1: ¿Cuál es mi estilo preferido? → memory (o memory:profile)"""
+    assert route_query("¿Cuál es mi estilo preferido?").startswith("memory")
 
 def test_P1_perfil_subruta():
     """P1: sub-ruta debe ser profile"""
     assert classify_memory_query("¿Cuál es mi estilo preferido?") == "profile"
 
 def test_P2_workstate_carril():
-    """P2: ¿Qué sigue ahora? → memory"""
-    assert route_query("¿Qué sigue ahora?") == "memory"
+    """P2: ¿Qué sigue ahora? → memory (o memory:work_state)"""
+    assert route_query("¿Qué sigue ahora?").startswith("memory")
 
 def test_P2_workstate_subruta():
     """P2: sub-ruta debe ser work_state"""
     assert classify_memory_query("¿Qué sigue ahora?") == "work_state"
 
 def test_P3_facts_carril():
-    """P3: ¿En qué fase estamos? → memory"""
-    assert route_query("¿En qué fase estamos?") == "memory"
+    """P3: ¿En qué fase estamos? → memory (o memory:project_facts)"""
+    assert route_query("¿En qué fase estamos?").startswith("memory")
 
 def test_P3_facts_subruta():
     """P3: sub-ruta debe ser project_facts"""
     assert classify_memory_query("¿En qué fase estamos?") == "project_facts"
 
 def test_P4_tareas_carril():
-    """P4: ¿Qué tareas tengo pendientes? → memory"""
-    assert route_query("¿Qué tareas tengo pendientes?") == "memory"
+    """P4: ¿Qué tareas tengo pendientes? → memory (o memory:tasks)"""
+    assert route_query("¿Qué tareas tengo pendientes?").startswith("memory")
 
 def test_P4_tareas_subruta():
     """P4: sub-ruta debe ser tasks"""

@@ -9,6 +9,10 @@ Amplía test_bateria_9.py de 9 a 20 casos cubriendo:
   - Carril unsupported (preguntas cuantitativas del código)
   - Exit con variante diferente
 
+Nota: desde el sprint router.py, route_query devuelve 'memory:subtipo'
+(ej: 'memory:profile', 'memory:tasks'). Los asserts de carril usan
+startswith('memory') para ser compatibles con ambas formas.
+
 No requiere Ollama activo — solo prueba el router (rápido, sin LLM).
 
 Uso:
@@ -89,11 +93,14 @@ def _run_bateria() -> None:
 
     for caso in BATERIA_20:
         carril_real = route_query(caso["pregunta"])
-        carril_ok = carril_real == caso["carril"]
+        # Acepta 'memory' o 'memory:subtipo'
+        carril_ok = carril_real == caso["carril"] or (
+            caso["carril"] == "memory" and carril_real.startswith("memory")
+        )
 
         mem_ok = True
         mem_real = None
-        if caso["memoria"] is not None and carril_real == "memory":
+        if caso["memoria"] is not None and carril_real.startswith("memory"):
             mem_real = classify_memory_query(caso["pregunta"])
             mem_ok = mem_real == caso["memoria"]
 
@@ -120,13 +127,18 @@ def _run_bateria() -> None:
 
 # ─────────────────────────────────────────────
 # Tests pytest — uno por caso (carril + memoria)
+# Usa startswith('memory') para compatibilidad con subtipos.
 # ─────────────────────────────────────────────
 
 def _make_carril_test(caso: dict):
     def _test():
-        assert route_query(caso["pregunta"]) == caso["carril"], (
+        carril_real = route_query(caso["pregunta"])
+        carril_ok = carril_real == caso["carril"] or (
+            caso["carril"] == "memory" and carril_real.startswith("memory")
+        )
+        assert carril_ok, (
             f"{caso['id']}: esperaba carril '{caso['carril']}', "
-            f"obtuvo '{route_query(caso['pregunta'])}'"
+            f"obtuvo '{carril_real}'"
         )
     _test.__name__ = f"test_{caso['id']}_carril"
     _test.__doc__ = f"{caso['id']}: '{caso['pregunta']}' → {caso['carril']}"
