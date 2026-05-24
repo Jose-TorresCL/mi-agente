@@ -48,10 +48,9 @@ Fix B2:
   intelligence.py devuelve respuesta fija para este carril — 0ms, sin LLM.
 
 Fix N1+N2:
-  Agregada _normalize(text) que quita tildes, comprime espacios múltiples
-  y aplica unicodedata NFD. Todas las listas de keywords ahora solo tienen
-  la versión sin tilde — _normalize() se encarga de equipararlas.
-  Eliminados ~47 pares duplicados (con/sin tilde) del archivo.
+  _normalize(text) movida a app/text_utils.py (fix-circular-import).
+  router.py la importa desde allí. Mismo comportamiento, sin ciclo.
+  Todas las listas de keywords solo tienen la versión sin tilde.
 
 Fix N3:
   _COMPLETE_TASK_PATTERN ampliado: ahora acepta texto libre además de
@@ -64,7 +63,7 @@ Fix R4+R7:
   Ahora: identity → memory → RAG_HINTS → fallback.
   Eliminadas de RAG_HINTS las keywords demasiado genéricas que competían con
   memory e identity: 'que es', 'objetivo', 'explicame', 'para que sirve',
-  'componentes'. Solo quedan señales inequívocamente documentales.
+  'componentes'. Solo quedan señales ineuquívocamente documentales.
 
 Fix R6:
   Eliminadas 'crear', 'nuevo', 'nuevas' de _TASK_SUGGESTION_SIGNALS.
@@ -111,24 +110,12 @@ import unicodedata
 from pathlib import Path
 
 from app.config import MODEL_NAME, OLLAMA_URL
+from app.text_utils import _normalize
 from app.tools import extract_file_path
 from app.logger import get_logger
 from app import intent_index
 
 log = get_logger(__name__)
-
-
-# ─────────────────────────────────────────────
-# Normalización de texto (Fix N1)
-# Quita tildes, comprime espacios múltiples.
-# Se aplica antes de TODO matching en Capa 1.
-# ─────────────────────────────────────────────
-
-def _normalize(text: str) -> str:
-    """Minúsculas + sin tildes + espacios comprimidos."""
-    nfkd = unicodedata.normalize("NFD", text.lower())
-    sin_tildes = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
-    return re.sub(r"\s+", " ", sin_tildes).strip()
 
 
 # ─────────────────────────────────────────────
@@ -138,7 +125,7 @@ def _normalize(text: str) -> str:
 SESSION_STATS: dict[str, int] = {
     "kw":    0,
     "emb":   0,
-    "llm":   0,   # ahora cuenta 'fallback directo a rag'
+    "llm":   0,
     "total": 0,
 }
 
@@ -153,8 +140,6 @@ EMBED_TOP_K     = intent_index.EMBED_TOP_K
 
 # ─────────────────────────────────────────────
 # Palabras de salida
-# Fix R8: route_query aplica _normalize() antes del chequeo →
-# 'Adiós', 'CHAO', 'hasta luego' matchean sin importar tildes/mayúsculas.
 # ─────────────────────────────────────────────
 
 _EXIT_WORDS = {
@@ -177,9 +162,7 @@ _WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "too
 
 
 # ─────────────────────────────────────────────
-# Fix B3 — verbos que indican intención de LEER un archivo.
-# extract_file_path solo dispara tool_read_file si hay uno de estos verbos.
-# Sin verbo lector explícito, una mención de archivo pasa al siguiente carril.
+# Fix B3 — verbos lectores
 # ─────────────────────────────────────────────
 
 _READ_VERBS = {
@@ -189,14 +172,11 @@ _READ_VERBS = {
 
 
 def _has_read_verb(q_normalized: str) -> bool:
-    """Devuelve True si la pregunta normalizada contiene un verbo lector."""
     return any(verb in q_normalized for verb in _READ_VERBS)
 
 
 # ─────────────────────────────────────────────
 # Listas de keywords (Capa 1)
-# Sin tildes — _normalize() equipara las variantes del usuario.
-# Fix N2: eliminados ~47 pares duplicados (con/sin tilde).
 # ─────────────────────────────────────────────
 
 TOOL_LIST_KEYWORDS = [
@@ -243,8 +223,6 @@ MEMORY_TASKS_KEYWORDS = [
     "lista todas las tareas", "todas las tareas",
 ]
 
-# Fix R6: eliminadas 'crear', 'nuevo', 'nuevas'.
-# Solo quedan señales que indican intención de proponer/sugerir, no ejecutar.
 _TASK_SUGGESTION_SIGNALS = [
     "podriamos", "podrias",
     "agregar", "sugerir",
@@ -305,7 +283,6 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completada", "como completado",
 ]
 
-# Fix N3: patrón ampliado — acepta número de tarea O texto libre.
 _COMPLETE_TASK_PATTERN = re.compile(
     r"(marca|marcar|cierra|cerrar|completar|complete)\s+(t-\d+|la tarea|el issue|el paso)",
     re.IGNORECASE,
@@ -327,17 +304,6 @@ TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas funciones", "cuantas clases",
 ]
 
-# Fix R4+R7: solo keywords inequívocamente documentales.
-# Eliminadas: 'que es', 'objetivo', 'explicame', 'para que sirve', 'componentes'.
-# RAG_HINTS se evalúa DESPUÉS de identity y memory en _route_by_keywords.
-#
-# Fix B3 — Bug2: agregados 'que es el', 'que es la', 'que es un', 'que es una'.
-# Capturan preguntas como '¿qué es el retriever?' antes de llegar a embeddings.
-#
-# Fix B4: agregado 'para que sirve'.
-# 'para que sirve fidelity_check.py' llegaba a Capa 2 → memory:project_facts (sim=0.71).
-# No colisiona con identity porque 'para que sirves' (con 's') está en
-# AGENT_IDENTITY_KEYWORDS y se evalúa antes.
 RAG_HINTS = [
     "segun los documentos",
     "segun la documentacion",
@@ -347,14 +313,10 @@ RAG_HINTS = [
     "arquitectura",
     "relacion entre",
     "diferencia entre",
-    # Fix B3 — Bug2: preguntas de definición/concepto → inequívocamente documentales
     "que es el", "que es la", "que es un", "que es una",
-    # Fix B4: preguntas de propósito sobre archivos/módulos → inequívocamente documentales
     "para que sirve",
 ]
 
-# Fix P5-Paso1: incluye los subtipos 'memory:*' para que _route_by_embeddings
-# no los rechace cuando la Capa 2 empiece a propagarlos (Paso 2 pendiente).
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
@@ -375,17 +337,7 @@ def _has_task_suggestion_signal(q: str) -> bool:
 
 
 def classify_memory_query(question: str) -> str | None:
-    """Clasifica el tipo de consulta de memoria.
-
-    Tipos reconocidos:
-      'profile'       → datos del usuario (nombre, estilo, nivel)
-      'work_state'    → foco actual, siguiente paso, bloqueos
-      'tasks'         → tareas pendientes o completadas
-      'project_facts' → hechos del proyecto (fase, nombre, sprint, etc.)
-      'episode'       → sesiones anteriores, aprendizajes, historial (fix 6B)
-
-    Retorna None si la pregunta no encaja en ningún tipo conocido.
-    """
+    """Clasifica el tipo de consulta de memoria."""
     q = _normalize(question)
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
@@ -402,7 +354,6 @@ def _is_question(text: str) -> bool:
 
 
 def _handle_unsupported(question: str) -> str:
-    """Mensaje honesto para preguntas cuantitativas que el agente aún no puede responder."""
     return (
         "Todavía no tengo una herramienta para calcular métricas del código "
         "(líneas, funciones, tamaño de archivos) de forma precisa.\n\n"
@@ -415,59 +366,31 @@ def _handle_unsupported(question: str) -> str:
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: clasificación instantánea por keywords.
-
-    Orden de prioridad (Fix R4+R7):
-      1. !estado / comandos especiales
-      2. Carriles de escritura (tools)
-      3. unsupported
-      4. Archivos (list, read con verbo explícito)   ← Fix B3: requiere verbo lector
-      5. identity    ← antes que RAG_HINTS
-      6. memory      ← antes que RAG_HINTS, ahora retorna 'memory:<subtipo>'
-      7. RAG_HINTS   ← solo si identity y memory no matchearon
-
-    Fix B3 — Bug1: extract_file_path ahora solo dispara tool_read_file si la
-      pregunta contiene además un verbo lector (_has_read_verb). Esto evita
-      que '¿qué hace intelligence.py?' se clasifique como tool_read_file.
-
-    Fix P5-Paso1: el carril memory ahora incluye el subtipo como sufijo.
-      Ejemplos: 'memory:tasks', 'memory:profile', 'memory:work_state'.
-      intelligence.py debe usar lane.startswith('memory') para detectarlo
-      y lane.split(':')[1] para extraer el subtipo.
-    """
+    """Capa 1: clasificación instantánea por keywords."""
     q = _normalize(question)
 
-    # 1. Comandos especiales
     if q in {"!estado", "!estatus", "!status"}:
         return "!estado"
 
-    # 2. Carriles de escritura
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
             or _COMPLETE_TASK_PATTERN.search(q):              return "tool_complete_task"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):  return "tool_update_work_state"
 
-    # 3. Unsupported
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
 
-    # 4. Archivos
-    #    Fix B3 — Bug1: extract_file_path requiere verbo lector explícito.
-    #    Sin verbo (ej: '¿qué hace intelligence.py?') → no es lectura → siguiente carril.
     if extract_file_path(question) is not None and _has_read_verb(q):
         return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
-    # 5. Identity (antes que RAG_HINTS)
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):          return "identity"
 
-    # 6. Memory — Fix P5-Paso1: propagar subtipo
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
 
-    # 7. RAG_HINTS — solo llega aquí si no es identity ni memory
     if any(k in q for k in RAG_HINTS):                        return "rag"
 
     return None
@@ -542,16 +465,7 @@ def format_estado() -> str:
 # ─────────────────────────────────────────────
 
 def route_query(question: str) -> str:
-    """Clasifica la pregunta en el carril de ejecución correcto.
-
-    Returns str con el carril ('rag', 'memory:<subtipo>', 'identity', 'tool_*', 'unsupported', 'exit').
-    Nunca retorna None ni lanza excepciones — fallback a 'rag'.
-
-    Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS.
-    Fix P5-Paso1: memory ahora incluye subtipo — ver _route_by_keywords.
-    Fix B3: extract_file_path requiere verbo lector; RAG_HINTS incluye 'que es el/la/un/una'.
-    Fix B4: RAG_HINTS incluye 'para que sirve' — evita falso positivo en Capa 2.
-    """
+    """Clasifica la pregunta en el carril de ejecución correcto."""
     if _normalize(question) in _EXIT_WORDS:
         return "exit"
 
@@ -569,7 +483,6 @@ def route_query(question: str) -> str:
         log.info("[router:emb] '%s' → %s", question[:50], emb_lane)
         return emb_lane
 
-    # Capa 3 eliminada: fallback directo a rag sin llamada LLM
     SESSION_STATS["llm"] += 1
     log.info("[router:llm] '%s' → rag", question[:50])
     return "rag"
