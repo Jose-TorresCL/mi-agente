@@ -25,6 +25,11 @@ Convenciones:
   - Namespace físico: storage/chroma  (misma instancia que documentos,
     colección diferente — Chroma las aísla automáticamente)
 
+Brecha 1 (resuelta):
+  mark_episode() ahora sincroniza exitoso también en episodic_memory.json.
+  Antes: load_last_episode() siempre devólvia exitoso=None porque Chroma
+  y el JSON estaban desincronizados. Ahora ambos tienen el mismo valor.
+
 Never raises: todos los métodos públicos capturan excepciones y loggean.
 
 D6  — decay temporal (Park et al. 2023 — Generative Agents) (CERRADO):
@@ -59,24 +64,11 @@ EPISODE_COLLECTION   = "experience_index"
 EPISODIC_MEMORY_FILE = Path("storage") / "episodic_memory.json"
 CHROMA_DIR           = Path("storage") / "chroma"
 
-# Score mínimo para que search_episodes() lo considere relevante en búsqueda directa.
 _MIN_RELEVANCE_SCORE = 0.20
-
-# Score para inyección automática en contexto RAG (experience_lookup legacy).
-# D3: este umbral es ahora responsabilidad de intelligence.py (_MIN_EXPERIENCE_SCORE).
-# Se mantiene aquí solo como fallback para experience_lookup() (compatibilidad).
 EXPERIENCE_INJECT_THRESHOLD = 0.80
-
-# Boost aplicado a episodios exitosos en search_episodes() (8C).
 _EXITOSO_BOOST = 0.15
-
-# Umbral: episodios fallidos se muestran solo si no hay alternativos > este valor (8C).
 _FALLIDO_HIDE_THRESHOLD = 0.65
 
-# D6: parámetros de decay temporal (Generative Agents — Park et al. 2023).
-# score_final = _DECAY_ALPHA * score_sem + (1 - _DECAY_ALPHA) * e^(-_DECAY_LAMBDA * días)
-# _DECAY_ALPHA  : peso del score semántico (0–1). Más alto = más semántica, menos tiempo.
-# _DECAY_LAMBDA : velocidad de decaimiento. 0.05 = suave (90 días → factor 0.78).
 _DECAY_ALPHA  = 0.75
 _DECAY_LAMBDA = 0.05
 
@@ -144,21 +136,61 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
     return doc_id, metadata, content
 
 
+def _mark_exitoso_in_json(doc_id: str, exitoso: bool) -> None:
+    """Brecha 1: sincroniza el campo exitoso en episodic_memory.json.
+
+    doc_id tiene el formato 'YYYY-MM-DDTHH:MM' (ej: '2026-05-22T15:05').
+    Busca el episodio cuya combinación date+time coincide y escribe exitoso.
+
+    Se llama siempre después de mark_episode() para mantener JSON y Chroma
+    sincronizados. Si el episodio no se encuentra en el JSON, loggea y sigue.
+
+    Never raises.
+    """
+    try:
+        if not EPISODIC_MEMORY_FILE.exists():
+            return
+
+        with open(EPISODIC_MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        episodes = data.get("episodes", [])
+        # doc_id = 'YYYY-MM-DDTHH:MM'  →  date='YYYY-MM-DD', time='HH:MM'
+        parts = doc_id.split("T", 1)
+        if len(parts) != 2:
+            log.warning("[episode_store] _mark_exitoso_in_json: doc_id mal formado '%s'", doc_id)
+            return
+
+        ep_date, ep_time = parts[0], parts[1]
+        updated = False
+        for ep in episodes:
+            if ep.get("date") == ep_date and ep.get("time") == ep_time:
+                ep["exitoso"] = exitoso
+                updated = True
+                break
+
+        if updated:
+            data["episodes"] = episodes
+            with open(EPISODIC_MEMORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            log.info(
+                "[episode_store] _mark_exitoso_in_json: %s → exitoso=%s",
+                doc_id, exitoso,
+            )
+        else:
+            log.warning(
+                "[episode_store] _mark_exitoso_in_json: episodio %s no encontrado en JSON",
+                doc_id,
+            )
+    except Exception as exc:
+        log.warning("[episode_store] _mark_exitoso_in_json error: %s", exc)
+
+
 def _apply_recency_decay(semantic_score: float, episode_date_str: str) -> float:
     """D6: aplica decay temporal al score semántico.
 
     Fórmula (Generative Agents — Park et al. 2023):
         score_final = alpha * score_sem + (1 - alpha) * e^(-lambda * días)
-
-    Interpretación:
-        - Un episodio de HOY tiene factor de recencia = 1.0 (máximo).
-        - Un episodio de hace 30 días tiene factor de recencia ≈ 0.22.
-        - El score final pondera 75% semántica + 25% recencia.
-
-    Ejemplos con semantic_score=0.85:
-        - 0 días:  0.75*0.85 + 0.25*1.00 = 0.8875
-        - 30 días: 0.75*0.85 + 0.25*0.22 = 0.6930
-        - 90 días: 0.75*0.85 + 0.25*0.01 = 0.6400
 
     Fallback: si la fecha no es parseable, devuelve el score original sin modificar.
     Never raises.
@@ -171,7 +203,6 @@ def _apply_recency_decay(semantic_score: float, episode_date_str: str) -> float:
         final    = _DECAY_ALPHA * semantic_score + (1.0 - _DECAY_ALPHA) * recency
         return round(min(final, 1.0), 4)
     except Exception:
-        # Fecha inválida o ausente — devuelve score original sin penalizar
         return semantic_score
 
 
@@ -179,19 +210,7 @@ def _extract_best_candidate(
     results: list,
     inject_threshold: float,
 ) -> tuple[str, float] | tuple[None, float]:
-    """Helper interno: selecciona el mejor episodio candidato para inyección.
-
-    D6: el score que recibe ya viene con decay temporal aplicado.
-    Aplica la misma lógica de preferencia que experience_lookup():
-      exitosos > unmarked > fallidos (solo si no hay alternativas).
-
-    Args:
-        results: lista de (doc, score_con_decay) ya filtrada.
-        inject_threshold: score mínimo para considerar inyección.
-
-    Returns:
-        (snippet_text, score) del mejor candidato, o (None, 0.0) si no hay.
-    """
+    """Helper interno: selecciona el mejor episodio candidato para inyección."""
     candidates = [
         (doc, score) for doc, score in results
         if score >= inject_threshold
@@ -274,7 +293,6 @@ def search_episodes(query: str, k: int = 3) -> list[dict]:
             episode_date = meta.get("date", "")
             exitoso_str  = meta.get("exitoso", "unmarked")
 
-            # D6: aplicar decay temporal al score semántico
             decayed_score = _apply_recency_decay(raw_score, episode_date)
 
             if exitoso_str == "true":
@@ -319,20 +337,6 @@ def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, 
     """D3: variante de experience_lookup que expone el score al llamador.
 
     D6: el score devuelto ya incluye decay temporal.
-    Diseñada para ser llamada desde _retrieve_rag_context() en intelligence.py.
-    Devuelve (snippet, score) para que intelligence.py aplique su propio umbral
-    (_MIN_EXPERIENCE_SCORE = 0.70) sin depender del formato del texto.
-
-    Usa EXPERIENCE_INJECT_THRESHOLD (0.80) como filtro base interno.
-    El llamador puede aplicar un umbral adicional sobre el score devuelto.
-
-    Args:
-        query: pregunta actual del usuario.
-
-    Returns:
-        (snippet_text, score) si hay experiencia relevante,
-        (None, 0.0)           si no hay ninguna por encima del umbral.
-
     Never raises.
     """
     col = _get_collection()
@@ -341,7 +345,6 @@ def experience_lookup_with_score(query: str) -> tuple[str, float] | tuple[None, 
     try:
         results = col.similarity_search_with_relevance_scores(query, k=5)
 
-        # D6: aplicar decay temporal a cada resultado antes de seleccionar
         results_with_decay = [
             (doc, _apply_recency_decay(raw_score, doc.metadata.get("date", "")))
             for doc, raw_score in results
@@ -364,24 +367,33 @@ def experience_lookup(query: str) -> str | None:
 
     DEPRECATED para uso interno en intelligence.py — usar experience_lookup_with_score().
     Se mantiene por compatibilidad con código externo o tests que lo llamen directamente.
-
-    Returns:
-        Texto de contexto listo para concatenar al prompt RAG, o None.
-    Never raises.
     """
     snippet, _ = experience_lookup_with_score(query)
     return snippet
 
 
 def mark_episode(doc_id: str, exitoso: bool) -> bool:
-    """Actualiza el metadato 'exitoso' de un episodio ya indexado."""
+    """Actualiza el metadato 'exitoso' de un episodio ya indexado en Chroma y en JSON.
+
+    Brecha 1: ahora sincroniza exitoso en AMBOS almacenamientos:
+      1. Chroma (experience_index) — como antes.
+      2. episodic_memory.json — nuevo, via _mark_exitoso_in_json().
+
+    Esto garantiza que load_last_episode() devuelva exitoso correcto
+    en la próxima sesión, habilitándolo en Session Intelligence (get_session_briefing).
+    Never raises.
+    """
     col = _get_collection()
     if col is None:
+        # Sin Chroma igual actualizamos el JSON
+        _mark_exitoso_in_json(doc_id, exitoso)
         return False
     try:
         result = col.get(ids=[doc_id], include=["documents", "metadatas"])
         if not result["ids"]:
-            log.warning("[episode_store] mark_episode: ID '%s' no encontrado", doc_id)
+            log.warning("[episode_store] mark_episode: ID '%s' no encontrado en Chroma", doc_id)
+            # Intentamos el JSON de todas formas
+            _mark_exitoso_in_json(doc_id, exitoso)
             return False
 
         content  = result["documents"][0]
@@ -390,7 +402,11 @@ def mark_episode(doc_id: str, exitoso: bool) -> bool:
 
         col.delete(ids=[doc_id])
         col.add_texts(texts=[content], metadatas=[metadata], ids=[doc_id])
-        log.info("[episode_store] mark_episode: %s marcado como exitoso=%s", doc_id, exitoso)
+        log.info("[episode_store] mark_episode: %s marcado como exitoso=%s en Chroma", doc_id, exitoso)
+
+        # Brecha 1: sincronizar también en episodic_memory.json
+        _mark_exitoso_in_json(doc_id, exitoso)
+
         return True
     except Exception as exc:
         log.warning("[episode_store] mark_episode error: %s", exc)
