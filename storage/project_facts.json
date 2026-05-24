@@ -4,11 +4,11 @@
   "repo": "https://github.com/Jose-TorresCL/mi-agente",
   "stack": "Python 3.11, Ollama (llama3.2 + nomic-embed-text), LangChain, ChromaDB, pytest",
   "architecture": "Router 3 capas (keywords → embeddings → fallback RAG) + memoria en capas (profile, workstate, tasks, facts, episodes)",
-  "current_phase": "Fase 4 — Robustecimiento y cobertura de tests",
+  "current_phase": "Fase 7 — Observabilidad y evaluación continua",
   "current_sprint": "Sprint 4 — Auditoría de tests y corrección de bugs",
   "sprint_goal": "Normalización de texto en router + casos adversariales",
-  "sprint_status": "en curso",
-  "last_milestone": "306/306 tests en verde — 2026-05-19",
-  "next_milestone": "Router normalizado + tests adversariales pasando",
-  "test_coverage": "39% (306 tests, 2108 statements)"
+  "sprint_status": "completo",
+  "last_milestone": "306/306 tests en verde — 2026-05-24",
+  "next_milestone": "show_metrics.py + batería evaluación ampliada (Fase 7B–7C)",
+  "test_coverage": "306 tests, 39% coverage"
 }
