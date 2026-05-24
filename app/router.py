@@ -85,6 +85,18 @@ Fix P5-Paso1:
   get_full_context(). Pendiente: Paso 2 (Capa 2) y Paso 4 (intelligence.py).
   VALID_LANES actualizado con los subtipos para que _route_by_embeddings
   no los rechace cuando la Capa 2 empiece a propagarlos.
+
+Fix B3 (este commit):
+  Bug1 — extract_file_path disparaba tool_read_file para cualquier pregunta
+  que mencionara un archivo (ej: '¿qué hace intelligence.py?'). Ahora se
+  requiere que haya un verbo lector explícito (leer, abre, muéstrame, ver,
+  lee, mostrar, abrir) junto con el nombre de archivo. Sin verbo, la pregunta
+  sigue al siguiente carril (RAG_HINTS → rag).
+
+  Bug2 — '¿qué es el retriever en LangChain?' llegaba a embeddings y se
+  clasificaba como memory:work_state (similitud 0.71). Agregados a RAG_HINTS:
+  'que es el', 'que es la', 'que es un', 'que es una'. Son señales
+  inequívocamente documentales que la Capa 1 debe interceptar.
 """
 from __future__ import annotations
 
@@ -156,6 +168,23 @@ _EXIT_WORDS = {
 # ─────────────────────────────────────────────
 
 _WRITE_LANES = {"tool_save_fact", "tool_create_task", "tool_complete_task", "tool_update_work_state"}
+
+
+# ─────────────────────────────────────────────
+# Fix B3 — verbos que indican intención de LEER un archivo.
+# extract_file_path solo dispara tool_read_file si hay uno de estos verbos.
+# Sin verbo lector explícito, una mención de archivo pasa al siguiente carril.
+# ─────────────────────────────────────────────
+
+_READ_VERBS = {
+    "leer", "lee", "abre", "abrir",
+    "muestrame", "mostrar", "ver", "open",
+}
+
+
+def _has_read_verb(q_normalized: str) -> bool:
+    """Devuelve True si la pregunta normalizada contiene un verbo lector."""
+    return any(verb in q_normalized for verb in _READ_VERBS)
 
 
 # ─────────────────────────────────────────────
@@ -295,6 +324,9 @@ TOOL_UNSUPPORTED_KEYWORDS = [
 # Fix R4+R7: solo keywords inequívocamente documentales.
 # Eliminadas: 'que es', 'objetivo', 'explicame', 'para que sirve', 'componentes'.
 # RAG_HINTS se evalúa DESPUÉS de identity y memory en _route_by_keywords.
+#
+# Fix B3 — Bug2: agregados 'que es el', 'que es la', 'que es un', 'que es una'.
+# Capturan preguntas como '¿qué es el retriever?' antes de llegar a embeddings.
 RAG_HINTS = [
     "segun los documentos",
     "segun la documentacion",
@@ -304,6 +336,8 @@ RAG_HINTS = [
     "arquitectura",
     "relacion entre",
     "diferencia entre",
+    # Fix B3 — Bug2: preguntas de definición/concepto → inequívocamente documentales
+    "que es el", "que es la", "que es un", "que es una",
 ]
 
 # Fix P5-Paso1: incluye los subtipos 'memory:*' para que _route_by_embeddings
@@ -374,10 +408,14 @@ def _route_by_keywords(question: str) -> str | None:
       1. !estado / comandos especiales
       2. Carriles de escritura (tools)
       3. unsupported
-      4. Archivos (extract_file_path, list, read)
+      4. Archivos (list, read con verbo explícito)   ← Fix B3: requiere verbo lector
       5. identity    ← antes que RAG_HINTS
       6. memory      ← antes que RAG_HINTS, ahora retorna 'memory:<subtipo>'
       7. RAG_HINTS   ← solo si identity y memory no matchearon
+
+    Fix B3 — Bug1: extract_file_path ahora solo dispara tool_read_file si la
+      pregunta contiene además un verbo lector (_has_read_verb). Esto evita
+      que '¿qué hace intelligence.py?' se clasifique como tool_read_file.
 
     Fix P5-Paso1: el carril memory ahora incluye el subtipo como sufijo.
       Ejemplos: 'memory:tasks', 'memory:profile', 'memory:work_state'.
@@ -401,7 +439,10 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):        return "unsupported"
 
     # 4. Archivos
-    if extract_file_path(question) is not None:               return "tool_read_file"
+    #    Fix B3 — Bug1: extract_file_path requiere verbo lector explícito.
+    #    Sin verbo (ej: '¿qué hace intelligence.py?') → no es lectura → siguiente carril.
+    if extract_file_path(question) is not None and _has_read_verb(q):
+        return "tool_read_file"
     if any(k in q for k in TOOL_LIST_KEYWORDS):               return "tool_list_files"
     if any(k in q for k in TOOL_READ_KEYWORDS):               return "tool_read_file"
 
@@ -495,6 +536,7 @@ def route_query(question: str) -> str:
 
     Fix R8: _normalize() aplicado antes del chequeo de _EXIT_WORDS.
     Fix P5-Paso1: memory ahora incluye subtipo — ver _route_by_keywords.
+    Fix B3: extract_file_path requiere verbo lector; RAG_HINTS incluye 'que es el/la/un/una'.
     """
     if _normalize(question) in _EXIT_WORDS:
         return "exit"
