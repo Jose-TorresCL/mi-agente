@@ -9,6 +9,7 @@ Este módulo contiene funciones que NO modifican estado:
   - extract_task_id()         extraer ID de tarea de texto
   - _parse_key_value()        detectar formato 'clave = valor'
   - parse_work_state_update() extraer (field, value) de frase libre
+  - handle_list_files()       responder pregunta sobre archivos del proyecto
 
 Importar desde tools.py para mantener compatibilidad con imports existentes.
 """
@@ -84,6 +85,9 @@ _VALUE_PREFIXES = [
 # 0.75 evita falsos positivos (ej: 'router.py' != 'memory_store.py')
 # pero acepta typos comunes (ej: 'chat.core.py' → 'chat_core.py' = 0.89)
 _FUZZY_THRESHOLD = 0.75
+
+# Keywords de conteo para handle_list_files
+_COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 
 
 # ─────────────────────────────────────────────
@@ -244,8 +248,6 @@ def extract_file_path(text: str) -> str | None:
         # Puede ser un typo: 'chat.core.py' → 'app/chat_core.py'
         fuzzy_match = _fuzzy_find_file(filename)
         if fuzzy_match:
-            # Log implícito: read_project_file mostrará el contenido correcto.
-            # El usuario no necesita saber que hubo corrección — simplemente funciona.
             return fuzzy_match
 
         # Sin match fuzzy → devolver nombre original (read_project_file dará error claro)
@@ -346,3 +348,33 @@ def parse_work_state_update(text: str) -> tuple[str | None, str | None]:
                 return detected_field, value
 
     return detected_field, None
+
+
+# ─────────────────────────────────────────────
+# Responder pregunta sobre archivos del proyecto
+# ─────────────────────────────────────────────
+
+def handle_list_files(question: str) -> str:
+    """Responde una pregunta sobre los archivos del proyecto.
+
+    Extrae de intelligence.py (refactor R-F1).
+    Si la pregunta contiene keyword de conteo, devuelve número filtrado por tipo.
+    Si no, devuelve lista completa.
+    """
+    files = list_project_files()
+    question_lower = question.lower()
+    wants_count = any(kw in question_lower for kw in _COUNT_KEYWORDS)
+
+    if wants_count:
+        if "python" in question_lower or ".py" in question_lower:
+            py_files = [f for f in files if f.endswith(".py")]
+            return f"El proyecto tiene {len(py_files)} archivos Python (.py)."
+        if ".md" in question_lower or "markdown" in question_lower or "documentación" in question_lower:
+            md_files = [f for f in files if f.endswith(".md")]
+            return f"El proyecto tiene {len(md_files)} archivos Markdown (.md)."
+        if ".json" in question_lower or "json" in question_lower:
+            json_files = [f for f in files if f.endswith(".json")]
+            return f"El proyecto tiene {len(json_files)} archivos JSON."
+        return f"El proyecto tiene {len(files)} archivos en total."
+
+    return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)

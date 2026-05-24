@@ -1,3 +1,14 @@
+"""Prompts y mensajes de respuesta fijos de Lautaro.
+
+Secciones
+─────────
+  QA_SYSTEM_PROMPT         — prompt principal para carriles RAG
+  MEMORY_SYNTHESIS_PROMPT  — prompt para síntesis de respuestas de memoria
+  IDENTITY_MSG             — respuesta fija del carril 'identity' (sin LLM)
+  UNSUPPORTED_MSG          — respuesta para carriles no soportados
+  MEMORY_NOT_FOUND_MSG     — respuesta cuando la memoria no tiene datos
+"""
+
 QA_SYSTEM_PROMPT = """
 Eres Lautaro, asistente técnico local del proyecto "mi-agente".
 Stack: Python, Ollama (llama3.2), LangChain, ChromaDB, JSON local.
@@ -72,3 +83,32 @@ Si la pregunta hace referencia a algo del historial, úsalo como contexto adicio
 
 ## Respuesta
 """.strip()
+
+
+# ── Mensajes de respuesta fijos (sin LLM) ──────────────────────────────────
+
+IDENTITY_MSG = (
+    "Soy **Lautaro**, tu asistente técnico local.\n\n"
+    "**Lo que puedo hacer:**\n"
+    "- Buscar en la documentación del proyecto (RAG)\n"
+    "- Recordar tu perfil, foco de trabajo y tareas pendientes\n"
+    "- Guardar hechos del proyecto y actualizar el estado de trabajo\n"
+    "- Registrar y recuperar el historial de sesiones anteriores\n"
+    "- Leer archivos del proyecto\n\n"
+    "**Lo que aún no puedo hacer:**\n"
+    "- Acceder a internet ni ejecutar código directamente\n"
+    "- Calcular métricas de código (líneas, funciones) — pronto con `tool_code_stats`\n\n"
+    "Corro completamente en local usando Ollama. Sin enviar datos a la nube."
+)
+
+UNSUPPORTED_MSG = (
+    "Esa consulta está fuera del alcance de lo que puedo hacer por ahora. "
+    "Puedo responder preguntas sobre el proyecto, buscar en la documentación, "
+    "consultar tareas y estado de trabajo."
+)
+
+MEMORY_NOT_FOUND_MSG = (
+    "No encontré información relevante en la memoria para esa pregunta. "
+    "Si buscas datos del proyecto, prueba con: '\u00bfcuál es el estado del proyecto?', "
+    "'\u00bfqué tareas tengo pendientes?' o '\u00bfcuál es mi perfil?'."
+)

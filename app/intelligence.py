@@ -46,13 +46,19 @@ Fix P5-Paso4 — el bloque memory lee el subtipo desde el carril en vez de
   - route se normaliza a 'memory' antes de _record_metric para no romper métricas.
   - La condición pasa de `route == "memory"` a
     `route == "memory" or route.startswith("memory:")`.
+R-F1 — refactor de funciones puras y constantes (CERRADO):
+  - Helpers de formato extraídos a app/formatters.py
+  - Mensajes fijos (IDENTITY_MSG, UNSUPPORTED_MSG, MEMORY_NOT_FOUND_MSG)
+    movidos a app/prompts.py
+  - handle_list_files() movido a app/tool_helpers.py
+  - Sin cambio de comportamiento. process_turn y contratos públicos intactos.
 """
 from __future__ import annotations
 
 import time
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 
 from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
@@ -73,8 +79,20 @@ from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
 from app.tool_registry import TOOLS, dispatch_tool
-from app.prompts import QA_SYSTEM_PROMPT, MEMORY_SYNTHESIS_PROMPT
-from app.tool_helpers import list_project_files
+from app.prompts import (
+    QA_SYSTEM_PROMPT,
+    MEMORY_SYNTHESIS_PROMPT,
+    IDENTITY_MSG,
+    UNSUPPORTED_MSG,
+    MEMORY_NOT_FOUND_MSG,
+)
+from app.tool_helpers import list_project_files, handle_list_files
+from app.formatters import (
+    format_profile_answer,
+    format_tasks_answer,
+    build_history_snippet,
+    format_episodes_context,
+)
 from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
@@ -86,43 +104,11 @@ _CACHE_MIN_SCORE           = 0.55
 _COUNT_KEYWORDS            = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 _IDENTITY_KEYWORDS         = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                                "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
-_DONE_TASK_KEYWORDS        = {
-    "hechas", "hecho", "completadas", "completada", "completado",
-    "cerradas", "cerrada", "terminadas", "terminada", "listas", "lista",
-    "done",
-}
 _MEMORY_HISTORY_TURNS      = 3
 
 # D3: umbral propio de intelligence.py para inyección episódica.
 # Independiente de EXPERIENCE_INJECT_THRESHOLD en episode_store.py.
 _MIN_EXPERIENCE_SCORE      = 0.70
-
-_UNSUPPORTED_MSG = (
-    "Esa consulta está fuera del alcance de lo que puedo hacer por ahora. "
-    "Puedo responder preguntas sobre el proyecto, buscar en la documentación, "
-    "consultar tareas y estado de trabajo."
-)
-_MEMORY_NOT_FOUND_MSG = (
-    "No encontré información relevante en la memoria para esa pregunta. "
-    "Si buscas datos del proyecto, prueba con: '\u00bfcuál es el estado del proyecto?', "
-    "'\u00bfqué tareas tengo pendientes?' o '\u00bfcuál es mi perfil?'."
-)
-
-# Respuesta fija de identidad — carril 'identity'.
-# No depende del LLM ni del RAG. Se actualiza aquí directamente.
-_IDENTITY_MSG = (
-    "Soy **Lautaro**, tu asistente técnico local.\n\n"
-    "**Lo que puedo hacer:**\n"
-    "- Buscar en la documentación del proyecto (RAG)\n"
-    "- Recordar tu perfil, foco de trabajo y tareas pendientes\n"
-    "- Guardar hechos del proyecto y actualizar el estado de trabajo\n"
-    "- Registrar y recuperar el historial de sesiones anteriores\n"
-    "- Leer archivos del proyecto\n\n"
-    "**Lo que aún no puedo hacer:**\n"
-    "- Acceder a internet ni ejecutar código directamente\n"
-    "- Calcular métricas de código (líneas, funciones) — pronto con `tool_code_stats`\n\n"
-    "Corro completamente en local usando Ollama. Sin enviar datos a la nube."
-)
 
 
 # ───────────────────────────────────────────────
@@ -150,82 +136,6 @@ class RagContext(TypedDict):
 
 
 # ───────────────────────────────────────────────
-# Helpers de formato — carril memory
-# ───────────────────────────────────────────────
-
-def _format_profile_answer(profile: dict) -> str:
-    lines = ["**Perfil del usuario:**"]
-    lines.append(f"- Nombre: {profile.get('user_name', 'desconocido')}")
-    lines.append(f"- Nivel: {profile.get('user_level', 'desconocido')}")
-    lines.append(f"- Proyecto: {profile.get('project_type', 'desconocido')}")
-    style = profile.get("preferred_style", [])
-    if style:
-        lines.append(f"- Estilo preferido: {', '.join(style)}")
-    workflow = profile.get("preferred_workflow", [])
-    if workflow:
-        lines.append(f"- Flujo preferido: {' | '.join(workflow)}")
-    return "\n".join(lines)
-
-
-def _format_tasks_answer(tasks_data: dict, question: str = "") -> str:
-    tasks = tasks_data.get("tasks", [])
-    q_lower = question.lower()
-    wants_done = any(kw in q_lower for kw in _DONE_TASK_KEYWORDS)
-
-    if wants_done:
-        filtered = [t for t in tasks if t.get("status") in ("done", "completed")]
-        if not filtered:
-            return "No hay tareas completadas registradas."
-        lines = ["**Tareas completadas:**"]
-        for t in filtered:
-            lines.append(
-                f"- [{t.get('id', '?')}] {t.get('title', '')} "
-                f"(prioridad: {t.get('priority', 'media')})"
-            )
-        return "\n".join(lines)
-
-    pending = [t for t in tasks if t.get("status") not in ("done", "completed")]
-    if not pending:
-        return "No hay tareas pendientes registradas."
-    lines = ["**Tareas pendientes:**"]
-    for t in pending:
-        lines.append(
-            f"- [{t.get('id', '?')}] {t.get('title', '')} "
-            f"(prioridad: {t.get('priority', 'media')}, estado: {t.get('status', 'pending')})"
-        )
-    return "\n".join(lines)
-
-
-def _build_history_snippet(chat_history: list | None, max_turns: int = _MEMORY_HISTORY_TURNS) -> str:
-    if not chat_history:
-        return ""
-    recent = chat_history[-(max_turns * 2):]
-    lines = []
-    for m in recent:
-        role = "Usuario" if isinstance(m, HumanMessage) else "Lautaro"
-        content = m.content.strip().replace("\n", " ")
-        truncated = content[:_HISTORY_LINE_MAX] + ("…" if len(content) > _HISTORY_LINE_MAX else "")
-        lines.append(f"{role}: {truncated}")
-    return "\n".join(lines)
-
-
-def _format_episodes_context(episodes: list[dict]) -> str:
-    lines = []
-    for i, ep in enumerate(episodes, 1):
-        lines.append(
-            f"Sesión {i} ({ep.get('date', '?')} {ep.get('time', '')}, "
-            f"{ep.get('turns', 0)} turnos, relevancia: {ep.get('score', 0):.2f}):"
-        )
-        summary = ep.get("summary", "").strip()
-        if summary.startswith("["):
-            newline_pos = summary.find("\n")
-            summary = summary[newline_pos + 1:].strip() if newline_pos != -1 else summary
-        lines.append(f"  {summary}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-# ───────────────────────────────────────────────
 # R5-MoA — AGENTE RECUPERADOR de memoria
 # ───────────────────────────────────────────────
 
@@ -233,7 +143,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
     if len(intents) > 1:
         composed = get_composed_context(intents)
         if not composed.strip():
-            return MemoryContext(context_text="", fallback=_MEMORY_NOT_FOUND_MSG,
+            return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
                                  sources=intents, needs_llm=False)
         return MemoryContext(context_text=composed,
                              fallback=f"Información de memoria:\n{composed}",
@@ -246,7 +156,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         if not p:
             return MemoryContext(context_text="", fallback="No encontré información de perfil.",
                                  sources=["profile"], needs_llm=False)
-        return MemoryContext(context_text="", fallback=_format_profile_answer(p),
+        return MemoryContext(context_text="", fallback=format_profile_answer(p),
                              sources=["profile"], needs_llm=False)
 
     if kind == "tasks":
@@ -254,7 +164,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         if not t:
             return MemoryContext(context_text="", fallback="No encontré tareas registradas.",
                                  sources=["tasks"], needs_llm=False)
-        return MemoryContext(context_text="", fallback=_format_tasks_answer(t, question=question),
+        return MemoryContext(context_text="", fallback=format_tasks_answer(t, question=question),
                              sources=["tasks"], needs_llm=False)
 
     if kind == "project_facts":
@@ -300,7 +210,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         episodes_with_content = [ep for ep in episodes
                                   if _EMPTY_MARKER not in ep.get("summary", "")]
         if episodes_with_content:
-            context_text = _format_episodes_context(episodes_with_content)
+            context_text = format_episodes_context(episodes_with_content)
             return MemoryContext(context_text=context_text,
                                  fallback=f"Sesiones encontradas:\n{context_text}",
                                  sources=["episode"], needs_llm=True)
@@ -315,7 +225,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
             sources=["episode"], needs_llm=False)
 
     log.debug("_retrieve_memory_context: tipo no reconocido '%s'", kind)
-    return MemoryContext(context_text="", fallback=_MEMORY_NOT_FOUND_MSG,
+    return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
                          sources=[kind], needs_llm=False)
 
 
@@ -329,7 +239,7 @@ def _synthesize_memory_answer(
     fallback: str,
     chat_history: list | None = None,
 ) -> str:
-    history_snippet = _build_history_snippet(chat_history) or "(sin historial previo)"
+    history_snippet = build_history_snippet(chat_history) or "(sin historial previo)"
     prompt = MEMORY_SYNTHESIS_PROMPT.format(
         context_text=context_text,
         chat_history=history_snippet,
@@ -356,7 +266,7 @@ def _decide_memory(
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
 
     if not intents:
-        return _MEMORY_NOT_FOUND_MSG
+        return MEMORY_NOT_FOUND_MSG
 
     mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
     log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
@@ -503,30 +413,6 @@ def _decide_rag(
 
 
 # ───────────────────────────────────────────────
-# Helpers — carril tool_list_files
-# ───────────────────────────────────────────────
-
-def _handle_list_files(question: str) -> str:
-    files = list_project_files()
-    question_lower = question.lower()
-    wants_count = any(kw in question_lower for kw in _COUNT_KEYWORDS)
-
-    if wants_count:
-        if "python" in question_lower or ".py" in question_lower:
-            py_files = [f for f in files if f.endswith(".py")]
-            return f"El proyecto tiene {len(py_files)} archivos Python (.py)."
-        if ".md" in question_lower or "markdown" in question_lower or "documentación" in question_lower:
-            md_files = [f for f in files if f.endswith(".md")]
-            return f"El proyecto tiene {len(md_files)} archivos Markdown (.md)."
-        if ".json" in question_lower or "json" in question_lower:
-            json_files = [f for f in files if f.endswith(".json")]
-            return f"El proyecto tiene {len(json_files)} archivos JSON."
-        return f"El proyecto tiene {len(files)} archivos en total."
-
-    return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
-
-
-# ───────────────────────────────────────────────
 # Decisores — otros carriles (exit)
 # ───────────────────────────────────────────────
 
@@ -627,7 +513,7 @@ def process_turn(
         _record_metric(route="identity", intent_type="identity")
         return DecisionResult(
             route="identity",
-            response=_IDENTITY_MSG,
+            response=IDENTITY_MSG,
             cached=False,
             source="direct",
             source_docs=[],
@@ -638,7 +524,7 @@ def process_turn(
 
     # ── tool_list_files ─────────────────────────────────────────────────────
     if route == "tool_list_files":
-        answer = _handle_list_files(user_input)
+        answer = handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files")
         return DecisionResult(
             route=route,
@@ -711,7 +597,7 @@ def process_turn(
         _record_metric(route=route, intent_type="unsupported")
         return DecisionResult(
             route=route,
-            response=_UNSUPPORTED_MSG,
+            response=UNSUPPORTED_MSG,
             cached=False,
             source="direct",
             source_docs=[],
