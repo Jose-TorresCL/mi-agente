@@ -1,6 +1,6 @@
 # Roadmap del proyecto
 
-> ⚠️ **Documento vivo** — última actualización: 19/05/2026  
+> ⚠️ **Documento vivo** — última actualización: 24/05/2026  
 > Las fases completadas son registro histórico permanente.  
 > Solo la sección "Fase actual" describe el estado real hoy.
 
@@ -106,5 +106,6 @@ Hasta entonces: JSON + Chroma es perfecto para el hardware actual.
 | Fase 8B | experience_lookup en RAG + búsqueda semántica en episode | ✅ Completa |
 | Fase 8C | Señal de calidad + boost +0.15 en search_episodes | ✅ Completa |
 | Fase 8D | MemoryType enum + anotaciones en memory_manager | ✅ Completa |
+| Sprint 4 | Robustecimiento: 306/306 tests verde, normalización router, adversariales | ✅ Completa |
 | Fase 7 (7B–7D) | Observabilidad completa | 🔄 En curso |
 | Fase 9 | Por definir tras Fase 7 completa | 🔲 Pendiente |

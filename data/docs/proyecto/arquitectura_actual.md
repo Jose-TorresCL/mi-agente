@@ -6,7 +6,7 @@ Este archivo describe cómo está armado hoy el asistente local Lautaro,
 qué rol cumple cada componente y cómo se relacionan las tres capas del
 sistema: Conversación → Inteligencia → Memoria.
 
-Última actualización: 19/05/2026 — Fases 6, 7A y 8 completas.
+Última actualización: 24/05/2026 — Sprint 4 completo: 306/306 tests, normalización router.
 
 ---
 
@@ -84,7 +84,7 @@ qué carril usar. El carril `memory` es TERMINAL — no pasa por caché.
 | `app/schemas.py` | Memoria | TypedDict + MemoryType enum |
 | `app/semantic_cache.py` | Memoria | Caché semántica de respuestas RAG (umbral 0.88, solo carril rag) |
 | `app/session_state.py` | Conversación | Vista resumida del estado actual (`!estado`) |
-| `indexacion.py` | Herramienta | Indexa documentos en Chroma (269 chunks) |
+| `indexacion.py` | Herramienta | Indexa documentos en Chroma |
 | `build_intent_index.py` | Herramienta | Construye el índice de intenciones (96 ejemplos) |
 
 ---
@@ -149,6 +149,17 @@ chat.py  →  chat_ui.py  →  chat_core.py
 
 ---
 
+## Cobertura de tests (24/05/2026)
+
+| Suite | Tests | Estado |
+|---|---|---|
+| `test_architecture.py` | Invariantes de imports entre capas | ✅ |
+| `test_memory_route.py` | Carril memory TERMINAL, no toca caché | ✅ |
+| `test_memory_layer.py` | get_context_for() devuelve solo la capa pedida | ✅ |
+| General | 306/306 tests verde, 39% cobertura | ✅ |
+
+---
+
 ## Invariantes arquitecturales protegidos por tests
 
 | Invariante | Test que lo protege |
@@ -184,7 +195,7 @@ y con fronteras limpias entre capas.
 
 ---
 
-## Base documental del RAG (269 chunks indexados)
+## Base documental del RAG
 
 Documentos que el agente consulta como conocimiento del proyecto:
 

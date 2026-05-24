@@ -1,7 +1,7 @@
 # Estado del proyecto
 
 > ⚠️ **Documento vivo** — se desactualiza con cada sesión.
-> Última actualización: 19/05/2026. No usar como referencia de arquitectura estable;
+> Última actualización: 24/05/2026. No usar como referencia de arquitectura estable;
 > para eso consultar `arquitectura_actual.md` y los ADRs.
 
 ## Objetivo general
@@ -15,7 +15,7 @@ por capas, tools controladas y recuperación selectiva de contexto.
 
 ## Fase actual: Fase 7 — Observabilidad y evaluación continua
 
-**Fecha de actualización**: 19/05/2026
+**Fecha de actualización**: 24/05/2026
 
 **Objetivo de Fase 7**:
 Tener números que digan si el sistema mejora o empeora con cada cambio.
@@ -48,10 +48,11 @@ Sin métricas no se puede decidir si un cambio vale la pena.
 | Fase 8B: experience_lookup en carril RAG + búsqueda semántica en carril episode | 19/05/2026 |
 | Fase 8C: señal de calidad (exitoso s/n) + boost +0.15 en search_episodes | 19/05/2026 |
 | Fase 8D: MemoryType enum en schemas.py + anotaciones en memory_manager | 19/05/2026 |
+| Sprint 4 — Robustecimiento y cobertura: 306/306 tests verde, normalización router, tests adversariales | 19–24/05/2026 |
 
 ---
 
-## Estado técnico actual (19/05/2026)
+## Estado técnico actual (24/05/2026)
 
 ### Lo que está firme
 
@@ -67,7 +68,7 @@ Sin métricas no se puede decidir si un cambio vale la pena.
 - `schemas.py` con `MemoryType` enum (WORKING, SEMANTIC, EPISODIC, PROCEDURAL)
 - Router híbrido 3 capas operativo (keywords → embeddings → LLM fallback)
 - 9 carriles de ejecución estables (rag, memory, episode, tool_*, unsupported, exit)
-- 67+ tests pasando (incluye test_architecture.py, test_memory_route.py, test_memory_layer.py)
+- **306/306 tests pasando** (39% cobertura — incluye tests adversariales y normalización)
 - Caché semántico solo activo en carril `rag` — carril `memory` es TERMINAL
 - Recuperación selectiva: `get_context_for(intent_type)` elige capa de memoria por intención
 - fidelity_check: bloquea sin docs, bloquea respuestas cortas sin evidencia, verificación numérica literal
@@ -75,6 +76,7 @@ Sin métricas no se puede decidir si un cambio vale la pena.
 - Boost de calidad: episodios exitoso=True reciben +0.15 en score; fallidos se filtran si hay mejores
 - MemoryType enum formal en schemas.py con anotaciones en todas las funciones de memory_manager
 - Señal de calidad al cerrar sesión: pregunta s/n y guarda metadato `exitoso` en episodio
+- Normalización de texto en router (Sprint 4) — preguntas con tildes/mayúsculas/variantes resueltas en capa 1
 
 ### Problemas resueltos acumulados
 
@@ -103,6 +105,8 @@ Sin métricas no se puede decidir si un cambio vale la pena.
 | Sin métricas por turno | ✅ metrics.jsonl |
 | Sin memoria de experiencias pasadas | ✅ experience_index en Chroma |
 | Sin distinción formal de tipos de memoria | ✅ MemoryType enum |
+| Router frágil ante tildes/mayúsculas/variantes | ✅ normalización Sprint 4 |
+| Cobertura de tests insuficiente | ✅ 306/306, 39% cobertura |
 
 ### Problemas pendientes
 
