@@ -97,7 +97,7 @@ IDENTITY_MSG = (
     "- Leer archivos del proyecto\n\n"
     "**Lo que aún no puedo hacer:**\n"
     "- Acceder a internet ni ejecutar código directamente\n"
-    "- Calcular métricas de código (líneas, funciones) — pronto con `tool_code_stats`\n\n"
+    "- Calcular métricas de código (líneas, funciones) — usa `wc -l` o PowerShell\n\n"
     "Corro completamente en local usando Ollama. Sin enviar datos a la nube."
 )
 
@@ -109,6 +109,6 @@ UNSUPPORTED_MSG = (
 
 MEMORY_NOT_FOUND_MSG = (
     "No encontré información relevante en la memoria para esa pregunta. "
-    "Si buscas datos del proyecto, prueba con: '\u00bfcuál es el estado del proyecto?', "
-    "'\u00bfqué tareas tengo pendientes?' o '\u00bfcuál es mi perfil?'."
+    "Si buscas datos del proyecto, prueba con: '¿cuál es el estado del proyecto?', "
+    "'¿qué tareas tengo pendientes?' o '¿cuál es mi perfil?'."
 )
