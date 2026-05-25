@@ -275,12 +275,26 @@ _TASK_KNOWN_KEYS = {"id", "title", "status", "priority", "created_at", "notes", 
 # ───────────────────────────────────────────────
 
 class ProfileData(TypedDict, total=False):
-    """Schema de storage/profile.json (todo opcional — crece con el uso)."""
-    name: str
-    level: str
-    project: str
+    """Schema de storage/profile.json (todo opcional — crece con el uso).
+
+    Claves alineadas con las que memory_store.py escribe en disco
+    y memory_context.py lee con .get().
+
+    Historial:
+      - name/level/project  →  renombradas a user_name/user_level/project_type
+        para coincidir con la realidad del JSON en disco (fix ProfileData).
+    """
+    user_name:       str
+    user_level:      str
+    project_type:    str
     preferred_style: str
-    preferred_flow: str
+    preferred_flow:  str
+
+
+_PROFILE_KNOWN_KEYS = {
+    "user_name", "user_level", "project_type",
+    "preferred_style", "preferred_flow",
+}
 
 
 # ───────────────────────────────────────────────
@@ -378,11 +392,11 @@ def validate_storage() -> list[str]:
     """Lee los archivos JSON de storage/ y detecta claves desconocidas.
 
     Verifica:
-      - storage/work_state.json  contra WorkState
-      - storage/tasks.json       contra TaskItem (por cada tarea)
-      - storage/memory.json      contra Message (por cada mensaje)
+      - storage/work_state.json       contra WorkState
+      - storage/tasks.json            contra TaskItem (por cada tarea)
+      - storage/memory.json           contra Message (por cada mensaje)
       - storage/episodic_memory.json  contra EpisodeItem
-      - storage/profile.json     (solo avisa si no es dict)
+      - storage/profile.json          contra ProfileData (_PROFILE_KNOWN_KEYS)
 
     Returns:
         Lista de strings con advertencias. Lista vacía = todo limpio.
@@ -453,7 +467,13 @@ def validate_storage() -> list[str]:
     profile = _load_json_safe(_STORAGE_DIR / "profile.json")
     if profile is None:
         warnings.append("[storage] profile.json no existe aún (normal en primera ejecución)")
-    elif not isinstance(profile, dict):
+    elif isinstance(profile, dict):
+        unknown = set(profile.keys()) - _PROFILE_KNOWN_KEYS
+        if unknown:
+            warnings.append(
+                f"[storage:warn] profile.json claves desconocidas: {sorted(unknown)}"
+            )
+    else:
         warnings.append("[storage:error] profile.json no es un objeto JSON válido")
 
     # ─ Reporte final ──────────────────────────────────────────────
