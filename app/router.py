@@ -114,6 +114,20 @@ Brecha 2 (este commit):
   frases como 'mi objetivo hoy es X' y Lautaro las guarde en work_state.
   Keywords en TOOL_SET_SESSION_GOAL_KEYWORDS, evaluadas en Capa 1 junto
   a los otros tool_*. VALID_LANES actualizado.
+
+Fix exit-cerrar-sesion:
+  'cerrar sesión' y variantes no estaban en _EXIT_WORDS → caían a embeddings
+  con similitud 0.96 a 'identity' (bug observado en Telegram).
+  Agregadas: 'cerrar sesion', 'cerrar la sesion', 'terminar sesion',
+  'terminar la sesion', 'fin de sesion', 'finalizar sesion'.
+  Se evalúan en _EXIT_WORDS ANTES de _route_by_keywords → salida limpia.
+
+Fix rag-que-es:
+  'qué es Chroma' no matcheaba RAG_HINTS porque Chroma no lleva artículo
+  (el/la/un/una). Caía a embeddings → identity (similitud 0.79).
+  Agregado 'que es' como hint RAG genérico. Se evalúa DESPUÉS de
+  AGENT_IDENTITY_KEYWORDS en _route_by_keywords → sin colisión con
+  'qué eres' / 'qué eres tú' que siguen yendo a identity.
 """
 from __future__ import annotations
 
@@ -162,6 +176,10 @@ _EXIT_WORDS = {
     "nos vemos",
     "me voy", "cierro",
     "by",
+    # Fix exit-cerrar-sesion: variantes de cierre con frase compuesta
+    "cerrar sesion", "cerrar la sesion",
+    "terminar sesion", "terminar la sesion",
+    "fin de sesion", "finalizar sesion",
 }
 
 
@@ -347,6 +365,9 @@ RAG_HINTS = [
     "relacion entre",
     "diferencia entre",
     "que es el", "que es la", "que es un", "que es una",
+    # Fix rag-que-es: 'qué es Chroma' no lleva artículo → necesita hint genérico.
+    # Se evalúa DESPUÉS de AGENT_IDENTITY_KEYWORDS → 'qué eres' sigue a identity.
+    "que es",
     "para que sirve",
 ]
 
