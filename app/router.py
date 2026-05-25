@@ -479,22 +479,23 @@ def format_estado() -> str:
     if "ttl_hours" in stats:
         ttl_line = f"  TTL caché:       {stats['ttl_hours']}h\n"
 
+    separator = "\u2500" * 40
     return (
-        f"\n{'\u2500' * 40}\n"
+        f"\n{separator}\n"
         f" Estado de sesión\n"
-        f"{'\u2500' * 40}\n"
+        f"{separator}\n"
         f"  Consultas totales: {SESSION_STATS['total']}\n"
         f"  → Capa 1 (kw):    {SESSION_STATS['kw']}  ({kw_pct}%)\n"
         f"  → Capa 2 (emb):   {SESSION_STATS['emb']}  ({emb_pct}%)\n"
         f"  → Fallback (rag): {SESSION_STATS['llm']}  ({llm_pct}%)\n"
-        f"{'\u2500' * 40}\n"
+        f"{separator}\n"
         f" Caché semántica\n"
-        f"{'\u2500' * 40}\n"
+        f"{separator}\n"
         f"  Hits:             {stats.get('hits', 0)}\n"
         f"  Misses:           {stats.get('misses', 0)}\n"
         f"  Entradas:         {stats.get('entries', 0)}\n"
         f"{ttl_line}"
-        f"{'\u2500' * 40}\n"
+        f"{separator}\n"
     )
 
 

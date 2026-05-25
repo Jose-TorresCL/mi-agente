@@ -30,6 +30,19 @@ from app.router import route_query, classify_memory_query
 from tests.test_routing_matrix import ROUTING_MATRIX
 from tests.test_bateria_20 import BATERIA_20
 
+
+# Normaliza un carril potencialmente compuesto como "memory:profile"
+def normalize_lane(raw_lane: Optional[str]) -> tuple[str, Optional[str]]:
+    """Return (base_lane, subtype) where subtype may be None."""
+    if not raw_lane:
+        return "", None
+
+    if ":" in raw_lane:
+        base, subtype = raw_lane.split(":", 1)
+        return base.strip(), subtype.strip()
+
+    return raw_lane.strip(), None
+
 # ─────────────────────────────────────────────────────────────
 # Tipos de resultado
 # ─────────────────────────────────────────────────────────────
@@ -78,7 +91,8 @@ def evaluar_routing_matrix(fail_fast: bool = False) -> SuiteResult:
 
     for pregunta, carril_esperado, descripcion in ROUTING_MATRIX:
         carril_real = route_query(pregunta)
-        ok = carril_real == carril_esperado
+        carril_base, carril_subtipo = normalize_lane(carril_real)
+        ok = carril_base == carril_esperado
         resultado = CaseResult(
             id=descripcion.split(":")[0].strip(),
             pregunta=pregunta,
@@ -100,13 +114,18 @@ def evaluar_bateria_20(fail_fast: bool = False) -> SuiteResult:
 
     for caso in BATERIA_20:
         carril_real = route_query(caso["pregunta"])
-        carril_ok = carril_real == caso["carril"]
+        carril_base, carril_subtipo = normalize_lane(carril_real)
+        carril_ok = carril_base == caso["carril"]
 
         mem_esperada = caso.get("memoria")
         mem_real = None
         mem_ok = True
-        if mem_esperada is not None and carril_real == "memory":
-            mem_real = classify_memory_query(caso["pregunta"])
+        if mem_esperada is not None and carril_base == "memory":
+            # Preferir el subtipo ya emitido por el router (e.g. "memory:profile").
+            if carril_subtipo is not None:
+                mem_real = carril_subtipo
+            else:
+                mem_real = classify_memory_query(caso["pregunta"])
             mem_ok = mem_real == mem_esperada
 
         ok = carril_ok and mem_ok
