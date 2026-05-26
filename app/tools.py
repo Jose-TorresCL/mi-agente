@@ -3,22 +3,22 @@
 Este módulo contiene SOLO las funciones tool_* que leen/escriben memoria.
 Las utilidades de parseo y filesystem viven en tool_helpers.py.
 
-Funciones públicas (sin cambio de interfaz externa — retornan ToolResult):
+Cambio R6-A:
+  Todas las funciones tool_* retornan ToolResult en vez de str.
+  La interfaz pública NO cambia para callers que usen dispatch_tool_str().
+  Para callers que necesiten datos estructurados, usar dispatch_tool() directamente.
+
+Funciones públicas:
   tool_save_fact()          — guarda hecho en project_facts.json
   tool_create_task()        — crea tarea en tasks.json
   tool_complete_task()      — marca tarea como completada
   tool_update_work_state()  — actualiza work_state.json
   tool_set_session_goal()   — guarda objetivo de la sesión actual
+  suggest_next_step()       — sugerencia post-actualización (retorna str, helper interno)
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
   list_project_files, extract_file_path, read_project_file,
   extract_task_id, parse_work_state_update, VALID_PRIORITIES
-
-Cambio R6-A:
-  Todas las tool_* retornan ToolResult (schemas.py) en lugar de str crudo.
-  Esto permite detección programática de éxito/error sin parsear emojis.
-  tool_registry.dispatch_tool_str() convierte a str para intelligence.py —
-  la interfaz pública no cambia.
 
 Nota de arquitectura:
   Todas las operaciones de memoria pasan por memory_manager,
@@ -61,11 +61,12 @@ def tool_save_fact(content) -> ToolResult:
     """Guarda un hecho en project_facts.json.
 
     Fix B2: acepta cualquier tipo en 'content' y fuerza str() antes de
-    operar, evitando 'int object has no attribute strip'.
+    operar, evitando 'int object has no attribute strip' cuando el
+    dispatcher pasa un argumento con tipo incorrecto.
 
     D3: rechaza contenido vacío antes de llamar a memory_manager.save_fact.
 
-    R6-A: retorna ToolResult con ok, message, data, side_effect, error_code.
+    R6-A: retorna ToolResult en vez de str.
     """
     content = str(content).strip()
 
@@ -84,7 +85,7 @@ def tool_save_fact(content) -> ToolResult:
         if ok:
             return ToolResult(
                 ok=True,
-                message=f'✓ Hecho guardado: {key} = "{value}"',
+                message=f"✓ Hecho guardado: {key} = \"{value}\"",
                 data={"key": key, "value": value},
                 side_effect="escrito project_facts.json",
                 tool_name="tool_save_fact",
@@ -92,7 +93,7 @@ def tool_save_fact(content) -> ToolResult:
         return ToolResult(
             ok=False,
             message="No pude guardar el hecho: clave o valor vacíos.",
-            error_code="EMPTY_KEY_OR_VALUE",
+            error_code="EMPTY_CONTENT",
             tool_name="tool_save_fact",
         )
 
@@ -101,7 +102,7 @@ def tool_save_fact(content) -> ToolResult:
     if ok:
         return ToolResult(
             ok=True,
-            message=f'✓ Hecho guardado: "{content}"',
+            message=f"✓ Hecho guardado: \"{content}\"",
             data={"key": key, "value": content},
             side_effect="escrito project_facts.json",
             tool_name="tool_save_fact",
@@ -119,7 +120,7 @@ def tool_save_fact(content) -> ToolResult:
 # ─────────────────────────────────────────────
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> ToolResult:
-    """R6-A: retorna ToolResult con task_id en data."""
+    """R6-A: retorna ToolResult."""
     title    = title.strip()
     priority = priority.strip().lower()
     notes    = notes.strip()
@@ -154,7 +155,7 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> T
 # ─────────────────────────────────────────────
 
 def tool_complete_task(task_id: str) -> ToolResult:
-    """R6-A: retorna ToolResult con was_already_completed en data."""
+    """R6-A: retorna ToolResult."""
     if not task_id:
         return ToolResult(
             ok=False,
@@ -194,7 +195,7 @@ def tool_complete_task(task_id: str) -> ToolResult:
         ok=True,
         message=f"✅ Tarea {task_id} marcada como completada.",
         data={"task_id": task_id, "was_already_completed": False},
-        side_effect=f"actualizado {task_id} en tasks.json",
+        side_effect=f"actualizado {task_id} en tasks.json → status=completed",
         tool_name="tool_complete_task",
     )
 
@@ -212,7 +213,7 @@ def tool_update_work_state(
 ) -> ToolResult:
     """Actualiza work_state.json desde conversación libre o desde kwargs directos.
 
-    R6-A: retorna ToolResult con lista de cambios en data.
+    R6-A: retorna ToolResult.
     """
     import json
 
@@ -288,7 +289,7 @@ def tool_update_work_state(
         return ToolResult(
             ok=False,
             message="⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'.",
-            error_code="NO_FIELDS_DETECTED",
+            error_code="NO_FIELDS_MATCHED",
             tool_name="tool_update_work_state",
         )
 
@@ -300,28 +301,32 @@ def tool_update_work_state(
             ok=False,
             message=f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}",
             error_code="WRITE_ERROR",
-            data={"cambios_detectados": cambios},
+            data={"cambios_intentados": cambios},
             tool_name="tool_update_work_state",
         )
 
+    msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
     return ToolResult(
         ok=True,
-        message="✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios),
-        data={"campos_actualizados": cambios},
+        message=msg,
+        data={"cambios": cambios},
         side_effect="escrito work_state.json",
         tool_name="tool_update_work_state",
     )
 
 
 # ─────────────────────────────────────────────
-# Tool: definir objetivo de sesión (Paso B)
+# Tool: definir objetivo de sesión
 # ─────────────────────────────────────────────
 
 def tool_set_session_goal(content: str) -> ToolResult:
     """Guarda el objetivo específico para la sesión actual.
 
-    R6-A: retorna ToolResult con goal en data.
-    Never raises.
+    A diferencia de tool_update_work_state (que actualiza el foco permanente),
+    esta tool guarda un objetivo concreto para hoy que aparecerá en el
+    session briefing al arranque de la próxima sesión.
+
+    R6-A: retorna ToolResult.
     """
     content = str(content).strip()
     if not content:
@@ -340,7 +345,7 @@ def tool_set_session_goal(content: str) -> ToolResult:
         return ToolResult(
             ok=False,
             message="ℹ️ No detecté un objetivo concreto. Dime: 'mi objetivo hoy es…'",
-            error_code="DETECTED_AS_QUESTION",
+            error_code="NOT_A_GOAL",
             tool_name="tool_set_session_goal",
         )
 
@@ -356,7 +361,7 @@ def tool_set_session_goal(content: str) -> ToolResult:
 
 # ─────────────────────────────────────────────
 # Sugerencia automática post-actualización
-# (no es tool pública — retorna str, sin ToolResult)
+# (retorna str — helper interno, no es tool pública)
 # ─────────────────────────────────────────────
 
 def suggest_next_step() -> str:
