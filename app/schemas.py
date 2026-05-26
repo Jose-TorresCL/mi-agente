@@ -2,7 +2,7 @@
 
 Qué es esto:
   Define la forma exacta de cada archivo JSON que usa el proyecto.
-  Es la "fuente de verdad" sobre qué claves existen y de qué tipo son.
+  Es la \"fuente de verdad\" sobre qué claves existen y de qué tipo son.
 
 Por qué importa:
   Sin esto, tools.py puede escribir 'last_completed' y memory_store.py
@@ -30,6 +30,12 @@ Contratos de retorno internos (R1-A):
   process_turn()    →  tuple[str, list]  (ver DecisionResult para estructura semántica)
   _decide_rag()     →  RagResult
   DecisionResult    →  TypedDict con los campos semánticos de cada respuesta interna
+
+Contrato de retorno de tools (R6-A):
+  ToolResult        →  TypedDict estructurado que reemplaza el str crudo de tools.py.
+  RiskLevel         →  Enum con los niveles de riesgo de cada tool.
+  dispatch_tool()   retorna ToolResult internamente; to_str() convierte para display.
+  Compatibilidad:   dispatch_tool_str() mantiene la interfaz str para intelligence.py.
 
 Contrato de entrada (TurnContext):
   TurnContext       →  TypedDict con los 4 parámetros de process_turn()
@@ -84,6 +90,115 @@ class MemoryType(str, Enum):
     SEMANTIC   = "semantic"
     EPISODIC   = "episodic"
     PROCEDURAL = "procedural"
+
+
+# ───────────────────────────────────────────────
+# RiskLevel — clasificación de riesgo de tools (R6-A)
+# ───────────────────────────────────────────────
+
+class RiskLevel(str, Enum):
+    """Nivel de riesgo de una tool.
+
+    Determina si la tool puede ejecutarse directamente o requiere
+    confirmación explícita del usuario antes de actuar.
+
+    Valores:
+        READ:     Solo lectura — no modifica ningún estado.
+                  Ejemplos: tool_list_files, tool_read_file.
+                  Puede ejecutarse siempre sin confirmación.
+
+        WRITE:    Escribe en memoria interna del agente (JSON storage/).
+                  Ejemplos: tool_save_fact, tool_create_task,
+                            tool_complete_task, tool_update_work_state,
+                            tool_set_session_goal.
+                  Reversible con bajo riesgo — no requiere confirmación hoy,
+                  pero queda clasificado para auditoría y métricas.
+
+        SYSTEM:   Accede a recursos externos: filesystem del usuario,
+                  red, procesos del sistema operativo.
+                  Ejemplos: futura tool_run_shell, tool_write_file_external.
+                  SIEMPRE requiere confirmación humana antes de ejecutar.
+                  No hay tools SYSTEM en producción actualmente.
+
+    Uso en tool_registry.py:
+        TOOLS["tool_save_fact"]["risk"] = RiskLevel.WRITE
+
+    Regla de seguridad:
+        dispatch_tool() debe rechazar cualquier tool con risk=SYSTEM
+        a menos que venga acompañada de confirmed=True en el contexto.
+    """
+    READ   = "read"
+    WRITE  = "write"
+    SYSTEM = "system"
+
+
+# ───────────────────────────────────────────────
+# ToolResult — contrato de retorno de tools (R6-A)
+# ───────────────────────────────────────────────
+
+class ToolResult(TypedDict, total=False):
+    """Contrato estructurado de retorno de cada tool.
+
+    Reemplaza el str crudo que tools.py devolvía antes de R6-A.
+    Permite que el código downstream (intelligence.py, tests, métricas)
+    detecte éxito/error de forma programática sin parsear emojis.
+
+    Campos obligatorios (total=True en ToolResultRequired):
+        ok:          True si la operación se completó con éxito.
+        message:     Texto listo para mostrar al usuario (puede incluir emojis).
+
+    Campos opcionales (total=False aquí):
+        data:        Payload estructurado de la operación.
+                     Ejemplos:
+                       tool_create_task  → {"task_id": "T-001", "title": "..."}
+                       tool_complete_task → {"task_id": "T-001", "was_completed": False}
+                       tool_save_fact    → {"key": "...", "value": "..."}
+                       tool_list_files   → {"files": [...]}
+                       tool_read_file    → {"path": "...", "content": "..."}
+        side_effect: Descripción del efecto secundario producido.
+                     Ejemplos: "escrito work_state.json", "creado T-001 en tasks.json"
+                     None si la tool es de solo lectura (RiskLevel.READ).
+        error_code:  Código de error legible por máquina (solo cuando ok=False).
+                     Ejemplos: "EMPTY_CONTENT", "TASK_NOT_FOUND",
+                               "ALREADY_COMPLETED", "WRITE_ERROR"
+        tool_name:   Nombre de la tool que generó este resultado.
+                     Útil para logging y métricas.
+
+    Uso en tools.py:
+        def tool_create_task(title, priority, notes) -> ToolResult:
+            ...
+            return ToolResult(
+                ok=True,
+                message=f"✓ Tarea creada: [{task_id}] {title}",
+                data={"task_id": task_id, "title": title},
+                side_effect=f"creado {task_id} en tasks.json",
+                tool_name="tool_create_task",
+            )
+
+    Conversión a str para display (compatibilidad con intelligence.py):
+        result = tool_create_task(...)
+        display = result["message"]          # forma directa
+        display = tool_result_to_str(result) # helper equivalente
+
+    Never raises — el campo ok=False comunica errores sin excepciones.
+    """
+    ok:          bool
+    message:     str
+    data:        dict[str, Any]
+    side_effect: str | None
+    error_code:  str
+    tool_name:   str
+
+
+def tool_result_to_str(result: ToolResult) -> str:
+    """Convierte un ToolResult a str para display o para retorno legado.
+
+    Equivale a result["message"] con fallback seguro.
+    Usar cuando el caller espera str (intelligence.py, tool_registry legado).
+
+    Never raises.
+    """
+    return result.get("message", "[sin mensaje]")
 
 
 # ───────────────────────────────────────────────
