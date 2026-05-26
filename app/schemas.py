@@ -149,36 +149,9 @@ class ToolResult(TypedDict, total=False):
 
     Campos opcionales (total=False aquí):
         data:        Payload estructurado de la operación.
-                     Ejemplos:
-                       tool_create_task  → {"task_id": "T-001", "title": "..."}
-                       tool_complete_task → {"task_id": "T-001", "was_completed": False}
-                       tool_save_fact    → {"key": "...", "value": "..."}
-                       tool_list_files   → {"files": [...]}
-                       tool_read_file    → {"path": "...", "content": "..."}
         side_effect: Descripción del efecto secundario producido.
-                     Ejemplos: "escrito work_state.json", "creado T-001 en tasks.json"
-                     None si la tool es de solo lectura (RiskLevel.READ).
         error_code:  Código de error legible por máquina (solo cuando ok=False).
-                     Ejemplos: "EMPTY_CONTENT", "TASK_NOT_FOUND",
-                               "ALREADY_COMPLETED", "WRITE_ERROR"
         tool_name:   Nombre de la tool que generó este resultado.
-                     Útil para logging y métricas.
-
-    Uso en tools.py:
-        def tool_create_task(title, priority, notes) -> ToolResult:
-            ...
-            return ToolResult(
-                ok=True,
-                message=f"✓ Tarea creada: [{task_id}] {title}",
-                data={"task_id": task_id, "title": title},
-                side_effect=f"creado {task_id} en tasks.json",
-                tool_name="tool_create_task",
-            )
-
-    Conversión a str para display (compatibilidad con intelligence.py):
-        result = tool_create_task(...)
-        display = result["message"]          # forma directa
-        display = tool_result_to_str(result) # helper equivalente
 
     Never raises — el campo ok=False comunica errores sin excepciones.
     """
@@ -206,40 +179,7 @@ def tool_result_to_str(result: ToolResult) -> str:
 # ───────────────────────────────────────────────
 
 class TurnContext(TypedDict):
-    """Contrato de entrada a process_turn().
-
-    Agrupa los 4 parámetros del turno en un dict tipado.
-    Permite que chat_core construya el contexto explícitamente
-    y lo pase como un objeto — en lugar de 4 argumentos posicionales.
-
-    Beneficios:
-      - El IDE detecta si falta algún campo al construir el contexto.
-      - process_turn() puede inspeccionarlo como un todo (e.g. logging).
-      - Facilita extender el contrato en el futuro sin cambiar la firma.
-
-    Campos:
-        route:        Carril elegido por route_query().
-                      Valores: "rag", "memory", "tool_*", "exit", "unsupported".
-        query:        Texto de entrada del usuario (sin modificar).
-        vectordb:     Instancia de la base vectorial Chroma (puede ser None
-                      en tests que no usan RAG).
-        chat_history: Lista de HumanMessage / AIMessage de la sesión activa.
-                      Puede estar vacía en el primer turno.
-
-    Uso en chat_core.py:
-        from app.schemas import TurnContext
-        ctx = TurnContext(
-            route=route,
-            query=user_input,
-            vectordb=vectordb,
-            chat_history=chat_history,
-        )
-        answer, source_docs = process_turn(ctx)
-
-    Compatibilidad hacia atrás:
-        process_turn() también acepta los 4 argumentos posicionales sueltos
-        (firma original) para no romper tests ni código externo existente.
-    """
+    """Contrato de entrada a process_turn()."""
     route:        str
     query:        str
     vectordb:     Any
@@ -251,32 +191,7 @@ class TurnContext(TypedDict):
 # ───────────────────────────────────────────────
 
 class DecisionResult(TypedDict, total=False):
-    """Contrato semántico del retorno de process_turn().
-
-    process_turn() sigue devolviendo tuple[str, list] en runtime para no
-    romper el contrato público actual. Este TypedDict documenta la
-    semántica de cada respuesta y se usará para tipar diccionarios de
-    metadatos internos cuando se necesite pasar más información entre capas.
-
-    Campos:
-        route:       Carril elegido por el router.
-                     Valores: "rag", "memory", "tool_*", "episode",
-                               "unsupported", "exit"
-        response:    Texto final generado para el usuario.
-        cached:      True si la respuesta se sirvió desde caché semántica.
-        source:      Origen de la respuesta:
-                       "cache"   — caché semántica
-                       "chroma"  — recuperación RAG
-                       "json"    — memoria estructurada (JSON)
-                       "tool"    — tool registrada
-                       "llm"     — LLM sin RAG
-                       "direct"  — respuesta directa sin modelo
-        source_docs: Lista de documentos recuperados (puede estar vacía).
-        retrieval_ms: Tiempo de recuperación en milisegundos.
-        llm_ms:      Tiempo de generación LLM en milisegundos.
-        tokens_est:  Estimación de tokens generados.
-        metadata:    Diccionario opcional para datos adicionales.
-    """
+    """Contrato semántico del retorno de process_turn()."""
     route:        str
     response:     str
     cached:       bool
@@ -289,18 +204,7 @@ class DecisionResult(TypedDict, total=False):
 
 
 class RagResult(TypedDict):
-    """Contrato de retorno de _decide_rag() en intelligence.py.
-
-    Permite tipar el retorno de la función interna RAG sin cambiar
-    su firma pública hasta que se haga una refactorización mayor.
-
-    Campos:
-        answer:       Texto generado por el LLM (o mensaje de error de fidelidad).
-        source_docs:  Lista de documentos recuperados de Chroma.
-        retrieval_ms: Tiempo de recuperación Chroma en milisegundos.
-        llm_ms:       Tiempo de generación LLM en milisegundos.
-        cached:       True si la respuesta vino del caché semántico.
-    """
+    """Contrato de retorno de _decide_rag() en intelligence.py."""
     answer:       str
     source_docs:  list
     retrieval_ms: int
@@ -334,21 +238,12 @@ _WORK_STATE_KNOWN_KEYS = {
     "current_focus", "next_step", "last_completed",
     "current_phase", "last_completed_step",
     "current_blockers", "session_goal", "notes", "last_updated",
-    "last_session",  # legacy — presente en work_state.json de sesiones anteriores
+    "last_session",
 }
 
 
 def validate_work_state(data: dict) -> list[str]:
-    """Detecta claves inesperadas en un dict de work_state.
-
-    Args:
-        data: dict leído desde work_state.json.
-
-    Returns:
-        Lista de strings con advertencias. Lista vacía = sin problemas.
-
-    Never raises.
-    """
+    """Detecta claves inesperadas en un dict de work_state. Never raises."""
     warnings: list[str] = []
     unknown = set(data.keys()) - _WORK_STATE_KNOWN_KEYS
     if unknown:
@@ -372,9 +267,15 @@ class TaskItemRequired(TypedDict, total=True):
 
 
 class TaskItem(TaskItemRequired, total=False):
-    """Schema completo de un item de tarea en tasks.json."""
-    notes: str
+    """Schema completo de un item de tarea en tasks.json.
+
+    Historial:
+      - updated_at: agregado para alinear con campo real en disco
+        (fix schemas 25/05/2026 — detectado por validate_storage).
+    """
+    notes:        str
     completed_at: str
+    updated_at:   str   # timestamp de última modificación de la tarea
 
 
 class TasksFile(TypedDict):
@@ -382,7 +283,10 @@ class TasksFile(TypedDict):
     tasks: list[TaskItem]
 
 
-_TASK_KNOWN_KEYS = {"id", "title", "status", "priority", "created_at", "notes", "completed_at"}
+_TASK_KNOWN_KEYS = {
+    "id", "title", "status", "priority", "created_at",
+    "notes", "completed_at", "updated_at",
+}
 
 
 # ───────────────────────────────────────────────
@@ -396,19 +300,34 @@ class ProfileData(TypedDict, total=False):
     y memory_context.py lee con .get().
 
     Historial:
-      - name/level/project  →  renombradas a user_name/user_level/project_type
+      - name/level/project      → renombradas a user_name/user_level/project_type
         para coincidir con la realidad del JSON en disco (fix ProfileData).
+      - avoid/environment/...   → campos reales en disco incorporados
+        (fix schemas 25/05/2026 — detectados por validate_storage).
     """
-    user_name:       str
-    user_level:      str
-    project_type:    str
-    preferred_style: str
-    preferred_flow:  str
+    # campos base
+    user_name:          str
+    user_level:         str
+    project_type:       str
+    preferred_style:    str
+    preferred_flow:     str
+    # campos reales presentes en storage/profile.json
+    avoid:              str   # cosas que el usuario prefiere evitar
+    environment:        str   # entorno de trabajo (Windows, PowerShell, etc.)
+    learning_style:     str   # estilo de aprendizaje preferido
+    preferred_language: str   # lenguaje de programación preferido
+    preferred_workflow: str   # flujo de trabajo preferido
+    principles:         str   # principios de trabajo del usuario
+    project_name:       str   # nombre del proyecto actual
+    strengths_noted:    str   # fortalezas observadas del usuario
 
 
 _PROFILE_KNOWN_KEYS = {
     "user_name", "user_level", "project_type",
     "preferred_style", "preferred_flow",
+    "avoid", "environment", "learning_style",
+    "preferred_language", "preferred_workflow",
+    "principles", "project_name", "strengths_noted",
 }
 
 
@@ -428,7 +347,6 @@ class MemoryFile(TypedDict):
     messages: list[Message]
 
 
-# Claves conocidas de Message — al nivel de módulo para reutilización
 _MSG_KNOWN_KEYS = {"role", "content", "timestamp"}
 
 
@@ -445,14 +363,7 @@ class EpisodeItemRequired(TypedDict, total=True):
 
 
 class EpisodeItem(EpisodeItemRequired, total=False):
-    """Schema completo de cada episodio en episodic_memory.json.
-
-    Los campos opcionales (total=False) son escritos por episode_store.py
-    al indexar y cerrar sesión (8C):
-        carril_dominante:   carril más usado en la sesión.
-        tareas_completadas: número de tareas completadas en la sesión.
-        exitoso:            "true" | "false" | "unmarked" — resultado de la sesión.
-    """
+    """Schema completo de cada episodio en episodic_memory.json."""
     carril_dominante:   str
     tareas_completadas: int
     exitoso:            str   # "true" | "false" | "unmarked"
@@ -463,10 +374,8 @@ class EpisodicMemory(TypedDict):
     episodes: list[EpisodeItem]
 
 
-# Claves conocidas de EpisodeItem — al nivel de módulo para reutilización
 _EP_KNOWN_KEYS = {
     "date", "time", "turns", "summary",
-    # campos opcionales escritos por episode_store.py (8C)
     "carril_dominante", "tareas_completadas", "exitoso",
 }
 
@@ -474,9 +383,6 @@ _EP_KNOWN_KEYS = {
 # ───────────────────────────────────────────────
 # project_facts.json — no necesita TypedDict
 # ───────────────────────────────────────────────
-# project_facts.json tiene claves libres (el usuario inventa el nombre del hecho).
-# Por eso su tipo es simplemente:  dict[str, str]
-# No hay TypedDict para él — eso es correcto y no es un bug.
 ProjectFacts = dict  # dict[str, str] en runtime
 
 
@@ -488,13 +394,7 @@ _STORAGE_DIR = Path("storage")
 
 
 def _load_json_safe(path: Path) -> dict | list | None:
-    """Lee un JSON sin lanzar excepciones.
-
-    Returns:
-        El objeto parseado, o None si el archivo no existe o tiene error.
-
-    Never raises.
-    """
+    """Lee un JSON sin lanzar excepciones. Never raises."""
     if not path.exists():
         return None
     try:
@@ -506,16 +406,8 @@ def _load_json_safe(path: Path) -> dict | list | None:
 def validate_storage() -> list[str]:
     """Lee los archivos JSON de storage/ y detecta claves desconocidas.
 
-    Verifica:
-      - storage/work_state.json       contra WorkState
-      - storage/tasks.json            contra TaskItem (por cada tarea)
-      - storage/memory.json           contra Message (por cada mensaje)
-      - storage/episodic_memory.json  contra EpisodeItem
-      - storage/profile.json          contra ProfileData (_PROFILE_KNOWN_KEYS)
-
     Returns:
         Lista de strings con advertencias. Lista vacía = todo limpio.
-        También imprime cada advertencia en consola.
 
     Never raises.
 
