@@ -1,4 +1,3 @@
-
 # Paper Curado — MemGPT: Towards LLMs as Operating Systems
 
 **Autores**: Charles Packer et al. (UC Berkeley, 2023)
@@ -71,67 +70,80 @@ El LLM decide **por sí mismo** cuándo llamar estas funciones. Si la conversaci
 
 ## Tipos de memoria según MemGPT
 
-| Tipo | Dónde vive | Velocidad | Capacidad | Ejemplo en mi-agente (Fase 8) |
+| Tipo | Dónde vive | Velocidad | Capacidad | Ejemplo en mi-agente |
 |---|---|---|---|---|
-| In-context | Ventana del LLM | Instantánea | Limitada (~4K-8K tokens) | System prompt en `prompts.py`, últimos turnos en `chat_core.py` |
-| Working context | In-context, gestionado | Instantánea | ~500-1000 tokens | `work_state.json` + `tasks.json` → `memory_context.py` |
-| Archival | Chroma (vectorstore) | Segundos | Ilimitada | `storage/chroma/` (docs), `storage/experience_index/` (episodios) |
-| Recall | Base de datos de conversaciones | Segundos | Ilimitada | `storage/episodic_memory.json` (resúmenes de sesión) |
+| In-context | Ventana del LLM | Instantánea | Limitada (~4K-8K tokens) | System prompt, última pregunta |
+| Working context | In-context, gestionado | Instantánea | ~500-1000 tokens | profile.json, workstate.json |
+| Archival | Chroma (vectorstore) | Segundos | Ilimitada | docs de referencia, episodios |
+| Recall | Base de datos de conversaciones | Segundos | Ilimitada | Historial comprimido de sesiones |
 
 ---
 
-## Cómo se aplica a mi-agente (estado actual — Fase 8, 24/05/2026)
+## Cómo se aplica a mi-agente — Estado real Fase 8 (mayo 2026)
 
-> Esta sección refleja la arquitectura real del proyecto hoy.
+> ⚠️ Esta sección refleja la arquitectura actual. Las fases anteriores usaban
+> nombres distintos (`build_structured_memory_context`, `ConversationBufferWindowMemory`).
+> Hoy esos están reemplazados por una arquitectura más madura.
 
-### Lo que ya está implementado (análogo a MemGPT)
+### Lo que está implementado hoy ✅
 
 ```
-[Working context] → work_state.json + tasks.json + project_facts.json + profile.json
-                   ensamblados en contexto via memory_context.py
-                   accesibles a través de memory_manager.py (guardián único)
-                   seleccionados por get_context_for(intent_type)
+[Working context — Capa 1 RAM]
+  chat_core.py mantiene chat_history en memoria durante la sesión
+  Límite configurable en app/config.py (MAX_TURNS)
 
-[Archival memory] → storage/chroma/ (documentación del proyecto, 306+ chunks)
-                    recuperado via rag_engine.py con MMR y fidelity_check
-                    + experience_index en storage/experience_index/ (episodios vectorizados)
-                    consultado via episode_store.experience_lookup()
+[Working context — Capa 2 Operacional]
+  storage/work_state.json  ← foco, tarea actual, bloqueadores
+  storage/tasks.json       ← lista de tareas con estado
+  Escritura via: tool_update_work_state, tool_create_task, tool_complete_task
 
-[Recall memory]   → storage/episodic_memory.json
-                    resúmenes de sesiones pasadas guardados al salir
-                    buscables via episode_store.search_episodes()
+[Semantic context — Capa 3]
+  storage/profile.json        ← user_name, user_level, project_type
+  storage/project_facts.json  ← modelo_base, fase_actual, stack, tests
+  Acceso via: memory_context.py → get_semantic_context()
+
+[Archival memory — Capa 4 Episodic JSON]
+  storage/episodic_memory.json ← resúmenes de sesiones pasadas
+  Escritura via: memory_manager.record_episode() al cerrar sesión
+  Lectura via: episode_store.search_episodes()
+
+[Archival memory — Capa 5 Experience Index]
+  storage/experience_index/    ← episodios indexados en Chroma
+  Búsqueda semántica con boost +0.15 para episodios exitosos
+  Acceso via: episode_store.experience_lookup()
+
+[Archival memory — RAG]
+  storage/chroma/              ← 269 chunks de documentación del proyecto
+  Acceso via: rag_engine.py con MMR (lambda_mult=0.6, fetch_k=20)
+  Fidelidad verificada por: fidelity_check.py
 ```
 
-### Correspondencia de carriles del router con tipos de memoria MemGPT
+**Guardián único de toda la memoria**: `memory_manager.py`
+**Interfaz de acceso**: `get_context_for(intent_type: MemoryType)`
+**Contrato formal**: `MemoryType` enum en `app/schemas.py`
 
-| Carril (router.py) | Tipo memoria MemGPT | Qué recupera |
-|---|---|---|
-| `memory` (TERMINAL) | Working context | work_state, tasks, project_facts, profile |
-| `rag` | Archival memory | Documentos del proyecto en Chroma |
-| `episode` | Recall memory | Episodios buscables en experience_index |
-| `tool_save_fact` | core_memory_append | Escribe en project_facts.json |
-| `tool_update_work_state` | core_memory_replace | Actualiza work_state.json |
+```python
+class MemoryType(str, Enum):
+    WORKING    = "working"     # RAM + work_state + tasks
+    SEMANTIC   = "semantic"    # profile + project_facts
+    EPISODIC   = "episodic"    # episodic_memory.json + experience_index
+    PROCEDURAL = "procedural"  # reservado para reglas futuras
+```
 
 ### Lo que falta para llegar a MemGPT completo
 
-1. **Compresión automática de sesión**: al salir, el LLM ya resume la sesión en `episodic_memory.json` — funciona. Lo que falta es indexar esos episodios automáticamente sin requerir ejecutar `indexacion.py` manualmente.
-2. **Self-editing completo**: `tool_save_fact` y `tool_update_work_state` ya permiten escritura selectiva. Falta que el agente pueda también actualizar `profile.json` via tool.
-3. **Router de memoria inteligente por composición**: `get_context_for(intent_type)` ya hace selección por capa. La Fase R4 (plan-robustecimiento.md) define la composición explícita para preguntas que mezclan capas.
-
----
-
-## Diferencia entre MemGPT y lo que tengo ahora (Fase 8)
-
-| Característica | MemGPT completo | mi-agente Fase 8 actual |
+| Característica | MemGPT completo | mi-agente Fase 8 |
 |---|---|---|
-| Working context | Automático (LLM decide) | Determinista (`get_context_for()` por carril) |
-| Archival storage | Vectorstore con tools | Chroma + `rag_engine.py` con MMR y fidelity_check |
-| Self-editing | Sí (LLM escribe su memoria) | Parcial (`tool_save_fact`, `tool_update_work_state`, `tool_create_task`) |
-| Compresión | Automática durante conversación | Al cerrar sesión (`episode_store.save_episode()`) |
-| Multi-sesión | Sí | Sí (`episodic_memory.json` + `experience_index`) |
-| Selección de fuente | LLM decide con tools | Router híbrido + `get_context_for()` determinista |
+| Working context | Automático (LLM decide) | Estructurado (code determina qué inyectar) |
+| Archival storage | Vectorstore con tools | ✅ Chroma con retriever MMR |
+| Self-editing de memoria | Sí (LLM escribe su memoria) | Parcial (tools write: save_fact, create_task) |
+| Compresión episódica automática | Automática por token count | Manual al cerrar sesión (record_episode) |
+| Multi-sesión | Sí | ✅ Funcional (episodic_memory.json + experience_index) |
+| Recuperación selectiva por capa | Sí | ✅ get_context_for(intent_type) |
 
-**Conclusión práctica**: La arquitectura actual (Fase 8) es más determinista que MemGPT original, lo cual es una ventaja para hardware limitado: las decisiones de qué recuperar no consumen tokens del LLM principal. Cubre el 85% del valor de MemGPT con una fracción de la complejidad.
+**Conclusión práctica**: La arquitectura de capas ya está implementada. Lo que falta es la
+**compresión automática** (hoy es manual al salir) y el **self-editing completo** (hoy
+el LLM puede guardar hechos pero no reescribir su working context libremente).
 
 ---
 
@@ -147,19 +159,14 @@ El LLM decide **por sí mismo** cuándo llamar estas funciones. Si la conversaci
 
 **Confusión**: Creer que necesitas implementar MemGPT completo para tener un agente con buena memoria.
 
-**Realidad**: Los principios son los valiosos — capas de memoria, recuperación selectiva, working context separado de archival. Puedes implementar el 80% del valor con un 20% de la complejidad usando JSON + Chroma. Mi-agente Fase 8 ya demuestra esto en práctica.
+**Realidad**: Los principios son los valiosos — capas de memoria, recuperación selectiva, working context separado de archival. Puedes implementar el 80% del valor con un 20% de la complejidad usando JSON + Chroma. Mi-agente ya lo demuestra.
 
 ---
 
 ## Buenas prácticas derivadas del paper
 
-- Nunca inyectar toda la memoria al contexto — solo lo relevante para la pregunta actual. En mi-agente: `get_context_for(intent_type)` hace exactamente esto.
+- Nunca inyectar toda la memoria al contexto — solo lo relevante para la pregunta actual.
 - Separar claramente memoria de trabajo (mutable, pequeña) de memoria archival (grande, buscable).
-- El historial de conversación debe comprimirse, no crecer infinito. En mi-agente: `save_episode()` al salir.
-- El agente debe poder actualizar su propia memoria, no solo leerla. En mi-agente: tools de escritura ya existen.
-
----
-
-> Última actualización de la sección "Cómo se aplica": 25/05/2026 — alineado con arquitectura Fase 8 (Sprint 4 completo, 306 tests).
-> Para más detalle de las 5 capas, ver: `data/docs/arquitectura-memoria.md`
-> Para la arquitectura de memoria liviana complementaria, ver: `data/docs/referencia/paper-lightmem-resumen.md`
+- El historial de conversación debe comprimirse, no crecer infinito.
+- El agente debe poder actualizar su propia memoria, no solo leerla.
+- La gestión de memoria debe tener un **guardián único** — en mi-agente es `memory_manager.py`.
