@@ -1,4 +1,5 @@
-"""Motor de indexación — carga, chunking y construcción del vectorstore.
+"""
+Motor de indexación — carga, chunking y construcción del vectorstore.
 
 Responsabilidad única: procesar data/docs/ y persistir Chroma en storage/chroma/.
 Ningún otro módulo debería importar langchain_chroma directamente para indexar.
@@ -38,21 +39,25 @@ CHROMA_DIR  = Path(_CHROMA_DIR_STR)
 # ─────────────────────────────────────────────────────────────────────────────
 # Archivos excluidos del índice RAG
 # Razones de exclusión:
-#   ollama-api.md        → 55 KB, genera ~110 chunks de código sin contexto;
-#                          el agente nunca recibe preguntas sobre la API interna
-#   hardware-modelos.md  → muy pequeño y genérico; el LLM ya conoce este info
-#   chroma-introduccion.md → genérico; chroma-queries.md lo cubre mejor
-#   estado_proyecto.md   → documento vivo; se actualiza cada sesión.
-#                          El estado actual se sirve desde memory_store
-#                          (work_state.json + tareas_pendientes.json).
-#                          Indexarlo introduce riesgo de respuestas desactualizadas.
-#   roadmap.md           → mismo motivo que estado_proyecto.md; es un plan
-#                          en evolución constante, no una referencia estable.
+#   ollama-api.md          → 55 KB, genera ~110 chunks de código sin contexto;
+#                            el agente nunca recibe preguntas sobre la API interna
+#   hardware-modelos.md    → muy pequeño y genérico; el LLM ya conoce este info
+#   chroma-introduccion.md → scraping de navegación web; reemplazado por
+#                            chroma-uso-proyecto.md (curado para el proyecto)
+#   chroma-queries.md      → scraping web con código Python/TS/Rust mezclado;
+#                            no aporta contexto útil al agente
+#   estado_proyecto.md     → documento vivo; se actualiza cada sesión.
+#                            El estado actual se sirve desde memory_store
+#                            (work_state.json + tareas_pendientes.json).
+#                            Indexarlo introduce riesgo de respuestas desactualizadas.
+#   roadmap.md             → mismo motivo que estado_proyecto.md; es un plan
+#                            en evolución constante, no una referencia estable.
 # ─────────────────────────────────────────────────────────────────────────────
 EXCLUDED_FILENAMES: set[str] = {
     "ollama-api.md",
     "hardware-modelos.md",
     "chroma-introduccion.md",
+    "chroma-queries.md",
     "estado_proyecto.md",
     "roadmap.md",
 }
@@ -204,7 +209,7 @@ def _build_title(path: Path) -> str:
     if doc_type == "hardware":
         label = stem.replace("hardware-", "").replace("-", " ").title()
         return f"Hardware — {label}"
-    return stem.replace("-", " ").replace("_", " ").title()
+    return stem.replace("-", "").replace("_", " ").title()
 
 
 def build_base_metadata(path: Path) -> dict:
