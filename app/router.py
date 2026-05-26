@@ -176,17 +176,10 @@ _EXIT_WORDS = {
     "nos vemos",
     "me voy", "cierro",
     "by",
-<<<<<<< HEAD
     # Fix exit-cerrar-sesion: variantes de cierre con frase compuesta
     "cerrar sesion", "cerrar la sesion",
     "terminar sesion", "terminar la sesion",
     "fin de sesion", "finalizar sesion",
-=======
-    "cerrar sesion", "cierra sesion", "cerrar la sesion",
-    "terminar sesion", "terminar la sesion",
-    "salida", "hasta manana",
-    "goodbye", "good bye",
->>>>>>> f950f5e0 (ajusta evaluaciones, router y documentación)
 }
 
 
