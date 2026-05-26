@@ -128,6 +128,14 @@ Fix rag-que-es:
   Agregado 'que es' como hint RAG genérico. Se evalúa DESPUÉS de
   AGENT_IDENTITY_KEYWORDS en _route_by_keywords → sin colisión con
   'qué eres' / 'qué eres tú' que siguen yendo a identity.
+
+Fix Gap3 (25/05/2026):
+  MEMORY_PROFILE_KEYWORDS tenía mezcladas keywords de cierre de sesión
+  ('cerrar sesion', 'cerrar', 'terminar', 'hasta manana', 'goodbye', etc.)
+  que no pertenecen al perfil del usuario. Si una frase de salida pasaba
+  el chequeo de _EXIT_WORDS por cualquier motivo, caía en memory:profile
+  en vez de exit. Limpiadas: solo quedan keywords genuinamente sobre
+  identidad/perfil del usuario.
 """
 from __future__ import annotations
 
@@ -143,9 +151,9 @@ from app import intent_index
 log = get_logger(__name__)
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Estadísticas de sesión — para !estado
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 SESSION_STATS: dict[str, int] = {
     "kw":    0,
@@ -155,17 +163,17 @@ SESSION_STATS: dict[str, int] = {
 }
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Configuración de embeddings (Capa 2)
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 EMBED_THRESHOLD = intent_index.EMBED_THRESHOLD
 EMBED_TOP_K     = intent_index.EMBED_TOP_K
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Palabras de salida
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 _EXIT_WORDS = {
     "salir", "exit", "quit", "bye",
@@ -183,9 +191,9 @@ _EXIT_WORDS = {
 }
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Carriles de escritura
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 _WRITE_LANES = {
     "tool_save_fact", "tool_create_task", "tool_complete_task",
@@ -193,9 +201,9 @@ _WRITE_LANES = {
 }
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Fix B3 — verbos lectores
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 _READ_VERBS = {
     "leer", "lee", "abre", "abrir",
@@ -207,9 +215,9 @@ def _has_read_verb(q_normalized: str) -> bool:
     return any(verb in q_normalized for verb in _READ_VERBS)
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Listas de keywords (Capa 1)
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 TOOL_LIST_KEYWORDS = [
     "listar archivos", "lista de archivos", "que archivos",
@@ -224,10 +232,19 @@ TOOL_READ_KEYWORDS = [
     "leer docs", "leer documentacion", "leer documento", "mostrar documento",
 ]
 
+# Fix Gap3 (25/05/2026): limpiada de keywords que pertenecen a _EXIT_WORDS.
+# Antes contenía: 'cerrar sesion', 'cierra la sesion', 'cerrar', 'terminar',
+# 'terminar sesion', 'salida', 'hasta manana', 'hasta mañana',
+# 'good bye', 'goodbye'.
+# Esas frases tienen su lugar correcto en _EXIT_WORDS (evaluadas primero
+# en route_query). Mezclarlas aquí crea un carril de escape incorrecto:
+# si por algún motivo pasaban _EXIT_WORDS, caían en memory:profile.
+# Ahora MEMORY_PROFILE_KEYWORDS solo contiene keywords genuinas de perfil.
 MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
     "como prefiero", "como trabajo",
-    "perfil", "mi perfil",'cerrar sesion', 'cierra la sesion', 'cerrar', 'terminar', 'terminar sesion', 'salida', 'hasta manana', 'hasta mañana', 'good bye', 'goodbye',"quien soy","quien soy yo" ,
+    "perfil", "mi perfil",
+    "quien soy", "quien soy yo",
     "como me llamo", "mi nombre", "cual es mi nombre",
 ]
 
@@ -238,7 +255,7 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "ultimo paso", "en que quedamos",
     "que hago hoy", "cual es el plan",
     "que hicimos", "en que estamos",
-    "cual es mi foco", "que estoy trabajando",                  
+    "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
 ]
 
@@ -348,16 +365,16 @@ TOOL_SET_SESSION_GOAL_KEYWORDS = [
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
-    "cuanto codigo", "cuantas lineas de codigo",   
+    "cuanto codigo", "cuantas lineas de codigo",
     "tamano del proyecto", "peso del proyecto",
-    "cuantos archivos hay", "cuantos archivos tiene",   
+    "cuantos archivos hay", "cuantos archivos tiene",
     "cuantas funciones hay", "cuantas funciones tiene",
     "cuantas clases hay", "cuantas clases tiene",
     "cuantas funciones", "cuantas clases",
 ]
 
 RAG_HINTS = [
-    "segun los documentos","como se usa","diferencia de","que es", "para que sirve", "componentes", "partes", "metodos",
+    "segun los documentos", "como se usa", "diferencia de", "que es", "para que sirve", "componentes", "partes", "metodos",
     "segun la documentacion",
     "segun los archivos",
     "que dice", "que hace",
@@ -372,7 +389,6 @@ RAG_HINTS = [
     "para que sirve",
     "explicame", "explicame el", "explicame la",
     "para que sirve el", "para que sirve la",
-   
 ]
 
 VALID_LANES = {
@@ -387,9 +403,9 @@ VALID_LANES = {
 }
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Funciones internas
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def _has_task_suggestion_signal(q: str) -> bool:
     return any(signal in q for signal in _TASK_SUGGESTION_SIGNALS)
@@ -409,7 +425,7 @@ def classify_memory_query(question: str) -> str | None:
 
 def _is_question(text: str) -> bool:
     stripped = text.strip()
-    return stripped.startswith(("\u00bf", "?")) or stripped.endswith("?")
+    return stripped.startswith(("¿", "?")) or stripped.endswith("?")
 
 
 def _handle_unsupported(question: str) -> str:
@@ -486,9 +502,9 @@ def _route_by_embeddings(question: str) -> str | None:
         return None
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # !estado — display del estado de sesión
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def format_estado() -> str:
     """Genera el bloque de texto para el comando !estado / !estatus."""
@@ -504,7 +520,7 @@ def format_estado() -> str:
     if "ttl_hours" in stats:
         ttl_line = f"  TTL caché:       {stats['ttl_hours']}h\n"
 
-    separator = "\u2500" * 40
+    separator = "─" * 40
     return (
         f"\n{separator}\n"
         f" Estado de sesión\n"
@@ -524,9 +540,9 @@ def format_estado() -> str:
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Punto de entrada público
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto."""
