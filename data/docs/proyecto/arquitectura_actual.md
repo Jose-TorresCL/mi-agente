@@ -6,7 +6,7 @@ Este archivo describe cómo está armado hoy el asistente local Lautaro,
 qué rol cumple cada componente y cómo se relacionan las tres capas del
 sistema: Conversación → Inteligencia → Memoria.
 
-Última actualización: 24/05/2026 — Sprint 4 completo: 306/306 tests, normalización router.
+Última actualización: 25/05/2026 — Auditoría documental RAG + tabla base documental completa.
 
 ---
 
@@ -20,6 +20,7 @@ sistema: Conversación → Inteligencia → Memoria.
 | **Chroma** | Base vectorial para RAG (`storage/chroma/`), intent index (`storage/intent_index/`) y experience index (`storage/experience_index/`) |
 | **LangChain** | Orquestación de RAG y flujo general |
 | **JSON en `storage/`** | Persistencia de memoria estructurada |
+| **python-telegram-bot** | Interfaz Telegram (`app/telegram_interface.py`) |
 
 ---
 
@@ -32,7 +33,9 @@ unidireccional: Conversación → Inteligencia → Memoria.
 Conversación
   chat.py
   app/chat_ui.py
-  app/chat_core.py        ← orquestador principal
+  app/chat_core.py        ← orquestador principal (CLI y Telegram)
+  app/telegram_interface.py ← interfaz Telegram (comparte chat_core)
+  app/session_state.py    ← vista resumida del estado (!estado)
         ↓
 Inteligencia
   app/router.py           ← 3 capas: keywords → embeddings → LLM
@@ -42,7 +45,10 @@ Inteligencia
   app/tool_registry.py    ← despacho centralizado de tools
   app/tools.py            ← 6 tools operativas
   app/tool_helpers.py     ← utilidades de extracción de argumentos
+  app/intent_index.py     ← clasificador por embeddings (96 ejemplos en Chroma)
   app/metrics.py          ← logger de métricas por turno (metrics.jsonl)
+  app/prompts.py          ← plantillas de sistema y reglas de comportamiento
+  app/formatters.py       ← formateadores de salida por tipo de carril
         ↓
 Memoria
   app/memory_manager.py   ← guardián único de lectura/escritura (anotado con MemoryType)
@@ -63,9 +69,11 @@ qué carril usar. El carril `memory` es TERMINAL — no pasa por caché.
 
 | Archivo | Capa | Rol |
 |---|---|---|
-| `chat.py` | Conversación | Punto de entrada |
+| `chat.py` | Conversación | Punto de entrada CLI |
 | `app/chat_ui.py` | Conversación | Interfaz de consola y presentación |
 | `app/chat_core.py` | Conversación | Orquestador: recibe input, llama inteligencia, devuelve respuesta |
+| `app/telegram_interface.py` | Conversación | Punto de entrada Telegram (reutiliza chat_core) |
+| `app/session_state.py` | Conversación | Vista resumida del estado actual (`!estado`) |
 | `app/config.py` | Transversal | Constantes globales y configuración centralizada |
 | `app/logger.py` | Transversal | Logging estructurado por módulo |
 | `app/router.py` | Inteligencia | Router híbrido 3 capas + classify_memory_query |
@@ -75,7 +83,9 @@ qué carril usar. El carril `memory` es TERMINAL — no pasa por caché.
 | `app/tool_registry.py` | Inteligencia | Registro y despacho de tools |
 | `app/tools.py` | Inteligencia | Implementación de las 6 tools operativas |
 | `app/tool_helpers.py` | Inteligencia | Extracción de argumentos de herramientas |
+| `app/intent_index.py` | Inteligencia | Clasificación por embeddings en Chroma (96 ejemplos) |
 | `app/prompts.py` | Inteligencia | Plantillas de sistema y reglas de comportamiento |
+| `app/formatters.py` | Inteligencia | Formateadores de salida por tipo de carril |
 | `app/metrics.py` | Inteligencia | Logger de métricas por turno → `storage/metrics.jsonl` |
 | `app/memory_manager.py` | Memoria | Guardián único de lectura/escritura, anotado con MemoryType |
 | `app/memory_store.py` | Memoria | Lectura y escritura segura de JSON |
@@ -83,7 +93,6 @@ qué carril usar. El carril `memory` es TERMINAL — no pasa por caché.
 | `app/episode_store.py` | Memoria | experience_index, search_episodes, experience_lookup, señal de calidad |
 | `app/schemas.py` | Memoria | TypedDict + MemoryType enum |
 | `app/semantic_cache.py` | Memoria | Caché semántica de respuestas RAG (umbral 0.88, solo carril rag) |
-| `app/session_state.py` | Conversación | Vista resumida del estado actual (`!estado`) |
 | `indexacion.py` | Herramienta | Indexa documentos en Chroma |
 | `build_intent_index.py` | Herramienta | Construye el índice de intenciones (96 ejemplos) |
 
@@ -92,34 +101,34 @@ qué carril usar. El carril `memory` es TERMINAL — no pasa por caché.
 ## Flujo del sistema — Fase 6+
 
 ```
-Usuario
+Usuario (CLI o Telegram)
   ↓
-chat.py  →  chat_ui.py  →  chat_core.py
-                                ↓
-                           router.py
-                          /     |      \
-              Capa 1: kw  Capa 2: emb   Capa 3: LLM
-               (0ms)       (~50ms)        (~3-8s)
-                                ↓
-                          intelligence.py
-              ┌──────────┬──────────────┬─────────────┬──────────┐
-              │  rag     │   memory     │  episode    │  tools   │
-              │Chroma    │work_state    │search_      │save_fact │
-              │+caché    │project_facts │episodes()   │create_   │
-              │+fidelity │tasks/profile │Chroma       │task ...  │
-              │+exp.inj. │TERMINAL      │             │          │
-              └──────────┴──────────────┴─────────────┴──────────┘
-                                ↓
-                          Ollama (llama3.2)
-                                ↓
-                            Respuesta
-                                ↓
-                          metrics.py → metrics.jsonl
+chat.py / telegram_interface.py  →  chat_core.py
+                                          ↓
+                                     router.py
+                                    /     |      \
+                        Capa 1: kw  Capa 2: emb   Capa 3: LLM
+                         (0ms)       (~50ms)        (~3-8s)
+                                          ↓
+                                    intelligence.py
+              ┌──────────┬──────────────┬───────────┬───────────┬─────────┐
+              │  rag     │   memory     │  episode  │  tools    │  exit    │
+              │Chroma    │work_state    │search_    │save_fact  │__EXIT__ │
+              │+caché    │project_facts │episodes() │create_    │         │
+              │+fidelity │tasks/profile │Chroma     │task ...   │         │
+              │+exp.inj. │TERMINAL      │           │           │         │
+              └──────────┴──────────────┴───────────┴───────────┴─────────┘
+                                          ↓
+                                    Ollama (llama3.2)
+                                          ↓
+                                      Respuesta
+                                          ↓
+                                    metrics.py → metrics.jsonl
 ```
 
 ---
 
-## Router híbrido — 9 carriles
+## Router híbrido — 10 carriles
 
 | Carril | Qué hace | Cómo se activa |
 |---|---|---|
@@ -132,6 +141,7 @@ chat.py  →  chat_ui.py  →  chat_core.py
 | `tool_create_task` | Crea una tarea en `tasks.json` | "crea una tarea", "nueva tarea" |
 | `tool_complete_task` | Marca una tarea como completada | "marca como completada", patrón `T-\d+` |
 | `tool_update_work_state` | Actualiza `work_state.json` | "actualiza el foco", "ahora estoy en" |
+| `exit` | Cierra la sesión | "salir", "exit", "adiós", "chao", "nos vemos" |
 | `unsupported` | Respuesta directa sin LLM | Consultas fuera del alcance |
 
 ---
@@ -195,16 +205,64 @@ y con fronteras limpias entre capas.
 
 ---
 
-## Base documental del RAG
+## Bugs conocidos y pendientes de hardening (25/05/2026)
 
-Documentos que el agente consulta como conocimiento del proyecto:
+| Bug | Descripción | Carril afectado | Prioridad |
+|---|---|---|---|
+| B-01 | "cerrar sesión" no activa carril `exit`, devuelve identidad de Lautaro | `exit` / `identity` | Alta |
+| B-02 | "Qué es Chroma" activa identidad en vez de RAG | `rag` / `identity` | Alta |
+| B-03 | Respuestas de definición técnica repiten texto genérico en vez de usar docs propios | `rag` | Media |
+| B-04 | `ProfileData` en `schemas.py` usa `name/level/project` pero `profile.json` usa `user_name/user_level/project_type` | contratos | Media |
 
-| Archivo | Contenido |
-|---|---|
-| `data/docs/proyecto/arquitectura_actual.md` | Este documento |
-| `data/docs/proyecto/estado_proyecto.md` | Fases, objetivos y estado actual |
-| `data/docs/proyecto/decisiones_arquitectura.md` | ADRs: registro de decisiones de diseño |
-| `data/docs/proyecto/roadmap.md` | Próximos pasos y prioridades |
-| `data/docs/referencia/memoria_agentes_resumen.md` | Teoría de memoria en agentes |
-| `data/docs/referencia/paper-slm-first-resumen.md` | Paper SLM-First aplicado al proyecto |
-| `data/docs/referencia/paper-moa-resumen.md` | Paper MoA — patrón de auto-refinamiento |
+---
+
+## Base documental del RAG — inventario completo (25/05/2026)
+
+Documentos que el agente consulta como conocimiento del proyecto.
+⚠️ Los marcados como 🔴 deben **excluirse** del índice antes de re-indexar.
+
+### Documentos del proyecto (indexados activos)
+
+| Archivo | Contenido | Estado |
+|---|---|---|
+| `data/docs/proyecto/arquitectura_actual.md` | Este documento | ✅ |
+| `data/docs/proyecto/decisiones_arquitectura.md` | Resumen de ADRs | ✅ |
+| `data/docs/proyecto/plan-robustecimiento.md` | Plan R1–R7 con estado actual | ✅ Verificar indexación |
+| `data/docs/proyecto/fase6-tareas.md` | Histórico Fase 6 | 🟡 Solo si útil como histórico |
+
+### Documentos de referencia (indexados activos)
+
+| Archivo | Contenido | Estado |
+|---|---|---|
+| `data/docs/referencia/memoria_agentes_resumen.md` | Teoría de memoria en agentes | ✅ |
+| `data/docs/referencia/paper-slm-first-resumen.md` | Paper SLM-First | ✅ |
+| `data/docs/referencia/paper-moa-resumen.md` | Paper MoA | ✅ |
+| `data/docs/referencia/paper-memgpt-resumen.md` | MemGPT — actualizado Fase 8 (25/05/2026) | ✅ |
+| `data/docs/referencia/paper-lightmem-resumen.md` | LightMem — muy relevante para R4 | ✅ Verificar indexación |
+| `data/docs/referencia/langchain-embeddings.md` | Embeddings con nomic-embed-text | ✅ |
+| `data/docs/referencia/langchain-retriever.md` | Retriever MMR y threshold | ✅ |
+| `data/docs/referencia/langchain-rag-concepto.md` | RAG conceptual | ✅ |
+| `data/docs/referencia/langchain-text-splitters.md` | Chunking y splitters | ✅ Verificar |
+| `data/docs/referencia/chroma-uso-proyecto.md` | Chroma curado para el proyecto (nuevo 25/05/2026) | ✅ Indexar |
+| `data/docs/arquitectura-memoria.md` | Las 5 capas de memoria con datos reales | ✅ Citado en Telegram |
+
+### ADRs (a confirmar indexación — citados en Telegram como fuentes)
+
+| Archivo | Contenido | Estado |
+|---|---|---|
+| `data/docs/adr/ADR-001-router-hibrido.md` | Decisión del router 3 capas | ✅ Confirmar |
+| `data/docs/adr/ADR-002-memoria-en-capas.md` | Decisión de arquitectura de memoria | ✅ Confirmar |
+| `data/docs/adr/ADR-003-memory-manager.md` | Guardián único de memoria | ✅ Confirmar |
+| `data/docs/adr/ADR-004-mejoras-rag-calidad.md` | Mejoras RAG: MMR, fidelity | ✅ Citado en Telegram |
+| `data/docs/adr/ADR-005-modos-agente-tool-codigo.md` | Modos de agente y tools | ✅ Citado en Telegram |
+| `data/docs/adr/ADR-006-experience-index.md` | Experience index en Chroma | ✅ Citado en Telegram |
+
+### Documentos a excluir del índice
+
+| Archivo | Razón | Acción |
+|---|---|---|
+| `data/docs/referencia/chroma-introduccion.md` | 🔴 Scraping de navegación web | Excluir de `indexacion.py` |
+| `data/docs/referencia/chroma-queries.md` | 🔴 Scraping web (Python/TS/Rust mezclado) | Excluir de `indexacion.py` |
+| `data/docs/referencia/ollama-api.md` | 🔴 56KB sin curar, domina el índice | Excluir o reemplazar con resumen |
+| `data/docs/proyecto/estado_proyecto.md` | Documento vivo, se lee por tool | Excluido (correcto) |
+| `data/docs/proyecto/roadmap.md` | Documento vivo, planificación futura | Excluido (correcto) |

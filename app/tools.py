@@ -3,13 +3,18 @@
 Este módulo contiene SOLO las funciones tool_* que leen/escriben memoria.
 Las utilidades de parseo y filesystem viven en tool_helpers.py.
 
-Funciones públicas (sin cambio de interfaz):
+Cambio R6-A:
+  Todas las funciones tool_* retornan ToolResult en vez de str.
+  La interfaz pública NO cambia para callers que usen dispatch_tool_str().
+  Para callers que necesiten datos estructurados, usar dispatch_tool() directamente.
+
+Funciones públicas:
   tool_save_fact()          — guarda hecho en project_facts.json
   tool_create_task()        — crea tarea en tasks.json
   tool_complete_task()      — marca tarea como completada
   tool_update_work_state()  — actualiza work_state.json
-  tool_set_session_goal()   — guarda objetivo de la sesión actual (Paso B)
-  suggest_next_step()       — sugerencia post-actualización
+  tool_set_session_goal()   — guarda objetivo de la sesión actual
+  suggest_next_step()       — sugerencia post-actualización (retorna str, helper interno)
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
   list_project_files, extract_file_path, read_project_file,
@@ -33,6 +38,7 @@ from app.memory_manager import (
     get_tasks as _mm_get_tasks,
     set_session_goal as _mm_set_session_goal,
 )
+from app.schemas import ToolResult
 
 # Re-exportar helpers — mantiene compatibilidad con todos los imports existentes
 from app.tool_helpers import (  # noqa: F401
@@ -51,7 +57,7 @@ from app.tool_helpers import (  # noqa: F401
 # Tool: guardar hecho
 # ─────────────────────────────────────────────
 
-def tool_save_fact(content) -> str:
+def tool_save_fact(content) -> ToolResult:
     """Guarda un hecho en project_facts.json.
 
     Fix B2: acepta cualquier tipo en 'content' y fuerza str() antes de
@@ -59,52 +65,104 @@ def tool_save_fact(content) -> str:
     dispatcher pasa un argumento con tipo incorrecto.
 
     D3: rechaza contenido vacío antes de llamar a memory_manager.save_fact.
+
+    R6-A: retorna ToolResult en vez de str.
     """
     content = str(content).strip()
 
     if not content:
-        return "No pude guardar el hecho: el contenido está vacío."
+        return ToolResult(
+            ok=False,
+            message="No pude guardar el hecho: el contenido está vacío.",
+            error_code="EMPTY_CONTENT",
+            tool_name="tool_save_fact",
+        )
 
     kv = _parse_key_value(content)
     if kv:
         key, value = kv
         ok = _mm_save_fact(key, value)
         if ok:
-            return f"✓ Hecho guardado: {key} = \"{value}\""
-        return "No pude guardar el hecho: clave o valor vacíos."
+            return ToolResult(
+                ok=True,
+                message=f"✓ Hecho guardado: {key} = \"{value}\"",
+                data={"key": key, "value": value},
+                side_effect="escrito project_facts.json",
+                tool_name="tool_save_fact",
+            )
+        return ToolResult(
+            ok=False,
+            message="No pude guardar el hecho: clave o valor vacíos.",
+            error_code="EMPTY_CONTENT",
+            tool_name="tool_save_fact",
+        )
 
     key = f"hecho_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     ok = _mm_save_fact(key, content)
     if ok:
-        return f"✓ Hecho guardado: \"{content}\""
-    return "No pude guardar el hecho: contenido vacío."
+        return ToolResult(
+            ok=True,
+            message=f"✓ Hecho guardado: \"{content}\"",
+            data={"key": key, "value": content},
+            side_effect="escrito project_facts.json",
+            tool_name="tool_save_fact",
+        )
+    return ToolResult(
+        ok=False,
+        message="No pude guardar el hecho: contenido vacío.",
+        error_code="EMPTY_CONTENT",
+        tool_name="tool_save_fact",
+    )
 
 
 # ─────────────────────────────────────────────
 # Tool: crear tarea
 # ─────────────────────────────────────────────
 
-def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> str:
+def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> ToolResult:
+    """R6-A: retorna ToolResult."""
     title    = title.strip()
     priority = priority.strip().lower()
     notes    = notes.strip()
 
     if not title:
-        return "No pude crear la tarea: falta el título."
+        return ToolResult(
+            ok=False,
+            message="No pude crear la tarea: falta el título.",
+            error_code="EMPTY_TITLE",
+            tool_name="tool_create_task",
+        )
 
     task_id = _mm_create_task(title=title, priority=priority, notes=notes)
     if not task_id:
-        return "No pude crear la tarea: título vacío."
-    return f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})"
+        return ToolResult(
+            ok=False,
+            message="No pude crear la tarea: título vacío.",
+            error_code="EMPTY_TITLE",
+            tool_name="tool_create_task",
+        )
+    return ToolResult(
+        ok=True,
+        message=f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})",
+        data={"task_id": task_id, "title": title, "priority": priority},
+        side_effect=f"creado {task_id} en tasks.json",
+        tool_name="tool_create_task",
+    )
 
 
 # ─────────────────────────────────────────────
 # Tool: completar tarea
 # ─────────────────────────────────────────────
 
-def tool_complete_task(task_id: str) -> str:
+def tool_complete_task(task_id: str) -> ToolResult:
+    """R6-A: retorna ToolResult."""
     if not task_id:
-        return "No pude identificar el ID de la tarea. Indícalo así: T-001, T-002..."
+        return ToolResult(
+            ok=False,
+            message="No pude identificar el ID de la tarea. Indícalo así: T-001, T-002...",
+            error_code="MISSING_TASK_ID",
+            tool_name="tool_complete_task",
+        )
 
     tasks_data = _mm_get_tasks()
     tasks = tasks_data.get("tasks", [])
@@ -113,16 +171,33 @@ def tool_complete_task(task_id: str) -> str:
     for task in tasks:
         if task.get("id", "").upper() == task_id.upper():
             if task.get("status") == "completed":
-                return f"ℹ️  La tarea {task_id} ya estaba marcada como completada."
+                return ToolResult(
+                    ok=True,
+                    message=f"ℹ️  La tarea {task_id} ya estaba marcada como completada.",
+                    data={"task_id": task_id, "was_already_completed": True},
+                    tool_name="tool_complete_task",
+                )
             found = True
             break
 
     if not found:
         available = [t.get("id") for t in tasks]
-        return f"❌ No encontré la tarea '{task_id}'. Tareas disponibles: {available}"
+        return ToolResult(
+            ok=False,
+            message=f"❌ No encontré la tarea '{task_id}'. Tareas disponibles: {available}",
+            error_code="TASK_NOT_FOUND",
+            data={"task_id": task_id, "available_ids": available},
+            tool_name="tool_complete_task",
+        )
 
     _mm_complete_task(task_id)
-    return f"✅ Tarea {task_id} marcada como completada."
+    return ToolResult(
+        ok=True,
+        message=f"✅ Tarea {task_id} marcada como completada.",
+        data={"task_id": task_id, "was_already_completed": False},
+        side_effect=f"actualizado {task_id} en tasks.json → status=completed",
+        tool_name="tool_complete_task",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -135,8 +210,11 @@ def tool_update_work_state(
     current_focus: str | None = None,
     next_step: str | None = None,
     last_completed_step: str | None = None,
-) -> str:
-    """Actualiza work_state.json desde conversación libre o desde kwargs directos."""
+) -> ToolResult:
+    """Actualiza work_state.json desde conversación libre o desde kwargs directos.
+
+    R6-A: retorna ToolResult.
+    """
     import json
 
     path = Path("storage/work_state.json")
@@ -208,50 +286,82 @@ def tool_update_work_state(
                     break
 
     if not cambios:
-        return "⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'."
+        return ToolResult(
+            ok=False,
+            message="⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'.",
+            error_code="NO_FIELDS_MATCHED",
+            tool_name="tool_update_work_state",
+        )
 
     state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     try:
         path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        return f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}"
+        return ToolResult(
+            ok=False,
+            message=f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}",
+            error_code="WRITE_ERROR",
+            data={"cambios_intentados": cambios},
+            tool_name="tool_update_work_state",
+        )
 
-    return "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
+    msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
+    return ToolResult(
+        ok=True,
+        message=msg,
+        data={"cambios": cambios},
+        side_effect="escrito work_state.json",
+        tool_name="tool_update_work_state",
+    )
 
 
 # ─────────────────────────────────────────────
-# Tool: definir objetivo de sesión (Paso B)
+# Tool: definir objetivo de sesión
 # ─────────────────────────────────────────────
 
-def tool_set_session_goal(content: str) -> str:
+def tool_set_session_goal(content: str) -> ToolResult:
     """Guarda el objetivo específico para la sesión actual.
 
     A diferencia de tool_update_work_state (que actualiza el foco permanente),
     esta tool guarda un objetivo concreto para hoy que aparecerá en el
     session briefing al arranque de la próxima sesión.
 
-    Uso: 'hoy quiero cerrar el Eje 1 del plan'
-         'mi objetivo de hoy es revisar los tests del router'
-
-    Never raises.
+    R6-A: retorna ToolResult.
     """
     content = str(content).strip()
     if not content:
-        return "No pude guardar el objetivo: el contenido está vacío."
+        return ToolResult(
+            ok=False,
+            message="No pude guardar el objetivo: el contenido está vacío.",
+            error_code="EMPTY_CONTENT",
+            tool_name="tool_set_session_goal",
+        )
 
     _QUESTION_STARTS = (
         "cuál es", "cual es", "cuál", "qué es", "que es",
         "dime", "muéstrame", "muestrame", "cuéntame", "cuentame",
     )
     if content.lower().startswith(_QUESTION_STARTS) or content.endswith("?"):
-        return "ℹ️ No detecté un objetivo concreto. Dime: 'mi objetivo hoy es…'"
+        return ToolResult(
+            ok=False,
+            message="ℹ️ No detecté un objetivo concreto. Dime: 'mi objetivo hoy es…'",
+            error_code="NOT_A_GOAL",
+            tool_name="tool_set_session_goal",
+        )
 
     _mm_set_session_goal(content)
-    return f"✅ Objetivo de sesión guardado: '{content}'"
+    return ToolResult(
+        ok=True,
+        message=f"✅ Objetivo de sesión guardado: '{content}'",
+        data={"goal": content},
+        side_effect="escrito session_goal en work_state.json",
+        tool_name="tool_set_session_goal",
+    )
 
 
 # ─────────────────────────────────────────────
 # Sugerencia automática post-actualización
+# (retorna str — helper interno, no es tool pública)
 # ─────────────────────────────────────────────
 
 def suggest_next_step() -> str:

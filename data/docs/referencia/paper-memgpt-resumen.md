@@ -79,53 +79,71 @@ El LLM decide **por sí mismo** cuándo llamar estas funciones. Si la conversaci
 
 ---
 
-## Cómo se aplica a mi-agente
+## Cómo se aplica a mi-agente — Estado real Fase 8 (mayo 2026)
 
-### Lo que ya implementé (análogo a MemGPT)
+> ⚠️ Esta sección refleja la arquitectura actual. Las fases anteriores usaban
+> nombres distintos (`build_structured_memory_context`, `ConversationBufferWindowMemory`).
+> Hoy esos están reemplazados por una arquitectura más madura.
+
+### Lo que está implementado hoy ✅
 
 ```
-[Working context] → profile.json + projectfacts.json + workstate.json
-                   inyectado al prompt via buildStructuredMemoryContext()
+[Working context — Capa 1 RAM]
+  chat_core.py mantiene chat_history en memoria durante la sesión
+  Límite configurable en app/config.py (MAX_TURNS)
 
-[Archival memory] → Chroma vectorstore con docs de referencia
-                    recuperado via retriever de LangChain
+[Working context — Capa 2 Operacional]
+  storage/work_state.json  ← foco, tarea actual, bloqueadores
+  storage/tasks.json       ← lista de tareas con estado
+  Escritura via: tool_update_work_state, tool_create_task, tool_complete_task
 
-[Recall memory]   → storage/memory.json (ConversationBufferWindowMemory)
-                    últimos k=8 turnos en contexto
+[Semantic context — Capa 3]
+  storage/profile.json        ← user_name, user_level, project_type
+  storage/project_facts.json  ← modelo_base, fase_actual, stack, tests
+  Acceso via: memory_context.py → get_semantic_context()
+
+[Archival memory — Capa 4 Episodic JSON]
+  storage/episodic_memory.json ← resúmenes de sesiones pasadas
+  Escritura via: memory_manager.record_episode() al cerrar sesión
+  Lectura via: episode_store.search_episodes()
+
+[Archival memory — Capa 5 Experience Index]
+  storage/experience_index/    ← episodios indexados en Chroma
+  Búsqueda semántica con boost +0.15 para episodios exitosos
+  Acceso via: episode_store.experience_lookup()
+
+[Archival memory — RAG]
+  storage/chroma/              ← 269 chunks de documentación del proyecto
+  Acceso via: rag_engine.py con MMR (lambda_mult=0.6, fetch_k=20)
+  Fidelidad verificada por: fidelity_check.py
+```
+
+**Guardián único de toda la memoria**: `memory_manager.py`
+**Interfaz de acceso**: `get_context_for(intent_type: MemoryType)`
+**Contrato formal**: `MemoryType` enum en `app/schemas.py`
+
+```python
+class MemoryType(str, Enum):
+    WORKING    = "working"     # RAM + work_state + tasks
+    SEMANTIC   = "semantic"    # profile + project_facts
+    EPISODIC   = "episodic"    # episodic_memory.json + experience_index
+    PROCEDURAL = "procedural"  # reservado para reglas futuras
 ```
 
 ### Lo que falta para llegar a MemGPT completo
 
-1. **Router de memoria**: decidir automáticamente si una pregunta requiere RAG, working context o búsqueda en historial.
-2. **Self-editing**: el agente puede actualizar su propia memoria (guardar hechos nuevos).
-3. **Compresión de conversaciones**: cuando la sesión es larga, comprimir antes de guardar.
-
-### Implementación incremental recomendada
-
-```python
-# Fase 2C actual: el agente SOLO LEE la memoria estructurada
-memorycontext = build_structured_memory_context()  # ya implementado
-
-# Fase 2D (próxima): el agente puede ESCRIBIR en su memoria
-# tools: guardar_hecho(clave, valor), actualizar_tarea(id, estado)
-
-# Fase 3 (futura): router decide qué fuente usar
-# router: RAG si es documental, memoria si es estado/preferencias, tool si es acción
-```
-
----
-
-## Diferencia entre MemGPT y lo que tengo ahora
-
-| Característica | MemGPT completo | mi-agente fase 2 actual |
+| Característica | MemGPT completo | mi-agente Fase 8 |
 |---|---|---|
-| Working context | Automático (LLM decide) | Manual (buildStructuredMemoryContext) |
-| Archival storage | Vectorstore con tools | Chroma con retriever |
-| Self-editing | Sí (LLM escribe su memoria) | No todavía |
-| Compresión | Automática | No implementada |
-| Multi-sesión | Sí | Parcial (memory.json) |
+| Working context | Automático (LLM decide) | Estructurado (code determina qué inyectar) |
+| Archival storage | Vectorstore con tools | ✅ Chroma con retriever MMR |
+| Self-editing de memoria | Sí (LLM escribe su memoria) | Parcial (tools write: save_fact, create_task) |
+| Compresión episódica automática | Automática por token count | Manual al cerrar sesión (record_episode) |
+| Multi-sesión | Sí | ✅ Funcional (episodic_memory.json + experience_index) |
+| Recuperación selectiva por capa | Sí | ✅ get_context_for(intent_type) |
 
-**Conclusión práctica**: No necesito implementar MemGPT completo. Lo valioso es entender la arquitectura de capas y aplicarla progresivamente. Mi implementación actual ya cubre los niveles 1 y 2 de forma simplificada.
+**Conclusión práctica**: La arquitectura de capas ya está implementada. Lo que falta es la
+**compresión automática** (hoy es manual al salir) y el **self-editing completo** (hoy
+el LLM puede guardar hechos pero no reescribir su working context libremente).
 
 ---
 
@@ -141,7 +159,7 @@ memorycontext = build_structured_memory_context()  # ya implementado
 
 **Confusión**: Creer que necesitas implementar MemGPT completo para tener un agente con buena memoria.
 
-**Realidad**: Los principios son los valiosos — capas de memoria, recuperación selectiva, working context separado de archival. Puedes implementar el 80% del valor con un 20% de la complejidad usando JSON + Chroma.
+**Realidad**: Los principios son los valiosos — capas de memoria, recuperación selectiva, working context separado de archival. Puedes implementar el 80% del valor con un 20% de la complejidad usando JSON + Chroma. Mi-agente ya lo demuestra.
 
 ---
 
@@ -151,3 +169,4 @@ memorycontext = build_structured_memory_context()  # ya implementado
 - Separar claramente memoria de trabajo (mutable, pequeña) de memoria archival (grande, buscable).
 - El historial de conversación debe comprimirse, no crecer infinito.
 - El agente debe poder actualizar su propia memoria, no solo leerla.
+- La gestión de memoria debe tener un **guardián único** — en mi-agente es `memory_manager.py`.

@@ -1,26 +1,34 @@
-"""Registro centralizado de tools — B4
+"""Registro centralizado de tools — B4 / R6-A
 
 Cada entrada en TOOLS tiene:
   fn:          La función de app/tools.py a invocar.
   carril:      El nombre del carril devuelto por el router.
   descripcion: Descripción breve para !ayuda y futuras UIs.
+  risk:        RiskLevel — clasificación de riesgo (R6-A).
+               READ   → solo lectura, sin efectos secundarios.
+               WRITE  → escribe en storage/ interno del agente.
+               SYSTEM → accede a recursos externos (no hay ninguna actualmente).
   handler:     Función (user_input: str) -> str con toda la lógica de parseo
-               y construcción de respuesta. Centraliza lo que antes vivía
-               disperso en los if/elif de chat_core.handle_query.
+               y construcción de respuesta. Retorna str para compatibilidad
+               con intelligence.py (via dispatch_tool_str).
+
+API pública (R6-A):
+  dispatch_tool(carril, user_input) -> ToolResult | None
+      Retorna el ToolResult estructurado. Usar en tests y métricas.
+
+  dispatch_tool_str(carril, user_input) -> str | None
+      Wrapper de compatibilidad — convierte ToolResult.message a str.
+      Usar en intelligence.py y cualquier caller que espere str.
 
 Convención:
   - Los handlers reciben el user_input crudo y retornan la respuesta final.
   - suggest_next_step() es responsabilidad del handler de tool_update_work_state.
-  - Cualquier fallo interno debe retornar un str descriptivo, nunca lanzar.
+  - Cualquier fallo interno debe retornar un ToolResult con ok=False, nunca lanzar.
 
-Fix B2:
-  _handle_save_fact retorna mensaje claro si content queda vacío tras
-  limpiar prefijos, en lugar de pasar string vacío a memory_manager.
-
-Brecha 2 (este commit):
-  _handle_set_session_goal extrae el objetivo del texto libre del usuario
-  y llama a memory_manager.set_session_goal(). intelligence.py no necesita
-  cambio porque el bloque 'if route in TOOLS' ya maneja el carril.
+Regla de seguridad (R6-A):
+  dispatch_tool() rechaza tools con risk=SYSTEM a menos que se agregue
+  soporte explícito de confirmación humana (no implementado aún — hay
+  0 tools SYSTEM en producción actualmente).
 """
 from __future__ import annotations
 
@@ -35,10 +43,15 @@ from app.tools import (
     suggest_next_step,
     extract_task_id,
 )
+from app.schemas import RiskLevel, ToolResult, tool_result_to_str
 from app import memory_manager
 
 
 # ── Handlers ────────────────────────────────────────────────────────────────
+# Los handlers convierten el texto libre del usuario a llamadas de tool
+# y retornan str para la capa de presentación.
+# Internamente llaman a la tool (que ahora retorna ToolResult) y
+# extraen .message para mantener compatibilidad hacia afuera.
 
 def _handle_save_fact(user_input: str) -> str:
     prefixes = [
@@ -58,7 +71,7 @@ def _handle_save_fact(user_input: str) -> str:
             "No entendí qué hecho querías guardar. "
             "Prueba con: 'guarda como hecho que el router ya está probado'."
         )
-    return tool_save_fact(content)
+    return tool_result_to_str(tool_save_fact(content))
 
 
 def _handle_create_task(user_input: str) -> str:
@@ -77,21 +90,21 @@ def _handle_create_task(user_input: str) -> str:
                     raw = raw[:-len(p)].strip().rstrip(",;")
                     priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
                     break
-            return tool_create_task(title=raw, priority=priority)
-    return tool_create_task(title=user_input, priority="medium")
+            return tool_result_to_str(tool_create_task(title=raw, priority=priority))
+    return tool_result_to_str(tool_create_task(title=user_input, priority="medium"))
 
 
 def _handle_complete_task(user_input: str) -> str:
     task_id = extract_task_id(user_input)
     if not task_id:
         return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'"
-    return tool_complete_task(task_id)
+    return tool_result_to_str(tool_complete_task(task_id))
 
 
 def _handle_update_work_state(user_input: str) -> str:
-    update_msg = tool_update_work_state(user_input)
-    suggestion  = suggest_next_step()
-    return update_msg + suggestion
+    result = tool_update_work_state(user_input)
+    suggestion = suggest_next_step()
+    return tool_result_to_str(result) + suggestion
 
 
 def _handle_list_files(user_input: str) -> str:  # noqa: ARG001
@@ -109,12 +122,10 @@ def _handle_read_file(user_input: str) -> str:
 
 
 def _handle_set_session_goal(user_input: str) -> str:
-    """Brecha 2: extrae el objetivo del texto libre y lo guarda en work_state.
+    """Extrae el objetivo del texto libre y lo guarda en work_state.
 
     Limpia los prefijos de activación para guardar solo el contenido real.
     Ejemplo: 'mi objetivo hoy es cerrar el Eje 1' → guarda 'cerrar el Eje 1'.
-    Los prefijos se evalúan de mayor a menor longitud para evitar coincidencias
-    parciales (ej. 'mi objetivo hoy' no debe comer 'mi objetivo hoy es X').
     """
     prefixes = [
         "mi objetivo hoy es",
@@ -143,7 +154,7 @@ def _handle_set_session_goal(user_input: str) -> str:
     ]
     content = user_input.strip()
     content_lower = content.lower()
-    for prefix in sorted(prefixes, key=len, reverse=True):  # más largos primero
+    for prefix in sorted(prefixes, key=len, reverse=True):
         if content_lower.startswith(prefix):
             content = content[len(prefix):].strip().lstrip(":").strip()
             break
@@ -165,64 +176,120 @@ TOOLS: dict[str, dict] = {
         "fn":          list_project_files,
         "carril":      "tool_list_files",
         "descripcion": "Lista archivos del proyecto",
+        "risk":        RiskLevel.READ,
         "handler":     _handle_list_files,
     },
     "tool_read_file": {
         "fn":          read_project_file,
         "carril":      "tool_read_file",
         "descripcion": "Lee el contenido de un archivo",
+        "risk":        RiskLevel.READ,
         "handler":     _handle_read_file,
     },
     "tool_save_fact": {
         "fn":          tool_save_fact,
         "carril":      "tool_save_fact",
         "descripcion": "Guarda un hecho en project_facts.json",
+        "risk":        RiskLevel.WRITE,
         "handler":     _handle_save_fact,
     },
     "tool_create_task": {
         "fn":          tool_create_task,
         "carril":      "tool_create_task",
         "descripcion": "Crea una tarea en tasks.json",
+        "risk":        RiskLevel.WRITE,
         "handler":     _handle_create_task,
     },
     "tool_complete_task": {
         "fn":          tool_complete_task,
         "carril":      "tool_complete_task",
         "descripcion": "Marca una tarea como completada",
+        "risk":        RiskLevel.WRITE,
         "handler":     _handle_complete_task,
     },
     "tool_update_work_state": {
         "fn":          tool_update_work_state,
         "carril":      "tool_update_work_state",
         "descripcion": "Actualiza work_state.json",
+        "risk":        RiskLevel.WRITE,
         "handler":     _handle_update_work_state,
     },
     "tool_set_session_goal": {
         "fn":          memory_manager.set_session_goal,
         "carril":      "tool_set_session_goal",
         "descripcion": "Guarda el objetivo de la sesión actual en work_state.json",
+        "risk":        RiskLevel.WRITE,
         "handler":     _handle_set_session_goal,
     },
 }
 
 
-def dispatch_tool(carril: str, user_input: str) -> str | None:
+def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
     """Despacha user_input al handler del carril indicado.
+
+    R6-A: retorna ToolResult estructurado en vez de str.
+    Usar en tests, métricas y cualquier código que necesite saber
+    si la tool tuvo éxito de forma programática.
+
+    Seguridad: rechaza tools con risk=SYSTEM (ninguna en producción actualmente).
 
     Args:
         carril:     Nombre del carril (ej. 'tool_save_fact').
         user_input: Texto crudo del usuario.
 
     Returns:
-        str con la respuesta lista para mostrar al usuario,
-        o None si el carril no está registrado en TOOLS.
+        ToolResult con ok=True/False, message, data, etc.
+        None si el carril no está registrado en TOOLS.
 
     Never raises.
     """
     entry = TOOLS.get(carril)
     if entry is None:
         return None
+
+    # Bloquear tools SYSTEM sin confirmación explícita
+    if entry.get("risk") == RiskLevel.SYSTEM:
+        return ToolResult(
+            ok=False,
+            message=f"⛔ La tool '{carril}' es de riesgo SYSTEM y requiere confirmación humana explícita.",
+            error_code="SYSTEM_TOOL_BLOCKED",
+            tool_name=carril,
+        )
+
     try:
-        return entry["handler"](user_input)
+        result_str = entry["handler"](user_input)
+        # Los handlers retornan str — envolvemos en ToolResult para consistencia
+        return ToolResult(
+            ok=True,
+            message=result_str,
+            tool_name=carril,
+        )
     except Exception as exc:
-        return f"Error interno en {carril}: {exc}"
+        return ToolResult(
+            ok=False,
+            message=f"Error interno en {carril}: {exc}",
+            error_code="INTERNAL_ERROR",
+            tool_name=carril,
+        )
+
+
+def dispatch_tool_str(carril: str, user_input: str) -> str | None:
+    """Wrapper de compatibilidad: retorna str en vez de ToolResult.
+
+    Usar en intelligence.py y cualquier caller que espere str.
+    Equivale al dispatch_tool() original antes de R6-A.
+
+    Args:
+        carril:     Nombre del carril.
+        user_input: Texto crudo del usuario.
+
+    Returns:
+        str con la respuesta lista para mostrar al usuario.
+        None si el carril no está registrado en TOOLS.
+
+    Never raises.
+    """
+    result = dispatch_tool(carril, user_input)
+    if result is None:
+        return None
+    return tool_result_to_str(result)
