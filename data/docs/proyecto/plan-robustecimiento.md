@@ -1,7 +1,7 @@
 # Plan de Robustecimiento — Fases R1 a R7
 
-> Última actualización: 19/05/2026
-> Estado general: **R1 ✅ COMPLETO | R2 ✅ COMPLETO (baseline numérico pendiente) | R3 ✅ COMPLETO | R4–R7 pendientes**
+> Última actualización: 25/05/2026
+> Estado general: **R1 ✅ | R2 ✅ | R3 ✅ | R4 ✅ Parcial | R5 ✅ Parcial + auditoría RAG en curso | R6 🔲 | R7 🔓**
 
 ## Por qué existe este plan
 
@@ -24,10 +24,10 @@ habitación, se revisan cañerías, electricidad y medidores.
 | Fase | Título | Prioridad | Estado |
 |---|---|---|---|
 | R1 | Endurecer contratos internos | 🔴 Fundamental | ✅ COMPLETO |
-| R2 | Observabilidad completa | 🔴 Fundamental | ✅ COMPLETO (baseline pendiente) |
+| R2 | Observabilidad completa | 🔴 Fundamental | ✅ COMPLETO (baseline con uso real) |
 | R3 | Evaluación real del sistema | 🟠 Intermedio | ✅ COMPLETO |
 | R4 | Robustecer memoria por capas | 🔴→🟠 F/I | ✅ Parcial |
-| R5 | Robustecer RAG antes de cambiar modelo | 🟠 Intermedio | ✅ Parcial |
+| R5 | Robustecer RAG + auditoría base documental | 🟠 Intermedio | ✅ Parcial — auditoría activa |
 | R6 | Tools seguras y previsibles | 🟠 Intermedio | 🔲 Pendiente |
 | R7 | Preparar cambios futuros de modelo | 🟡 Avanzado | 🔓 DESBLOQUEADO |
 
@@ -139,6 +139,7 @@ TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
 - `get_context_for(intent_type)` — selector por intención
 - `episode_store.py` con `search_episodes()` y `experience_lookup()`
 - Boost +0.15 para episodios exitosos
+- 5 capas documentadas en `data/docs/arquitectura-memoria.md`
 
 ### Pendiente 🔲
 
@@ -147,6 +148,7 @@ TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
 | R4-A | Definir comportamiento para preguntas que mezclan capas | `app/memory_manager.py` | Medio |
 | R4-B | Componer contexto explícito para mezclas episode + work_state | `app/memory_context.py` | Medio |
 | R4-C | Test: composición de capas no excede límite de tokens | `tests/test_memory_layer.py` | Bajo |
+| R4-D | Alinear `ProfileData` en `schemas.py` con claves reales de `profile.json` (`user_name`, `user_level`, `project_type`) | `app/schemas.py` | Bajo |
 
 ### Ejemplo de mezcla de capas (R4-A)
 
@@ -161,27 +163,49 @@ Después de R4-A:
 
 ---
 
-## R5 — Robustecer RAG antes de cambiar modelo
+## R5 — Robustecer RAG + auditoría base documental
 
 **Prioridad**: 🟠 Intermedio
-**Estado**: ✅ Parcial — MMR, fidelity_check y exclusiones ya implementados
+**Estado**: ✅ Parcial — MMR, fidelity_check y exclusiones implementados. Auditoría de docs en curso (25/05/2026).
 
 ### Ya implementado ✅
 
 - MMR con `lambda_mult=0.6`, `fetch_k=20`
 - `fidelity_check` con 3 reglas (sin docs, chunks vacíos, respuesta corta)
-- Exclusión de documentos vivos del índice (estado_proyecto.md, roadmap.md)
+- Exclusión de documentos vivos del índice (`estado_proyecto.md`, `roadmap.md`)
 - Detección de papers en retrieval
 - 269 chunks desde documentos curados
+- `paper-memgpt-resumen.md` actualizado a Fase 8 (25/05/2026)
+- `chroma-uso-proyecto.md` creado como reemplazo curado de `chroma-introduccion.md` (25/05/2026)
 
 ### Pendiente 🔲
 
-| Tarea | Descripción | Archivo | Riesgo |
-|---|---|---|---|
-| R5-A | Guardar qué docs fueron usados por respuesta | `app/rag_engine.py` + `metrics.py` | Bajo |
-| R5-B | Reporte "top docs más recuperados" para detectar ruido | `show_metrics.py` | Bajo |
-| R5-C | Evaluar retrieval con consultas fijas por categoría | `run_eval.py` | Bajo |
-| R5-D | Revisar chunking solo si hay fallos repetidos detectados por R5-C | `indexacion.py` | Medio |
+| Tarea | Descripción | Archivo | Riesgo | Prioridad |
+|---|---|---|---|---|
+| R5-A | Guardar qué docs fueron usados por respuesta | `app/rag_engine.py` + `metrics.py` | Bajo | Media |
+| R5-B | Reporte "top docs más recuperados" para detectar ruido | `show_metrics.py` | Bajo | Media |
+| R5-C | Evaluar retrieval con consultas fijas por categoría | `run_eval.py` | Bajo | Media |
+| R5-D | Revisar chunking solo si hay fallos repetidos detectados por R5-C | `indexacion.py` | Medio | Baja |
+| **R5-E** | **Excluir `chroma-introduccion.md` y `chroma-queries.md` del índice (scraping)** | `indexacion.py` | Bajo | **Alta** |
+| **R5-F** | **Verificar si `ollama-api.md` (56KB) está indexado y excluirlo si es así** | `indexacion.py` | Bajo | **Alta** |
+| **R5-G** | **Verificar e indexar `paper-lightmem-resumen.md`** | `indexacion.py` | Bajo | **Alta** |
+| **R5-H** | **Verificar indexación de los 6 ADRs** | `indexacion.py` | Bajo | Media |
+| **R5-I** | **Actualizar tabla base documental en `arquitectura_actual.md`** con lista real de indexados | `data/docs/proyecto/arquitectura_actual.md` | Bajo | **Alta** |
+
+### Documentos auditados el 25/05/2026
+
+| Documento | Estado | Acción tomada |
+|---|---|---|
+| `chroma-introduccion.md` | 🔴 Scraping web | Excluir del índice — reemplazado por `chroma-uso-proyecto.md` |
+| `chroma-queries.md` | 🔴 Scraping web | Excluir del índice |
+| `ollama-api.md` | 🔴 56KB sin curar | Verificar y excluir si indexado |
+| `paper-memgpt-resumen.md` | ✅ Actualizado | Sección de implementación alineada con Fase 8 |
+| `chroma-uso-proyecto.md` | ✅ Creado nuevo | Documento curado sobre Chroma para RAG |
+| `paper-lightmem-resumen.md` | ✅ Excelente | Verificar e indexar urgente |
+| `arquitectura-memoria.md` | ✅ El mejor del corpus | Indexado (citado en Telegram). Agregar a tabla base. |
+| `langchain-embeddings.md` | ✅ OK | Mantener |
+| `langchain-retriever.md` | ✅ OK | Mantener |
+| `langchain-rag-concepto.md` | ✅ OK | Mantener |
 
 ---
 
@@ -246,18 +270,21 @@ o de la arquitectura.
 
 ---
 
-## Orden recomendado — estado actualizado 19/05/2026
+## Orden recomendado — estado actualizado 25/05/2026
 
 ```
 ✅ R1 — Contratos internos
 ✅ R2 — Observabilidad (infraestructura lista, baseline con uso real)
 ✅ R3 — Evaluación 47 casos con run_eval.py
          ↓
-R4-A/B  (composición de capas mixtas)     ← siguiente
-R5-A/B  (auditabilidad RAG)               ← en paralelo con R4
+R4-D    (alinear ProfileData en schemas.py)               ← micro-tarea, riesgo bajo
+R5-E/F  (excluir docs scraping de indexacion.py)          ← URGENTE antes de re-indexar
+R5-G    (verificar e indexar paper-lightmem)              ← alta prioridad
+R4-A/B  (composición de capas mixtas)                     ← siguiente grande
+R5-A/B  (auditabilidad RAG en métricas)                   ← en paralelo con R4
 R6-A/B  (tools seguras)
          ↓
-R7      (comparar modelos con baseline)   ← DESBLOQUEADO
+R7      (comparar modelos con baseline)                   ← DESBLOQUEADO
 ```
 
 ---
@@ -265,6 +292,7 @@ R7      (comparar modelos con baseline)   ← DESBLOQUEADO
 ## Qué NO hacer durante este plan
 
 - ❌ Cambiar de modelo de embeddings sin correr `run_eval.py` primero
+- ❌ Re-indexar sin excluir primero `chroma-introduccion.md`, `chroma-queries.md` y `ollama-api.md`
 - ❌ Migrar a SQLite antes de que episodios superen ~500 entradas
 - ❌ Agregar multiagente antes de que un solo agente sea estable y medible
 - ❌ Agregar nuevas skills de Fase 9+ antes de completar R4–R5
