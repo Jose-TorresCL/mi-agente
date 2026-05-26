@@ -50,6 +50,7 @@ def record_turn(
     tokens_est: int = 0,
     cached: bool = False,
     num_docs: int = 0,
+    channel: str = "cli",
 ) -> None:
     """Escribe una entrada de métricas en storage/metrics.jsonl.
 
@@ -64,6 +65,7 @@ def record_turn(
         cached:       True si la respuesta vino del caché semántico.
         num_docs:     Número de documentos recuperados del retriever.
                       Solo es significativo en el carril 'rag'.
+        channel:      Origen de la pregunta ('cli' o 'telegram'). Default: 'cli'.
 
     Never raises.
     """
@@ -71,6 +73,7 @@ def record_turn(
         _METRICS_DIR.mkdir(parents=True, exist_ok=True)
         entry = {
             "timestamp":   datetime.now(timezone.utc).isoformat(),
+            "channel":     channel,
             "route":       route,
             "intent_type": intent_type,
             "retrieval_ms": retrieval_ms,

@@ -176,10 +176,17 @@ _EXIT_WORDS = {
     "nos vemos",
     "me voy", "cierro",
     "by",
+<<<<<<< HEAD
     # Fix exit-cerrar-sesion: variantes de cierre con frase compuesta
     "cerrar sesion", "cerrar la sesion",
     "terminar sesion", "terminar la sesion",
     "fin de sesion", "finalizar sesion",
+=======
+    "cerrar sesion", "cierra sesion", "cerrar la sesion",
+    "terminar sesion", "terminar la sesion",
+    "salida", "hasta manana",
+    "goodbye", "good bye",
+>>>>>>> f950f5e0 (ajusta evaluaciones, router y documentación)
 }
 
 
@@ -227,8 +234,7 @@ TOOL_READ_KEYWORDS = [
 MEMORY_PROFILE_KEYWORDS = [
     "mi estilo", "estilo preferido", "preferencia", "preferido",
     "como prefiero", "como trabajo",
-    "perfil", "mi perfil",
-    "quien soy", "quien soy yo",
+    "perfil", "mi perfil",'cerrar sesion', 'cierra la sesion', 'cerrar', 'terminar', 'terminar sesion', 'salida', 'hasta manana', 'hasta mañana', 'good bye', 'goodbye',"quien soy","quien soy yo" ,
     "como me llamo", "mi nombre", "cual es mi nombre",
 ]
 
@@ -239,7 +245,7 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "ultimo paso", "en que quedamos",
     "que hago hoy", "cual es el plan",
     "que hicimos", "en que estamos",
-    "cual es mi foco", "que estoy trabajando",
+    "cual es mi foco", "que estoy trabajando",                  
     "que estaba haciendo", "a que me dedico ahora",
 ]
 
@@ -349,14 +355,16 @@ TOOL_SET_SESSION_GOAL_KEYWORDS = [
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
-    "cuanto codigo",
+    "cuanto codigo", "cuantas lineas de codigo",   
     "tamano del proyecto", "peso del proyecto",
-    "cuantos archivos hay", "cuantos archivos tiene",
+    "cuantos archivos hay", "cuantos archivos tiene",   
+    "cuantas funciones hay", "cuantas funciones tiene",
+    "cuantas clases hay", "cuantas clases tiene",
     "cuantas funciones", "cuantas clases",
 ]
 
 RAG_HINTS = [
-    "segun los documentos",
+    "segun los documentos","como se usa","diferencia de","que es", "para que sirve", "componentes", "partes", "metodos",
     "segun la documentacion",
     "segun los archivos",
     "que dice", "que hace",
@@ -369,6 +377,9 @@ RAG_HINTS = [
     # Se evalúa DESPUÉS de AGENT_IDENTITY_KEYWORDS → 'qué eres' sigue a identity.
     "que es",
     "para que sirve",
+    "explicame", "explicame el", "explicame la",
+    "para que sirve el", "para que sirve la",
+   
 ]
 
 VALID_LANES = {
@@ -526,7 +537,8 @@ def format_estado() -> str:
 
 def route_query(question: str) -> str:
     """Clasifica la pregunta en el carril de ejecución correcto."""
-    if _normalize(question) in _EXIT_WORDS:
+    _q_norm = _normalize(question)
+    if _q_norm in _EXIT_WORDS or _q_norm.startswith(("_exit", "__exit")):
         return "exit"
 
     SESSION_STATS["total"] += 1

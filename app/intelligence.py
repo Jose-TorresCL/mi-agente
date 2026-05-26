@@ -522,6 +522,21 @@ def process_turn(
             tokens_est=0,
         )
 
+    # ── !estado ──────────────────────────────────────────────────────────────
+    if route == "!estado":
+        from app.router import format_estado
+        _record_metric(route="!estado", intent_type="!estado")
+        return DecisionResult(
+            route="!estado",
+            response=format_estado(),
+            cached=False,
+            source="direct",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
+
     # ── tool_list_files ─────────────────────────────────────────────────────
     if route == "tool_list_files":
         answer = handle_list_files(user_input)

@@ -67,9 +67,10 @@ def generate_raw(
     """
     try:
         llm = get_llm().bind(
-            temperature=temperature,
-            num_predict=num_predict,
-            timeout=timeout,
+            options={
+                "temperature": temperature,
+                "num_predict": num_predict,
+            },
         )
         result = llm.invoke([HumanMessage(content=prompt)])
         text = result.content.strip() if hasattr(result, "content") else str(result).strip()

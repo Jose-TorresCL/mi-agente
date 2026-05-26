@@ -239,6 +239,13 @@ def tool_set_session_goal(content: str) -> str:
     if not content:
         return "No pude guardar el objetivo: el contenido está vacío."
 
+    _QUESTION_STARTS = (
+        "cuál es", "cual es", "cuál", "qué es", "que es",
+        "dime", "muéstrame", "muestrame", "cuéntame", "cuentame",
+    )
+    if content.lower().startswith(_QUESTION_STARTS) or content.endswith("?"):
+        return "ℹ️ No detecté un objetivo concreto. Dime: 'mi objetivo hoy es…'"
+
     _mm_set_session_goal(content)
     return f"✅ Objetivo de sesión guardado: '{content}'"
 

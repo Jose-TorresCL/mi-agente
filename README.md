@@ -40,7 +40,8 @@ mi-agente/
 ├── indexacion.py              # Indexa documentos en ChromaDB
 ├── requirements.txt           # Dependencias
 │
-├── app/                       # Módulos del asistente
+├── app/                       # Módulos del asistente (26 módulos)
+│   ├── __init__.py            # Inicialización del paquete
 │   ├── intelligence.py        # Orquestador principal (9 carriles)
 │   ├── router.py              # Router híbrido 3 capas
 │   ├── rag_engine.py          # Motor RAG
@@ -50,15 +51,21 @@ mi-agente/
 │   ├── episode_store.py       # Almacén de episodios y experiencias
 │   ├── fidelity_check.py      # Verificación de calidad de respuesta
 │   ├── semantic_cache.py      # Caché semántica de consultas
-│   ├── tools.py               # Herramientas ejecutables por el agente
+│   ├── llm_client.py          # Cliente Ollama unificado
+│   ├── tools.py               # Herramientas ejecutables (5)
 │   ├── tool_registry.py       # Registro de herramientas disponibles
-│   ├── tool_helpers.py        # Utilidades para ejecución de herramientas
-│   ├── schemas.py             # Tipos, enums y estructuras de datos
+│   ├── tool_helpers.py        # Utilidades para herramientas
+│   ├── schemas.py             # TypedDict — contratos de datos
 │   ├── metrics.py             # Registro de métricas por turno
-│   ├── chat_core.py           # Lógica core del chat
-│   ├── chat_ui.py             # Interfaz de usuario en terminal
+│   ├── chat_core.py           # Orquestación de turno e historial
+│   ├── chat_ui.py             # Interfaz de usuario (terminal + Telegram)
 │   ├── session_state.py       # Estado de sesión activa
 │   ├── prompts.py             # Plantillas de prompts
+│   ├── formatters.py          # Formatos de respuesta
+│   ├── text_utils.py          # Normalización de texto
+│   ├── logger.py              # Logging estructurado
+│   ├── intent_index.py        # Interfaz de intent_index (Capa 2)
+│   ├── indexing_core.py       # Core de indexación de documentos
 │   └── config.py              # Configuración centralizada
 │
 ├── docs/                      # Documentación del proyecto
@@ -73,6 +80,46 @@ mi-agente/
 
 > `storage/` (ChromaDB e índices) y `.venv/` se generan localmente
 > y no están en el repositorio.
+
+---
+
+## Carriles de Enrutamiento (Router Híbrido — 16 carriles)
+
+El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
+
+### Herramientas (7 carriles)
+- `tool_list_files` — Listar archivos del proyecto
+- `tool_read_file` — Leer contenido de archivo
+- `tool_save_fact` — Guardar hecho en memoria
+- `tool_create_task` — Crear tarea nueva
+- `tool_complete_task` — Marcar tarea como completada
+- `tool_update_work_state` — Actualizar foco de trabajo
+- `tool_set_session_goal` — Guardar objetivo de sesión
+
+### Memoria (6 carriles)
+- `memory` — Consulta genérica de memoria
+- `memory:profile` — Consultar perfil del usuario
+- `memory:work_state` — Consultar foco actual
+- `memory:tasks` — Listar tareas
+- `memory:project_facts` — Consultar hechos del proyecto
+- `memory:episode` — Consultar sesiones anteriores
+
+### Especiales (3 carriles)
+- `identity` — Preguntas sobre el agente (respuesta hardcodeada)
+- `rag` — Consultas a documentos (RAG)
+- `unsupported` — Solicitudes no soportadas
+
+---
+
+## Herramientas Disponibles (5)
+
+El agente puede ejecutar estas herramientas sin pasar por el LLM:
+
+- `tool_save_fact(content)` — Guarda hecho en `project_facts.json`
+- `tool_create_task(title, priority, notes)` — Crea tarea en `tasks.json`
+- `tool_complete_task(task_id)` — Marca tarea como completada
+- `tool_update_work_state(field, value)` — Actualiza `work_state.json`
+- `tool_set_session_goal(content)` — Guarda objetivo de sesión
 
 ---
 
