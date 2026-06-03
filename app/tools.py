@@ -358,6 +358,18 @@ def tool_set_session_goal(content: str) -> ToolResult:
         tool_name="tool_set_session_goal",
     )
 
+def toolresult_to_str(result: ToolResult) -> str:
+    """Convierte ToolResult en texto plano seguro para AIMessage."""
+    if not isinstance(result, ToolResult):
+        return str(result)
+
+    msg = result.message or ""
+    if result.data:
+        import json
+        extra = json.dumps(result.data, ensure_ascii=False)
+        msg += f"\n[datos: {extra}]"
+    return msg
+
 
 # ─────────────────────────────────────────────
 # Sugerencia automática post-actualización
@@ -401,3 +413,4 @@ def suggest_next_step() -> str:
         lines.append(f"  ✅  Último completado: {last_done}")
 
     return "\n".join(lines)
+

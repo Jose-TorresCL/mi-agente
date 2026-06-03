@@ -2,20 +2,22 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from turtle import update
 from typing import TypedDict
-
+from app.memory_manager import get_session_briefing
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes,
 )
-
 from app.chat_core import build_memory, handle_query
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
+from langchain_core.messages import AIMessage
 from app.config import CHROMA_DIR, OLLAMA_URL
 from app.logger import get_logger
+from app.tools import toolresult_to_str
 
 load_dotenv()
 TOKEN       = os.getenv("TELEGRAM_TOKEN")
@@ -88,25 +90,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja mensajes de texto del usuario en Telegram.
+    
+    Lógica:
+      1. Si es primer mensaje del usuario: crear sesión + inyectar briefing UNA VEZ.
+      2. Procesar el mensaje con handle_query (usa historial persistente).
+      3. Responder y mostrar fuentes si las hay.
+    """
     user_id   = update.effective_user.id
     user_text = update.message.text.strip()
 
     if not user_text:
         return
 
-    # Crear sesión nueva si es el primer mensaje
+    # ─ Crear sesión SOLO si es la primera vez ─
     if user_id not in sessions:
         sessions[user_id] = {"history": build_memory()}
         _persist_sessions(sessions)
+        
+        # Inyectar briefing UNA sola vez al arrancar sesión
+        try:
+            briefing = get_session_briefing()
+            if briefing:
+                lines = []
+                foco = briefing.get("foco", "").strip()
+                goal = briefing.get("session_goal", "").strip()
+                state = briefing.get("session_state", "drifting")
+                suggestion = briefing.get("suggestion", "").strip()
+                
+                if foco:
+                    lines.append(f"🎯 **Foco:** {foco}")
+                if goal:
+                    lines.append(f"💡 **Objetivo:** {goal}")
+                lines.append(f"📊 **Estado:** {state}")
+                if suggestion:
+                    lines.append(f"→ {suggestion}")
+                
+                if lines:
+                    briefing_text = "\n".join(lines)
+                    sessions[user_id]["history"].insert(
+                        0, AIMessage(content=f"[Briefing de arranque]\n{briefing_text}")
+                    )
+        except Exception as e:
+            log.debug("[telegram] Session briefing no disponible: %s", e)
 
-    # Avisar que está procesando (Ollama puede tardar)
+    # ─ Avisar que está procesando (Ollama puede tardar) ─
     await update.message.reply_text("⏳ Pensando...")
 
     try:
         answer, source_docs = handle_query(
             user_text, vector_db, sessions[user_id]["history"]
         )
-        await update.message.reply_text(answer)
+        safe_answer = toolresult_to_str(answer)
+        await update.message.reply_text(safe_answer)
 
         # Mostrar fuentes si las hay
         if source_docs:
@@ -122,9 +158,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset — borra el historial de la sesión."""
+    """/reset — borra el historial de la sesión y muestra briefing nuevo."""
     user_id = update.effective_user.id
     sessions[user_id] = {"history": build_memory()}
+    _persist_sessions(sessions)
+    
+    # Inyectar briefing en la sesión nueva
+    try:
+        briefing = get_session_briefing()
+        if briefing:
+            lines = []
+            foco = briefing.get("foco", "").strip()
+            goal = briefing.get("session_goal", "").strip()
+            state = briefing.get("session_state", "drifting")
+            suggestion = briefing.get("suggestion", "").strip()
+            
+            if foco:
+                lines.append(f"🎯 **Foco:** {foco}")
+            if goal:
+                lines.append(f"💡 **Objetivo:** {goal}")
+            lines.append(f"📊 **Estado:** {state}")
+            if suggestion:
+                lines.append(f"→ {suggestion}")
+            
+            if lines:
+                briefing_text = "\n".join(lines)
+                sessions[user_id]["history"].insert(
+                    0, AIMessage(content=f"[Briefing de arranque]\n{briefing_text}")
+                )
+    except Exception as e:
+        log.debug("[telegram] Session briefing en reset no disponible: %s", e)
+    
     await update.message.reply_text("🔄 Historial borrado. Empezamos de nuevo.")
 
 
