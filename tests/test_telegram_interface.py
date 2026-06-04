@@ -166,7 +166,7 @@ def test_sessions_file_path_es_valido():
     from pathlib import Path
     
     assert isinstance(SESSIONS_FILE, Path)
-    assert str(SESSIONS_FILE) == "storage/telegram_sessions.json"
+    assert SESSIONS_FILE.as_posix() == "storage/telegram_sessions.json"
 
 
 # ──────────────────────────────────────────────
@@ -194,10 +194,15 @@ def test_load_sessions_maneja_archivo_ilegible(tmp_path, monkeypatch, caplog):
     # Crear un "archivo" que no se puede leer
     fake_sessions_file.write_text('{"123": true}')
     
-    monkeypatch.setattr(
-        "telegram_interface.SESSIONS_FILE.read_text",
-        side_effect=PermissionError("Access denied")
-    )
+    # Replace module SESSIONS_FILE with a lightweight object whose
+    # read_text raises PermissionError to simulate an unreadable file.
+    class _UnreadableFile:
+        def exists(self):
+            return True
+        def read_text(self, encoding="utf-8"):
+            raise PermissionError("Access denied")
+
+    monkeypatch.setattr("telegram_interface.SESSIONS_FILE", _UnreadableFile())
     
     # Mock de exists para que devuelva True
     with patch("telegram_interface.SESSIONS_FILE.exists", return_value=True):

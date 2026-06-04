@@ -357,6 +357,28 @@ def get_session_briefing() -> dict:
 
     suggestion = _build_suggestion(state, ws, task_classes)
 
+    # Freshness score: simple decay based on days since last episode (30d window)
+    def _days_since_iso(iso: str | None) -> int | None:
+        if not iso:
+            return None
+        try:
+            return (datetime.now() - datetime.fromisoformat(iso)).days
+        except Exception:
+            return None
+
+    freshness = 0.0
+    # Prefer episodic recency
+    last_ep_date = last_ep.get("date") if last_ep else None
+    days = _days_since_iso(last_ep_date)
+    if days is not None:
+        freshness = max(0.0, 1.0 - min(days, 30) / 30.0)
+    else:
+        # fallback: use most recent task updated_at/created_at
+        task_dates = [t.get("updated_at") or t.get("created_at") for t in tasks]
+        task_days = [d for d in (_days_since_iso(d) for d in task_dates) if d is not None]
+        if task_days:
+            freshness = max(0.0, 1.0 - min(task_days) / 30.0)
+
     return {
         "foco":           ws.get("current_focus", ""),
         "session_goal":   ws.get("session_goal", ""),
@@ -367,6 +389,7 @@ def get_session_briefing() -> dict:
         "last_episode":   last_ep,
         "session_state":  state,
         "suggestion":     suggestion,
+        "freshness_score": round(freshness, 3),
     }
 
 

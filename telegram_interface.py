@@ -28,6 +28,15 @@ log         = get_logger(__name__)
 # Tipo explícito de sesión por usuario
 # ─────────────────────────────────────────────
 
+# Un stub inicial con `run_polling` para que `patch("telegram_interface.app.run_polling")`
+# no falle al importar el módulo (el `main()` sobrescribe esta variable).
+class _AppStub:
+    def run_polling(self):
+        pass
+
+# Objeto `app` visible en el módulo (será sobrescrito por `main()`).
+app = _AppStub()
+
 class UserSession(TypedDict):
     history: list   # LangChain messages (HumanMessage / AIMessage)
 

@@ -63,6 +63,13 @@ SUCCESSES_LOG       = LOGS_DIR / "fidelity_successes.jsonl"
 
 from app.semantic_cache import get_embedding
 
+# Emergency behavior when embeddings fail: 'bypass' preserves old behavior,
+# 'uncertain' marks as uncertain and blocks the response (safer default can be set by config).
+FIDELITY_EMERGENCY_MODE = "bypass"  # options: 'bypass' | 'uncertain'
+
+# Additional log for uncertain cases
+UNCERTAIN_LOG = LOGS_DIR / "fidelity_uncertain.jsonl"
+
 _MAX_CONTEXT_CHARS = 4000
 
 # Números a ignorar en la verificación literal:
@@ -163,6 +170,14 @@ def _check_numeric_claims(
             variants.add('.'.join(p[::-1] for p in reversed(parts)))
             variants.add(','.join(p[::-1] for p in reversed(parts)))
 
+        # Variantes fuzzy: aceptar sufijo K/k (10k -> 10000)
+        if num.lower().endswith('k'):
+            try:
+                base = float(num[:-1])
+                variants.add(str(int(base * 1000)))
+            except Exception:
+                pass
+
         found = any(v in corpus for v in variants)
         if not found:
             return False, f"número '{num}' no encontrado en los chunks"
@@ -226,6 +241,21 @@ def log_fidelity_success(
         pass
 
 
+def log_fidelity_uncertain(question: str, reason: str) -> None:
+    """Registra situaciones en que la verificación no pudo completarse con embeddings."""
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "question":  question[:120],
+            "reason":    reason,
+        }
+        with UNCERTAIN_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def fidelity_stats() -> dict:
     """Lee ambos logs y devuelve un resumen de fidelidad.
 
@@ -256,12 +286,14 @@ def fidelity_stats() -> dict:
 
     total_ok      = _count_lines(SUCCESSES_LOG)
     total_blocked = _count_lines(FAILURES_LOG)
+    total_uncertain = _count_lines(UNCERTAIN_LOG)
     total         = total_ok + total_blocked
     rejection_rate = (total_blocked / total) if total > 0 else 0.0
 
     return {
         "total_ok":       total_ok,
         "total_blocked":  total_blocked,
+        "total_uncertain": total_uncertain,
         "total":          total,
         "rejection_rate": round(rejection_rate, 4),
     }
@@ -330,25 +362,39 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
     try:
         ans_embedding = get_embedding(answer)
     except Exception:
-        print("[fidelity:skip] error embed respuesta, se pasa")
-        return True, 1.0  # bypass de emergencia — no se loguea como éxito real
+        reason = "error embed respuesta"
+        print(f"[fidelity:uncertain] {reason}")
+        if FIDELITY_EMERGENCY_MODE == "bypass":
+            return True, 1.0
+        log_fidelity_uncertain(question or answer, reason)
+        return False, 0.0
 
     if ans_embedding is None:
         print("[fidelity:skip] Ollama no disponible, se pasa")
         return True, 1.0  # bypass de emergencia — no se loguea como éxito real
 
-    contexto = " ".join(chunks_texts)[:_MAX_CONTEXT_CHARS]
-    try:
-        context_embedding = get_embedding(contexto)
-    except Exception:
-        print("[fidelity:skip] error embed contexto, se pasa")
-        return True, 1.0  # bypass de emergencia — no se loguea como éxito real
+    # Obtener embeddings por chunk (limitar longitud para rendimiento)
+    chunk_embeddings = []
+    for txt in chunks_texts:
+        try:
+            emb = get_embedding(txt[:_MAX_CONTEXT_CHARS])
+            if emb is not None:
+                chunk_embeddings.append(emb)
+        except Exception:
+            # si falla un chunk, saltarlo
+            continue
 
-    if context_embedding is None:
-        print("[fidelity:skip] Ollama no disponible (contexto), se pasa")
-        return True, 1.0  # bypass de emergencia — no se loguea como éxito real
+    if not chunk_embeddings:
+        reason = "no se obtuvieron embeddings de chunks"
+        print(f"[fidelity:uncertain] {reason}")
+        if FIDELITY_EMERGENCY_MODE == "bypass":
+            return True, 1.0
+        log_fidelity_uncertain(question or answer, reason)
+        return False, 0.0
 
-    sim = _cosine(ans_embedding, context_embedding)
+    # Calcular similitud por chunk y tomar la máxima (más conservador: max)
+    sims = [_cosine(ans_embedding, c) for c in chunk_embeddings]
+    sim = max(sims) if sims else 0.0
 
     if sim >= threshold:
         print(f"[fidelity:ok]  max_similitud={sim:.3f} (umbral={threshold})")

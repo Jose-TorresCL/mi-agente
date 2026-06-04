@@ -78,7 +78,7 @@ from app.rag_engine import retrieve_context, build_chain, generate_raw
 from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
-from app.tool_registry import TOOLS, dispatch_tool
+from app.tool_registry import TOOLS, dispatch_tool_str
 from app.prompts import (
     QA_SYSTEM_PROMPT,
     MEMORY_SYNTHESIS_PROMPT,
@@ -97,7 +97,7 @@ from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
-_EPISODE_TIMEOUT           = 20
+_EPISODE_TIMEOUT           = 40
 _MEMORY_SYNTHESIS_TIMEOUT  = 30
 _HISTORY_LINE_MAX          = 80
 _CACHE_MIN_SCORE           = 0.55
@@ -555,7 +555,7 @@ def process_turn(
     # ── tools registradas ───────────────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
-        answer = dispatch_tool(route, user_input)
+        answer = dispatch_tool_str(route, user_input)
         llm_ms = int((time.perf_counter() - t0) * 1000)
         _record_metric(route=route, intent_type=route, llm_ms=llm_ms)
         return DecisionResult(
