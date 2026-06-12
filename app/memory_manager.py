@@ -48,6 +48,11 @@ Interfaces públicas:
     complete_task(task_id)          → None
     record_episode(summary, turns)  → None
 
+  Flujo episódico → tareas (main_memory_flow):
+    suggest_new_tasks(episodes)     → list[dict] de tareas sugeridas (no persiste)
+    add_task_to_memory(task)        → str ID de tarea creada (persiste en tasks.json)
+    main_memory_flow()              → int número de tareas nuevas añadidas
+
 Anotaciones MemoryType (8D):
   Cada función pública indica qué capa de memoria accede.
   Ver app.schemas.MemoryType para la definición del enum.
@@ -577,6 +582,25 @@ def create_task_from_episode(episode: dict) -> dict:
 
 
 def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
+    """Analiza episodios pasados y genera sugerencias de tareas nuevas.
+
+    Recorre cada episodio y detecta si el resumen menciona decisiones,
+    tareas o acciones pendientes. Si encuentra señales, construye un
+    dict de tarea con título, prioridad y notas — pero NO persiste nada.
+    La persistencia la hace add_task_to_memory() o main_memory_flow().
+
+    Args:
+        episodes: Lista de dicts de episodio tal como los devuelve
+                  load_episodes() — cada uno con 'summary', 'date', 'time'.
+
+    Returns:
+        Lista de dicts con claves 'title', 'priority', 'notes'.
+        Lista vacía si ningún episodio tiene señales de acción.
+
+    Nota: esta función es idempotente (no tiene side-effects). Puede
+    llamarse varias veces con los mismos episodios sin riesgo de
+    duplicados — los duplicados los filtra create_task() al persistir.
+    """
     new_tasks: list[dict] = []
     for episode in episodes:
         summary = str(episode.get("summary", "")).lower()
@@ -590,6 +614,26 @@ def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
 
 
 def add_task_to_memory(task: dict | str) -> str:
+    """Persiste una tarea sugerida en tasks.json.
+
+    Acepta dos formatos:
+      - str:  título directo de la tarea (prioridad 'medium', sin notas).
+      - dict: dict con claves 'title', 'priority' (opcional) y 'notes' (opcional),
+              tal como lo genera suggest_new_tasks() / create_task_from_episode().
+
+    Delega en create_task(), que deduplicada por título antes de escribir:
+    si ya existe una tarea pendiente con el mismo título, devuelve su ID
+    sin crear una nueva.
+
+    Args:
+        task: Título (str) o dict de tarea.
+
+    Returns:
+        ID de la tarea creada o encontrada (ej. 'T-042').
+        Cadena vacía si el input es inválido o el título está vacío.
+
+    Side-effect: escribe en storage/tasks.json si la tarea es nueva.
+    """
     if isinstance(task, str):
         return create_task(task)
     if not isinstance(task, dict):
@@ -602,6 +646,30 @@ def add_task_to_memory(task: dict | str) -> str:
 
 
 def main_memory_flow() -> int:
+    """Flujo principal de sincronización episodio → tareas.
+
+    Ejecuta el ciclo completo de conversión de episodios en tareas accionables:
+      1. Carga todos los episodios registrados (load_episodes).
+      2. Analiza sus resúmenes buscando señales de acción (suggest_new_tasks).
+      3. Persiste cada sugerencia nueva en tasks.json (add_task_to_memory).
+
+    Uso típico:
+      - Llamar al arranque de sesión para que Lautaro tenga las tareas
+        derivadas de sesiones anteriores disponibles desde el primer turno.
+      - También puede llamarse manualmente desde la CLI o tests de integración.
+
+    Returns:
+        Número de tareas nuevas añadidas en esta ejecución (0 si no había
+        episodios con señales de acción o si todas ya existían como pendientes).
+
+    Side-effects:
+      - Lee storage/episodes.json (o equivalente).
+      - Puede escribir en storage/tasks.json si hay tareas nuevas.
+      - No modifica ni elimina tareas existentes.
+
+    Advertencia: si se llama en bucle rápido, create_task() evita duplicados
+    pero genera entradas de log repetidas. Llamar una vez por sesión es suficiente.
+    """
     episodes = load_episodes()
     suggested_tasks = suggest_new_tasks(episodes)
     added = 0

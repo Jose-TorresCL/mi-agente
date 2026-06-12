@@ -461,8 +461,44 @@ def fidelity_check(
     question: str = "",
     mode: str = "numeric",
 ) -> tuple[bool, float]:
+    """Punto de entrada alternativo a verify_fidelity con selección explícita de modo.
+
+    A diferencia de verify_fidelity() (que siempre usa mode='numeric'),
+    esta función permite elegir la estrategia de validación según el carril:
+
+    Modos disponibles:
+
+      mode='numeric'  (por defecto)
+        Usa numeric_validation() → _validate_fidelity(numeric_strict=True).
+        Además de similitud semántica, verifica que cada número de la respuesta
+        aparezca literalmente en los chunks fuente.
+        Cuándo usarlo: carriles técnicos o documentales ('rag') donde el LLM
+        podría inventar cifras precisas con alta similitud semántica.
+        Ejemplo: '¿Cuántas líneas tiene router.py?' — si el LLM dice '342 líneas'
+        pero el chunk no lo menciona, se bloquea aunque la similitud sea 0.80.
+
+      mode='semantic'
+        Usa semantic_validation() → _validate_fidelity(numeric_strict=False).
+        Solo verifica similitud coseno contra el umbral dinámico.
+        Cuándo usarlo: carriles donde los números son estimaciones o contexto
+        (memory, work_state, tasks) y un bloqueo numérico falso empeoraría la UX.
+        Ejemplo: 'tengo 3 tareas pendientes' — el 3 viene del JSON de memoria,
+        no de un chunk RAG, así que la verificación numérica literal no aplica.
+
+    Args:
+        answer:      Texto generado por el LLM.
+        source_docs: Lista de Document del retriever (puede ser [] para memoria).
+        question:    Pregunta original (para umbral dinámico).
+        mode:        'numeric' | 'semantic'. Lanza ValueError si es otro valor.
+
+    Returns:
+        tuple[bool, float]: mismo contrato que verify_fidelity().
+
+    Raises:
+        ValueError: si mode no es 'numeric' ni 'semantic'.
+    """
     if mode == "numeric":
         return numeric_validation(answer, source_docs, question)
     elif mode == "semantic":
         return semantic_validation(answer, source_docs, question)
-    raise ValueError("Modo de validación no soportado")
+    raise ValueError(f"Modo de validación no soportado: '{mode}'. Usa 'numeric' o 'semantic'.")
