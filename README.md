@@ -8,7 +8,7 @@ usando modelos locales a través de Ollama.
 
 ## ¿Qué hace?
 
-- Clasifica cada consulta por intención (9 carriles) antes de responder
+- Clasifica cada consulta por intención (16 carriles) antes de responder
 - Recupera documentos relevantes con RAG + caché semántica anti-repetición
 - Mantiene memoria en 4 capas: trabajo, episódica, semántica y larga duración
 - Verifica calidad de respuesta antes de entregarla (fidelity check)
@@ -42,7 +42,7 @@ mi-agente/
 │
 ├── app/                       # Módulos del asistente (26 módulos)
 │   ├── __init__.py            # Inicialización del paquete
-│   ├── intelligence.py        # Orquestador principal (9 carriles)
+│   ├── intelligence.py        # Orquestador principal (16 carriles)
 │   ├── router.py              # Router híbrido 3 capas
 │   ├── rag_engine.py          # Motor RAG
 │   ├── memory_manager.py      # Guardián único de lectura/escritura de memoria
@@ -69,7 +69,7 @@ mi-agente/
 │   └── config.py              # Configuración centralizada
 │
 ├── docs/                      # Documentación del proyecto
-│   ├── adr/                   # Decisiones de arquitectura (ADR-001 a ADR-006)
+│   ├── adr/                   # Decisiones de arquitectura (ADR-001 a ADR-008)
 │   ├── vision-agente.md       # Visión y hoja de ruta
 │   ├── arquitectura-memoria.md # Detalle de las 4 capas de memoria
 │   └── hardware-modelos.md    # Hardware y modelos recomendados
@@ -108,6 +108,9 @@ El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
 - `identity` — Preguntas sobre el agente (respuesta hardcodeada)
 - `rag` — Consultas a documentos (RAG)
 - `unsupported` — Solicitudes no soportadas
+
+> Nota: los 9 carriles originales se refinaron en subtipos de memoria.
+> La arquitectura actual trabaja con 16 carriles lógicos documentados arriba.
 
 ---
 
@@ -201,6 +204,8 @@ python run_eval.py
 | [ADR-004](docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
 | [ADR-005](docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
 | [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
+| [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
+| [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
 | [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
 | [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
 | [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
