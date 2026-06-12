@@ -3,6 +3,27 @@
 Responsabilidad única: leer los JSON de storage/ y devolver
 un string listo para inyectar en el system prompt.
 
+Fuentes que combina build_memory_context()
+──────────────────────────────────────────
+  storage/profile.json          → perfil del usuario (nombre, nivel, tipo de proyecto)
+  storage/project_facts.json    → hechos persistentes del proyecto (clave-valor libre)
+  storage/work_state.json       → estado operativo actual (foco, último paso, siguiente
+                                  paso, fase, objetivo de sesión, bloqueos)
+  storage/tasks.json            → lista de tareas; se muestran solo las 3 primeras
+                                  no completadas (status != 'done' / 'completed')
+  storage/episodic_memory.json  → último episodio registrado (via load_last_episode())
+
+Filtrado de campos vacíos (Día 2):
+  Los campos de work_state se muestran solo si tienen valor no vacío.
+  Esto evita líneas tipo "- Siguiente paso: " que confunden al LLM.
+
+Fuentes que combina get_selective_context() por carril
+───────────────────────────────────────────────────────
+  memory   → todas las fuentes (contexto completo)
+  rag      → solo profile.json + project_facts.json (3 campos clave)
+  tool_*   → sin fuentes (las tools leen storage/ directamente)
+  otros    → todas las fuentes (fallback seguro)
+
 Cambios Día 2:
   - build_memory_context(): filtra campos vacíos en work_state para no
     contaminar el prompt con líneas tipo "- Siguiente paso: ".
@@ -22,10 +43,27 @@ from app.memory_store import (
 
 
 def build_memory_context() -> str:
-    """Lee todos los JSON y construye el texto de contexto para el LLM.
+    """Lee todos los JSON de storage/ y construye el texto de contexto para el LLM.
 
-    Cambio Día 2: los campos de work_state se muestran solo si tienen valor
-    no vacío, evitando líneas huecas como "- Siguiente paso: " en el prompt.
+    Fuentes combinadas (en orden de aparición en el prompt):
+      1. storage/profile.json        — nombre, nivel y tipo de proyecto del usuario.
+      2. storage/project_facts.json  — hechos clave-valor persistentes del proyecto.
+      3. storage/work_state.json     — estado operativo: foco actual, último paso
+                                       completado, siguiente paso, fase, objetivo de
+                                       sesión y bloqueos activos.
+                                       Solo se incluyen campos con valor no vacío
+                                       (filtro Día 2 — evita líneas huecas en el prompt).
+      4. storage/tasks.json          — las 3 tareas pendientes con mayor prioridad
+                                       (status != 'done' ni 'completed').
+      5. storage/episodic_memory.json — el último episodio registrado (fecha, hora,
+                                       turnos y resumen) para contextualizar la sesión.
+
+    Returns:
+        str — texto multilínea listo para inyectar en {memory_context} del prompt.
+              Cadena vacía si no hay ninguna fuente disponible.
+
+    Never raises: si un JSON no existe o falla la carga, esa sección se omite
+    silenciosamente. El llamador siempre recibe un string válido.
     """
     profile       = load_profile()
     project_facts = load_project_facts()
@@ -63,7 +101,7 @@ def build_memory_context() -> str:
         ]
         for key, label in _ws_fields:
             value = work_state.get(key, "").strip()
-            if value:  # <── Día 2: omitir si vacío
+            if value:  # Día 2: omitir si vacío para no generar líneas huecas
                 ws_lines.append(f"- {label}: {value}")
 
         blockers = work_state.get("current_blockers", [])
@@ -105,18 +143,33 @@ def get_selective_context(route: str) -> str:
     """Devuelve contexto de memoria filtrado según el carril de enrutamiento.
 
     El objetivo es inyectar solo lo relevante para cada tipo de consulta,
-    en lugar del contexto completo siempre.
+    en lugar del contexto completo siempre. Esto reduce el tamaño del prompt
+    y evita que información de estado operativo distraiga al LLM en consultas
+    puramente documentales (carril 'rag').
 
-    Carriles y contexto que incluyen:
-      memory   → perfil + hechos + work_state + tareas + episodio
-                 (contexto completo — Día 2: work_state garantizado)
-      rag      → perfil + hechos (para que el LLM sepa quién es el usuario
-                 y en qué proyecto trabaja, pero no el estado operativo)
-      tool_*   → sin contexto — las tools leen directamente de storage/
-      otros    → contexto completo como fallback seguro
+    Decisión de diseño por carril:
+      memory   → contexto completo (profile + facts + work_state + tasks + episodio).
+                 El LLM necesita todo para responder sobre estado del proyecto.
+                 Día 2: work_state garantizado en este carril.
+
+      rag      → solo profile + facts (3 campos clave de project_facts).
+                 El LLM sabe en qué proyecto trabaja el usuario, pero no recibe
+                 estado operativo que no aporta al retrieval documental y podría
+                 contaminar la síntesis de fuentes.
+
+      tool_*   → sin contexto. Las tools leen storage/ directamente — inyectar
+                 memoria en el prompt sería redundante y aumentaría la latencia.
+
+      otros    → contexto completo como fallback seguro. Preferible sobre-informar
+                 que dejar al LLM sin datos en un carril nuevo o no previsto.
+
+    Args:
+        route: carril devuelto por el router. Ejemplos: 'memory', 'rag',
+               'tool_read_file', 'identity', 'episode'.
 
     Returns:
-        str listo para inyectar en el system prompt.
+        str listo para inyectar en el system prompt. Puede ser cadena vacía
+        para carriles tool_*.
     """
     if route == "memory":
         # Contexto completo: el LLM necesita todo para responder sobre estado
