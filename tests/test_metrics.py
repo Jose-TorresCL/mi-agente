@@ -67,6 +67,13 @@ def test_cached_true_se_refleja(metrics_tmp):
     assert entry["cached"] is True
 
 
+def test_graba_canal_telegram(metrics_tmp):
+    import app.metrics as m
+    m.record_turn(route="rag", channel="telegram")
+    entry = json.loads(metrics_tmp.read_text(encoding="utf-8").strip())
+    assert entry["channel"] == "telegram"
+
+
 def test_total_ms_suma_correcta(metrics_tmp):
     import app.metrics as m
     m.record_turn(route="rag", retrieval_ms=300, llm_ms=1500)

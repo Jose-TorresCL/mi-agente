@@ -51,6 +51,7 @@ import json
 import math
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 FIDELITY_THRESHOLD  = 0.55
@@ -122,30 +123,78 @@ def _extract_numbers(text: str) -> set[str]:
     return result
 
 
+def _normalize_number_token(token: str) -> str | None:
+    """Normaliza un token numérico para comparación numérica.
+
+    Convierte variantes de miles/decimales, porcentajes y sufijos K/k a un valor canónico.
+    """
+    token = token.strip()
+    if not token:
+        return None
+
+    is_percent = token.endswith('%')
+    if is_percent:
+        token = token[:-1].strip()
+
+    is_k = token.lower().endswith('k')
+    if is_k:
+        token = token[:-1].strip()
+
+    token = token.replace(' ', '')
+    if not token:
+        return None
+
+    if token.count('.') > 0 and token.count(',') > 0:
+        if token.rfind(',') > token.rfind('.'):
+            token = token.replace('.', '').replace(',', '.')
+        else:
+            token = token.replace(',', '')
+    elif token.count(',') > 0:
+        if len(token.split(',')[-1]) == 3:
+            token = token.replace(',', '')
+        else:
+            token = token.replace(',', '.')
+    elif token.count('.') > 0:
+        if len(token.split('.')[-1]) == 3:
+            token = token.replace('.', '')
+
+    try:
+        value = Decimal(token)
+    except InvalidOperation:
+        return None
+
+    if value == value.to_integral():
+        normalized = str(int(value))
+    else:
+        normalized = format(value.normalize(), 'f')
+
+    if is_k:
+        try:
+            value = Decimal(normalized)
+            value = value * Decimal(1000)
+            if value == value.to_integral():
+                normalized = str(int(value))
+            else:
+                normalized = format(value.normalize(), 'f')
+        except InvalidOperation:
+            return None
+
+    if is_percent:
+        return normalized + '%'
+
+    return normalized
+
+
 def _check_numeric_claims(
     answer: str,
     chunks_texts: list[str],
     question: str = "",
 ) -> tuple[bool, str]:
-    """Verifica que los números de la respuesta aparezcan literalmente en los chunks.
-
-    Args:
-        answer:       Respuesta generada por el LLM.
-        chunks_texts: Lista de textos de los chunks fuente.
-        question:     Pregunta original (para excluir números mencionados por el usuario).
-
-    Returns:
-        (ok, motivo)
-          ok=True  → todos los números tienen respaldo o no hay números que verificar.
-          ok=False → al menos un número no aparece en ningún chunk.
-          motivo: string vacío si ok, descripción del primer fallo si no ok.
-    """
-    # Números que aporta el LLM en la respuesta
+    """Verifica que los números de la respuesta aparezcan en los chunks mediante comparación numérica."""
     answer_nums = _extract_numbers(answer)
     if not answer_nums:
         return True, ""
 
-    # Excluir números que el usuario ya mencionó en la pregunta
     if question:
         question_nums = _extract_numbers(question)
         answer_nums -= question_nums
@@ -153,33 +202,19 @@ def _check_numeric_claims(
     if not answer_nums:
         return True, ""
 
-    # Texto completo de todos los chunks (para búsqueda literal)
     corpus = " ".join(chunks_texts)
+    chunk_nums = _extract_numbers(corpus)
+    normalized_chunks = {
+        _normalize_number_token(num)
+        for num in chunk_nums
+        if _normalize_number_token(num) is not None
+    }
 
     for num in answer_nums:
-        # Aceptamos variantes con/sin separador de miles y con coma/punto decimal
-        # Ejemplo: "10456" busca también "10.456" y "10,456"
-        variants = {num}
-        digits_only = re.sub(r'[.,]', '', num)
-        if len(digits_only) > 3:
-            # añadir variante con punto cada 3 dígitos (separador de miles europeo)
-            parts = []
-            rev = digits_only[::-1]
-            for i in range(0, len(rev), 3):
-                parts.append(rev[i:i+3])
-            variants.add('.'.join(p[::-1] for p in reversed(parts)))
-            variants.add(','.join(p[::-1] for p in reversed(parts)))
-
-        # Variantes fuzzy: aceptar sufijo K/k (10k -> 10000)
-        if num.lower().endswith('k'):
-            try:
-                base = float(num[:-1])
-                variants.add(str(int(base * 1000)))
-            except Exception:
-                pass
-
-        found = any(v in corpus for v in variants)
-        if not found:
+        normalized = _normalize_number_token(num)
+        if normalized is None:
+            continue
+        if normalized not in normalized_chunks:
             return False, f"número '{num}' no encontrado en los chunks"
 
     return True, ""
@@ -325,7 +360,18 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
     """
     threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
 
-    # ── 1. Sin chunks: bloquear siempre ───────────────────────────────────
+    return _validate_fidelity(answer, source_docs, question, numeric_strict=True)
+
+
+def _validate_fidelity(
+    answer: str,
+    source_docs: list,
+    question: str = "",
+    numeric_strict: bool = True,
+) -> tuple[bool, float]:
+    """Valida la fidelidad utilizando el flujo actual con opción numérica o semántica."""
+    threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
+
     if not source_docs:
         print("[fidelity:block] sin chunks — bloqueando")
         log_fidelity_failure(question or answer, 0.0, threshold)
@@ -341,24 +387,19 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
         log_fidelity_failure(question or answer, 0.0, threshold)
         return False, 0.0
 
-    # ── 2. Verificación numérica literal (0 HTTP) ──────────────────────────
-    numeric_ok, numeric_reason = _check_numeric_claims(answer, chunks_texts, question)
-    if not numeric_ok:
-        print(f"[fidelity:block:numeric] {numeric_reason} — bloqueando")
-        log_fidelity_failure(question or answer, 0.0, threshold)
-        return False, 0.0
+    if numeric_strict:
+        numeric_ok, numeric_reason = _check_numeric_claims(answer, chunks_texts, question)
+        if not numeric_ok:
+            print(f"[fidelity:block:numeric] {numeric_reason} — bloqueando")
+            log_fidelity_failure(question or answer, 0.0, threshold)
+            return False, 0.0
 
-    # ── 3. Bypass para respuestas muy cortas (fix 6C) ───────────────────────
-    # Requiere chunks con contenido para permitir el bypass.
-    # Una respuesta genérica como 'No lo sé' sin evidencia queda bloqueada.
     word_count = len(answer.split())
     if word_count < SHORT_ANSWER_WORDS:
-        # chunks_texts ya está validado arriba — si llegamos aquí hay evidencia
         print(f"[fidelity:skip] respuesta corta con chunks ({word_count} palabras), se pasa")
         log_fidelity_success(question or answer, 1.0, threshold, method="short_bypass")
         return True, 1.0
 
-    # ── 4. Similitud semántica (2 HTTP) ─────────────────────────────────
     try:
         ans_embedding = get_embedding(answer)
     except Exception:
@@ -371,9 +412,8 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
 
     if ans_embedding is None:
         print("[fidelity:skip] Ollama no disponible, se pasa")
-        return True, 1.0  # bypass de emergencia — no se loguea como éxito real
+        return True, 1.0
 
-    # Obtener embeddings por chunk (limitar longitud para rendimiento)
     chunk_embeddings = []
     for txt in chunks_texts:
         try:
@@ -381,7 +421,6 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
             if emb is not None:
                 chunk_embeddings.append(emb)
         except Exception:
-            # si falla un chunk, saltarlo
             continue
 
     if not chunk_embeddings:
@@ -392,15 +431,38 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
-    # Calcular similitud por chunk y tomar la máxima (más conservador: max)
     sims = [_cosine(ans_embedding, c) for c in chunk_embeddings]
     sim = max(sims) if sims else 0.0
 
     if sim >= threshold:
         print(f"[fidelity:ok]  max_similitud={sim:.3f} (umbral={threshold})")
-        log_fidelity_success(question or answer, sim, threshold, method="semantic")
+        method = "semantic" if numeric_strict else "semantic_flexible"
+        log_fidelity_success(question or answer, sim, threshold, method=method)
         return True, sim
 
     print(f"[fidelity:low] max_similitud={sim:.3f} < umbral={threshold} — bloqueando")
     log_fidelity_failure(question or answer, sim, threshold)
     return False, sim
+
+
+def numeric_validation(answer: str, source_docs: list, question: str = "") -> tuple[bool, float]:
+    """Validación numérica estricta para consultas técnicas."""
+    return _validate_fidelity(answer, source_docs, question, numeric_strict=True)
+
+
+def semantic_validation(answer: str, source_docs: list, question: str = "") -> tuple[bool, float]:
+    """Validación semántica flexible para tareas y memoria."""
+    return _validate_fidelity(answer, source_docs, question, numeric_strict=False)
+
+
+def fidelity_check(
+    answer: str,
+    source_docs: list,
+    question: str = "",
+    mode: str = "numeric",
+) -> tuple[bool, float]:
+    if mode == "numeric":
+        return numeric_validation(answer, source_docs, question)
+    elif mode == "semantic":
+        return semantic_validation(answer, source_docs, question)
+    raise ValueError("Modo de validación no soportado")

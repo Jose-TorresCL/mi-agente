@@ -496,8 +496,10 @@ def process_turn(
         user_input   = ctx["query"]
         vectordb     = ctx["vectordb"]
         chat_history = ctx["chat_history"]
+        channel      = ctx.get("channel", "cli")
     else:
         route = route_or_ctx
+        channel = "cli"
 
     if chat_history is None:
         chat_history = []
@@ -505,12 +507,12 @@ def process_turn(
     # ── exit ────────────────────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
-        _record_metric(route="exit", intent_type="exit")
+        _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 
     # ── identity ────────────────────────────────────────────────────────
     if route == "identity":
-        _record_metric(route="identity", intent_type="identity")
+        _record_metric(route="identity", intent_type="identity", channel=channel)
         return DecisionResult(
             route="identity",
             response=IDENTITY_MSG,
@@ -525,7 +527,7 @@ def process_turn(
     # ── !estado ──────────────────────────────────────────────────────────────
     if route == "!estado":
         from app.router import format_estado
-        _record_metric(route="!estado", intent_type="!estado")
+        _record_metric(route="!estado", intent_type="!estado", channel=channel)
         return DecisionResult(
             route="!estado",
             response=format_estado(),
@@ -540,7 +542,7 @@ def process_turn(
     # ── tool_list_files ─────────────────────────────────────────────────────
     if route == "tool_list_files":
         answer = handle_list_files(user_input)
-        _record_metric(route=route, intent_type="tool_list_files")
+        _record_metric(route=route, intent_type="tool_list_files", channel=channel)
         return DecisionResult(
             route=route,
             response=answer,
@@ -557,7 +559,7 @@ def process_turn(
         t0 = time.perf_counter()
         answer = dispatch_tool_str(route, user_input)
         llm_ms = int((time.perf_counter() - t0) * 1000)
-        _record_metric(route=route, intent_type=route, llm_ms=llm_ms)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms, channel=channel)
         return DecisionResult(
             route=route,
             response=answer,
@@ -595,7 +597,7 @@ def process_turn(
 
         # Normalizar route a "memory" para métricas consistentes
         _record_metric(route="memory", intent_type=memory_intent,
-                       llm_ms=llm_ms, tokens_est=tokens_est)
+                       llm_ms=llm_ms, tokens_est=tokens_est, channel=channel)
         return DecisionResult(
             route="memory",
             response=answer,
@@ -609,7 +611,7 @@ def process_turn(
 
     # ── unsupported ─────────────────────────────────────────────────────────
     if route == "unsupported":
-        _record_metric(route=route, intent_type="unsupported")
+        _record_metric(route=route, intent_type="unsupported", channel=channel)
         return DecisionResult(
             route=route,
             response=UNSUPPORTED_MSG,
@@ -631,6 +633,7 @@ def process_turn(
         retrieval_ms=retrieval_ms, llm_ms=llm_ms,
         tokens_est=tokens_est,
         cached=cached, num_docs=len(source_docs),
+        channel=channel,
     )
     return DecisionResult(
         route=route,

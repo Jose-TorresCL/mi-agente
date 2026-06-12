@@ -73,12 +73,14 @@ from app.memory_store import (
     load_tasks,
     load_work_state,
     load_last_episode,
+    load_episodes,
     save_project_fact,
     add_task,
     update_task_status,
     update_work_state,
     update_session_goal,
     save_episode,
+    validate_memory_file,
 )
 from app.memory_context import build_memory_context
 
@@ -545,3 +547,67 @@ def record_episode(summary: str, turns: int) -> None:
         return
     save_episode(summary=summary.strip(), turns=turns)
     log.debug("Episodio registrado: %d turnos", turns)
+
+
+def create_task_from_episode(episode: dict) -> dict:
+    summary = str(episode.get("summary", "")).strip()
+    if not summary:
+        return {}
+
+    title = "Extraer acción de episodio"
+    lower_summary = summary.lower()
+    if "decisión" in lower_summary or "decisiones" in lower_summary:
+        title = "Revisar decisión mencionada en episodio"
+    elif "tarea" in lower_summary or "tareas" in lower_summary:
+        title = "Registrar tarea detectada en episodio"
+
+    first_sentence = summary.split(".")[0].strip()
+    if first_sentence:
+        title = f"{title}: {first_sentence}"
+    if len(title) > 120:
+        title = title[:117].rstrip() + "..."
+
+    notes = f"Episodio {episode.get('date', '')} {episode.get('time', '')}. "
+    notes += summary
+    return {
+        "title": title,
+        "priority": "medium",
+        "notes": notes,
+    }
+
+
+def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
+    new_tasks: list[dict] = []
+    for episode in episodes:
+        summary = str(episode.get("summary", "")).lower()
+        if not summary:
+            continue
+        if "decisión" in summary or "tarea" in summary or "acción" in summary:
+            task = create_task_from_episode(episode)
+            if task:
+                new_tasks.append(task)
+    return new_tasks
+
+
+def add_task_to_memory(task: dict | str) -> str:
+    if isinstance(task, str):
+        return create_task(task)
+    if not isinstance(task, dict):
+        return ""
+    return create_task(
+        title=task.get("title", ""),
+        priority=task.get("priority", "medium"),
+        notes=task.get("notes", ""),
+    )
+
+
+def main_memory_flow() -> int:
+    episodes = load_episodes()
+    suggested_tasks = suggest_new_tasks(episodes)
+    added = 0
+    for task in suggested_tasks:
+        task_id = add_task_to_memory(task)
+        if task_id:
+            added += 1
+    log.debug("main_memory_flow: %d sugerencias de tarea procesadas", added)
+    return added

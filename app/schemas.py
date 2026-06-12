@@ -184,6 +184,7 @@ class TurnContext(TypedDict):
     query:        str
     vectordb:     Any
     chat_history: list
+    channel:      str
 
 
 # ───────────────────────────────────────────────

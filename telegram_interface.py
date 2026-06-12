@@ -2,7 +2,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from turtle import update
 from typing import TypedDict
 from app.memory_manager import get_session_briefing
 from dotenv import load_dotenv
@@ -11,7 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes,
 )
-from app.chat_core import build_memory, handle_query
+from app.chat_core import handle_query
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage
@@ -47,14 +46,14 @@ def _load_sessions() -> dict[int, UserSession]:
     """Carga sesiones desde disco. Devuelve dict vacío si no existe.
 
     Solo persiste qué usuarios tienen sesión activa.
-    El historial en RAM se reconstruye desde storage/memory.json
-    (mismo origen que la CLI) vía build_memory().
+    El historial en RAM es específico de cada usuario y no se reconstruye
+    desde storage/memory.json.
     """
     if not SESSIONS_FILE.exists():
         return {}
     try:
         raw: dict = json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
-        return {int(uid): {"history": build_memory()} for uid in raw}
+        return {int(uid): {"history": []} for uid in raw}
     except Exception as exc:
         log.warning("No se pudo leer telegram_sessions.json: %s", exc)
         return {}
@@ -148,8 +147,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         answer, source_docs = handle_query(
-            user_text, vector_db, sessions[user_id]["history"]
+            user_text,
+            vector_db,
+            sessions[user_id]["history"],
+            channel="telegram",
         )
+
+        if answer == "__EXIT__":
+            sessions.pop(user_id, None)
+            _persist_sessions(sessions)
+            await update.message.reply_text(
+                "👋 Sesión cerrada. Usa /start para comenzar de nuevo."
+            )
+            return
+
         safe_answer = toolresult_to_str(answer)
         await update.message.reply_text(safe_answer)
 
@@ -169,7 +180,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/reset — borra el historial de la sesión y muestra briefing nuevo."""
     user_id = update.effective_user.id
-    sessions[user_id] = {"history": build_memory()}
+    sessions[user_id] = {"history": []}
     _persist_sessions(sessions)
     
     # Inyectar briefing en la sesión nueva

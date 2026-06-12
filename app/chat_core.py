@@ -22,9 +22,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
+from app.config import MAX_TURNS
 from app.logger import get_logger
 from app.intelligence import process_turn
+from app.memory_manager import validate_memory_file
 from app.schemas import TurnContext
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -40,6 +41,7 @@ MEMORY_FILE = Path("storage/memory.json")
 
 def build_memory() -> list:
     """Lee el historial desde memory.json."""
+    validate_memory_file()
     if not MEMORY_FILE.exists():
         return []
     try:
@@ -85,6 +87,7 @@ def handle_query(
     user_input: str,
     vectordb: Any,
     chat_history: list,
+    channel: str = "cli",
 ) -> tuple[str, list]:
     """Clasifica la consulta, construye TurnContext y delega a process_turn().
 
@@ -105,6 +108,7 @@ def handle_query(
         query=user_input,
         vectordb=vectordb,
         chat_history=chat_history,
+        channel=channel,
     )
 
     # Delegar procesamiento completo a la capa de inteligencia

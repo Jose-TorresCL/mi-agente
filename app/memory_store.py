@@ -414,3 +414,9 @@ def load_last_episode() -> EpisodeItem | None:
     data: EpisodicMemory = _read_json(EPISODIC_MEMORY_FILE, {"episodes": []})  # type: ignore[assignment]
     episodes = data.get("episodes", [])
     return episodes[-1] if episodes else None
+
+
+def load_episodes() -> list[EpisodeItem]:
+    """Devuelve todos los episodios guardados, con el más reciente al final."""
+    data: EpisodicMemory = _read_json(EPISODIC_MEMORY_FILE, {"episodes": []})  # type: ignore[assignment]
+    return data.get("episodes", [])
