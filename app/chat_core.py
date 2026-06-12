@@ -21,7 +21,6 @@ from app.intelligence import process_turn
 from app.logger import get_logger
 from app.memory_manager import main_memory_flow
 from app.schemas import TurnContext
-from app.session_state import SessionState
 
 log = get_logger(__name__)
 
@@ -69,7 +68,7 @@ def handle_turn(
     chat_history: list,
     vectordb,
     channel: str = "cli",
-    session: SessionState | None = None,
+    session: session_state.SessionState | None = None,
 ) -> tuple[str, bool]:
     """Procesa un turno completo y devuelve la respuesta del asistente.
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import requests
 
 from langchain_ollama import ChatOllama
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import MODEL_NAME, OLLAMA_URL
