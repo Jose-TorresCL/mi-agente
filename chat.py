@@ -1,7 +1,7 @@
 """Punto de entrada del asistente.
 
 Arranca el loop de conversación, gestiona el vectorstore
-y delega cada turno a chat_core.handle_query().
+y delega cada turno a chat_core.handle_turn().
 
 Auto-reindex: al arrancar detecta si hay docs más nuevos que el índice
 y re-indexa automáticamente antes de abrir el chat.
@@ -19,11 +19,12 @@ from __future__ import annotations
 
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
+from langchain_core.messages import BaseMessage
 
 from app.config import CHROMA_DIR, OLLAMA_URL
 from app.indexing_core import needs_reindex, run_full_index
-from app.chat_core import build_memory, handle_query
-from app.chat_ui import print_welcome, print_sources, format_answer, mostrar_briefing
+from app.chat_core import handle_turn
+from app.chat_ui import print_welcome, format_answer, mostrar_briefing
 from app.memory_manager import get_session_briefing
 from app.logger import get_logger
 
@@ -77,8 +78,8 @@ def main() -> None:
     except Exception as exc:
         log.debug("[chat] session briefing no disponible: %s", exc)
 
-    vectordb     = _boot_vectorstore()
-    chat_history = build_memory()
+    vectordb: Chroma = _boot_vectorstore()
+    chat_history: list[BaseMessage] = []
 
     while True:
         try:
@@ -91,15 +92,20 @@ def main() -> None:
         if not user_input:
             continue
 
-        answer, source_docs = handle_query(user_input, vectordb, chat_history)
+        response, should_exit = handle_turn(
+            user_input,
+            chat_history,
+            vectordb,
+            channel="cli",
+        )
 
-        if answer == "__EXIT__":
+        if should_exit:
             _session_close()
             print("\n👋 ¡Hasta luego!")
             break
 
-        print(format_answer(answer))
-        print_sources(source_docs)
+        if response:
+            print(format_answer(response))
 
 
 if __name__ == "__main__":
