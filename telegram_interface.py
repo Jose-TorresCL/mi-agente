@@ -2,7 +2,7 @@
 
 Responsabilidad:
   Recibir mensajes de Telegram, mantener sesiones aisladas por usuario
-  y delegarlos a handle_query() (app/chat_core.py).
+  y delegarlos a handle_turn() (app/chat_core.py).
   No contiene lógica de negocio — solo transporte y gestión de sesión.
 
 Variables de entorno requeridas:
@@ -23,8 +23,8 @@ Aislamiento de sesiones:
 Flujo de un mensaje:
   1. Telegram → handle_message() recibe Update.
   2. Si es primer mensaje del usuario → crear sesión + inyectar briefing una vez.
-  3. handle_query(user_text, history, vector_db) → respuesta + sources.
-  4. Responder al usuario; mostrar fuentes si las hay.
+  3. handle_turn(user_text, history, vectordb, channel="telegram") → (response, should_exit).
+  4. Responder al usuario.
   5. Persistir el ID de sesión en storage/telegram_sessions.json.
 
 Comandos disponibles:
@@ -51,13 +51,12 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes,
 )
-from app.chat_core import handle_query
+from app.chat_core import handle_turn
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage
 from app.config import CHROMA_DIR, OLLAMA_URL
 from app.logger import get_logger
-from app.tools import toolresult_to_str
 
 load_dotenv()
 TOKEN       = os.getenv("TELEGRAM_TOKEN")
@@ -143,8 +142,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     Lógica:
       1. Si es primer mensaje del usuario: crear sesión + inyectar briefing UNA VEZ.
-      2. Procesar el mensaje con handle_query (usa historial persistente).
-      3. Responder y mostrar fuentes si las hay.
+      2. Procesar el mensaje con handle_turn(channel="telegram").
+      3. Responder al usuario.
+      4. Si should_exit es True (comando de salida), cerrar sesión en RAM.
     """
     user_id   = update.effective_user.id
     user_text = update.message.text.strip()
@@ -166,26 +166,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     history = sessions[user_id]["history"]
 
-    # ─ Procesar con handle_query ─
+    # ─ Procesar con handle_turn ─
     try:
-        result   = handle_query(user_text, history, vector_db)
-        response = result.get("answer", "No pude generar una respuesta.")
-        sources  = result.get("sources", [])
+        response, should_exit = handle_turn(
+            user_text,
+            history,
+            vector_db,
+            channel="telegram",
+        )
     except Exception as exc:
-        log.error("Error en handle_query: %s", exc)
-        response = "Hubo un error procesando tu mensaje. Intenta de nuevo."
-        sources  = []
+        log.error("Error en handle_turn: %s", exc)
+        response    = "Hubo un error procesando tu mensaje. Intenta de nuevo."
+        should_exit = False
 
     # ─ Enviar respuesta ─
-    await update.message.reply_text(response, parse_mode="Markdown")
+    if response and response != "__EXIT__":
+        await update.message.reply_text(response, parse_mode="Markdown")
 
-    # ─ Mostrar fuentes si las hay ─
-    if sources:
-        source_names = list(dict.fromkeys(
-            doc.metadata.get("source", "desconocido") for doc in sources
-        ))
-        sources_text = "📄 *Fuentes:* " + ", ".join(f"`{s}`" for s in source_names)
-        await update.message.reply_text(sources_text, parse_mode="Markdown")
+    # ─ Si el usuario pidió salir, limpiar sesión en RAM ─
+    if should_exit:
+        sessions[user_id]["history"] = []
+        _persist_sessions(sessions)
+        log.info("Sesión cerrada por comando exit: user_id=%d", user_id)
 
     _persist_sessions(sessions)
 
