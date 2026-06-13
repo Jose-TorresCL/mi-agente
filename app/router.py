@@ -52,6 +52,7 @@ from app.router_config import (
     TOOL_SET_SESSION_GOAL_KEYWORDS,
     TOOL_UNSUPPORTED_KEYWORDS,
     RAG_HINTS,
+    MEMORY_REASONING_KEYWORDS,
     VALID_LANES,
     RouterDebugInfo,
 )
@@ -128,6 +129,11 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_READ_KEYWORDS):                     return "tool_read_file"
 
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):                return "identity"
+
+    # [A] Fix A: razonamiento personal antes de classify_memory_query.
+    # Frases de 3+ palabras con contexto personal → van directo a memory:work_state.
+    # Se evalúan ANTES de classify_memory_query para que no caigan al fallback RAG.
+    if any(k in q for k in MEMORY_REASONING_KEYWORDS):              return "memory:work_state"
 
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:

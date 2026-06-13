@@ -203,6 +203,45 @@ RAG_HINTS = [
     "para que sirve el", "para que sirve la",
 ]
 
+# [A] Fix A: keywords de razonamiento personal → memory:work_state
+# REGLA: frases de 3+ palabras con pronombre/contexto personal implícito.
+# Esto evita capturar preguntas técnicas puras como "debería usar RAG aquí".
+# Estas frases expresan decisión o priorización sobre el trabajo propio del usuario.
+MEMORY_REASONING_KEYWORDS = [
+    # Variantes de "qué me conviene"
+    "que me conviene hacer",
+    "que me conviene atacar",
+    "que me conviene primero",
+    # Variantes de "qué debería"
+    "que deberia hacer primero",
+    "que deberia atacar primero",
+    "que deberia hacer hoy",
+    "que deberiamos hacer primero",
+    "que deberiamos atacar",
+    # Variantes de "por dónde empiezo"
+    "por donde empiezo",
+    "por donde empezamos",
+    "por donde arranco",
+    "por donde arrancamos",
+    # Variantes de "qué me recomendas"
+    "que me recomendas hacer",
+    "que me recomendas atacar",
+    "que me recomendarías",
+    # Variantes de "qué es lo más importante"
+    "que es lo mas importante para mi",
+    "cual es lo mas importante para mi",
+    "que es lo primero que debo hacer",
+    # Variantes de "cómo priorizo"
+    "como priorizo mis tareas",
+    "como priorizamos",
+    "como ordeno mis tareas",
+    # Variantes de "qué hago primero"
+    "que hago primero",
+    "que hacemos primero",
+    "cual es mi prioridad ahora",
+    "cuales son mis prioridades",
+]
+
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
@@ -239,6 +278,7 @@ __all__ = [
     "TOOL_SET_SESSION_GOAL_KEYWORDS",
     "TOOL_UNSUPPORTED_KEYWORDS",
     "RAG_HINTS",
+    "MEMORY_REASONING_KEYWORDS",
     "VALID_LANES",
     "RouterDebugInfo",
 ]

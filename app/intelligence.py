@@ -42,6 +42,11 @@ Fix 3 — síntesis LLM forzada cuando la pregunta pide razonamiento (CERRADO):
   importante, comparar, contradicción) y fuerza síntesis LLM incluso
   cuando needs_llm=False (ej. lista plana de tareas). Si el LLM falla,
   devuelve el fallback original sin romper nada.
+Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO):
+  [C] _is_personal_reasoning() detecta preguntas con señal de razonamiento
+  Y pronombre personal. Si el router mandó 'rag' pero la pregunta es
+  razonamiento personal, se fuerza 'memory:work_state' antes del bloque RAG.
+  Segunda línea de defensa después de keywords (A) y embeddings (B).
 """
 from __future__ import annotations
 
@@ -114,6 +119,21 @@ _REASONING_SIGNALS = {
     "cuál me", "cual me",
     "qué haría", "que haria",
     "qué conviene", "que conviene",
+}
+
+# [C] Fix C: pronombres personales que distinguen razonamiento propio
+# de preguntas técnicas generales.
+# "debería usar RAG"  → no tiene pronombre personal → NO es personal
+# "qué me conviene"   → tiene "me"                  → SÍ es personal
+_PERSONAL_PRONOUNS = {
+    "me ", " me ", "mi ", " mi ", " yo ", "yo ",
+    "nos ", " nos ", "nuestro", "nuestra",
+    "para mi", "para mí",
+    "en mi caso", "en nuestro caso",
+    "debo", "deberia", "debería",
+    "arranco", "empiezo", "empezamos",
+    "hago primero", "hacemos primero",
+    "mis tareas", "mi prioridad", "mis prioridades",
 }
 
 
@@ -298,6 +318,24 @@ def _has_reasoning_signal(question: str) -> bool:
     """
     q_lower = question.lower()
     return any(signal in q_lower for signal in _REASONING_SIGNALS)
+
+
+def _is_personal_reasoning(question: str) -> bool:
+    """[C] Retorna True si la pregunta combina razonamiento + pronombre personal.
+
+    Distingue:
+      'qué me conviene hacer primero'  → True  (tiene señal + pronombre personal)
+      'debería usar RAG aquí'          → False  (señal pero sin pronombre personal)
+      'cómo funciona el router'        → False  (ni señal ni pronombre)
+
+    Se usa en process_turn como segunda línea de defensa:
+    si el router clasificó como 'rag' pero la pregunta es razonamiento
+    personal, se fuerza 'memory:work_state' antes de ejecutar RAG.
+    """
+    q_lower = question.lower()
+    has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
+    has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
+    return has_signal and has_pronoun
 
 
 def _decide_memory(
@@ -601,6 +639,27 @@ def process_turn(
             log.debug("[memory] intents detectados: %s", intents)
 
         answer = _decide_memory(user_input, intents, chat_history=chat_history)
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
+        return DecisionResult(
+            route="memory",
+            response=answer,
+            cached=False,
+            source="memory",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=llm_ms,
+            tokens_est=0,
+        )
+
+    # ── [C] Pre-filtro: razonamiento personal que el router mandó a RAG ───
+    # Si route=='rag' pero la pregunta tiene señal de razonamiento + pronombre
+    # personal, forzamos memory:work_state. Esta es la tercera línea de defensa
+    # después de keywords (A) y embeddings (B). No actúa sobre ningún otro carril.
+    if route == "rag" and _is_personal_reasoning(user_input):
+        log.debug("[pre-filtro C] razonamiento personal detectado → forzando memory:work_state")
+        t0 = time.perf_counter()
+        answer = _decide_memory(user_input, ["work_state"], chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
         _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
         return DecisionResult(
