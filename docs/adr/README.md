@@ -1,21 +1,26 @@
-# Architecture Decision Records (ADR)
+# Decisiones de arquitectura (ADR)
 
-Este directorio documenta las decisiones de arquitectura importantes del proyecto.
+Este directorio contiene las decisiones de arquitectura más importantes del proyecto.
 
-Un ADR es un registro corto que explica **qué decidimos**, **por qué lo decidimos** y **qué alternativas descartamos**. Sirve para que en el futuro (o cualquier colaborador) entienda el razonamiento sin tener que leer todo el código.
+## ADR canónicos
 
-## Índice
+Estas son las decisiones "oficiales" numeradas, en orden cronológico:
 
-| # | Título | Estado |
-|---|---|---|
-| [ADR-001](ADR-001-router-hibrido.md) | Router híbrido de 3 capas | ✅ Aceptado |
-| [ADR-002](ADR-002-separacion-memory-manager.md) | Separación R1 — acceso a memoria vía memory_manager | ✅ Aceptado |
-| [ADR-003](ADR-003-fidelity-check.md) | Fidelity check con umbral 0.55 | ✅ Aceptado |
-| [ADR-004](ADR-004-cache-semantica.md) | Caché semántica con nomic-embed-text | ✅ Aceptado |
+- ADR-001 - Router híbrido 3 capas (`ADR-001-router-hibrido.md`)
+- ADR-002 - Memoria en capas y tipos formales (`ADR-002-memoria-en-capas.md`)
+- ADR-003 - memory_manager como guardián único (`ADR-003-memory-manager.md`)
+- ADR-004 - Calidad RAG: caché, fidelity y exclusiones (`ADR-004-calidad-rag.md`)
+- ADR-005 - Arquitectura de inteligencia (`ADR-005-arquitectura-inteligencia.md`)
+- ADR-006 - Experience index y feedback loop (`ADR-006-experience-index.md`)
+- ADR-007 - Modelo único vs multi-modelo (`ADR-007-modelo-unico-vs-multi-modelo.md`)
+- ADR-008 - Candidato de reemplazo de modelo (`ADR-008-candidato-reemplazo-modelo.md`)
 
-## Cómo agregar un ADR nuevo
+## ADR complementarios / históricos
 
-1. Copia la plantilla de cualquier ADR existente.
-2. Nómbralo `ADR-00N-titulo-corto.md`.
-3. Rellena las secciones: Contexto, Decisión, Consecuencias, Alternativas descartadas.
-4. Agrégalo al índice de este README.
+Estos ADR surgieron como variantes o pasos intermedios. Su contenido fue
+integrado en los ADR canónicos indicados, pero se mantienen para conservar
+el contexto histórico de diseño.
+
+- ADR-002b - Separación de memory_manager (`ADR-002b-separacion-memory-manager.md`)
+- ADR-003b - Fidelity check (`ADR-003b-fidelity-check.md`)
+- ADR-004b - Caché semántica (`ADR-004b-cache-semantica.md`)

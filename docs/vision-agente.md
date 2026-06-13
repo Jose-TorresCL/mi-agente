@@ -80,5 +80,19 @@ sino una demostración de que la IA útil no requiere infraestructura costosa.
 
 ---
 
-*Última actualización: 19/05/2026*
-*Este archivo vive en el repo y se actualiza cuando la visión evoluciona.*
+## Estado actual al 06/2026
+
+Hoy el agente ya cuenta con:
+
+- Router híbrido de 3 capas (keywords, embeddings, fallback RAG) con 16 carriles bien definidos.
+- Memoria en 4 capas (trabajo, semántica, episódica y procedural) con contratos formales.
+- Experience index con decay temporal para resumir y reutilizar episodios pasados.
+- Fidelity check y caché semántica para mejorar la calidad y consistencia de las respuestas.
+
+Todo esto se mantiene dentro de los principios del norte: 100% local,
+aprobación humana siempre y foco en hardware modesto.
+
+---
+
+*Última actualización conceptual: 19/05/2026*
+*Revisado con estado técnico al: 06/2026*

@@ -32,51 +32,51 @@ usando modelos locales a través de Ollama.
 
 ## Estructura del proyecto
 
-```
+```text
 mi-agente/
-├── chat.py                    # Punto de entrada — inicia la sesión
-├── run_eval.py                # Evaluador de calidad de respuestas
-├── show_metrics.py            # Dashboard de métricas por sesión
-├── build_intent_index.py      # Construye el índice de intenciones
-├── indexacion.py              # Indexa documentos en ChromaDB
-├── requirements.txt           # Dependencias
+├── chat.py                     # Punto de entrada — inicia la sesión
+├── run_eval.py                 # Evaluador de calidad de respuestas
+├── show_metrics.py             # Dashboard de métricas por sesión
+├── build_intent_index.py       # Construye el índice de intenciones
+├── indexacion.py               # Indexa documentos en ChromaDB
+├── requirements.txt            # Dependencias
 │
-├── app/                       # Módulos del asistente (26 módulos)
-│   ├── __init__.py            # Inicialización del paquete
-│   ├── intelligence.py        # Orquestador principal (16 carriles)
-│   ├── router.py              # Router híbrido 3 capas
-│   ├── rag_engine.py          # Motor RAG
-│   ├── memory_manager.py      # Guardián único de lectura/escritura de memoria
-│   ├── memory_store.py        # Persistencia de las 4 capas
-│   ├── memory_context.py      # Recuperación selectiva por tipo de memoria
-│   ├── episode_store.py       # Almacén de episodios y experiencias
-│   ├── fidelity_check.py      # Verificación de calidad de respuesta (2 modos)
-│   ├── semantic_cache.py      # Caché semántica de consultas
-│   ├── llm_client.py          # Cliente Ollama unificado
-│   ├── tools.py               # Herramientas ejecutables (5)
-│   ├── tool_registry.py       # Registro de herramientas disponibles
-│   ├── tool_helpers.py        # Utilidades para herramientas
-│   ├── schemas.py             # TypedDict — contratos de datos
-│   ├── metrics.py             # Registro de métricas por turno
-│   ├── chat_core.py           # Orquestación de turno e historial
-│   ├── chat_ui.py             # Interfaz de usuario (terminal + Telegram)
-│   ├── session_state.py       # Estado de sesión activa
-│   ├── prompts.py             # Plantillas de prompts
-│   ├── formatters.py          # Formatos de respuesta
-│   ├── text_utils.py          # Normalización de texto
-│   ├── logger.py              # Logging estructurado
-│   ├── intent_index.py        # Interfaz de intent_index (Capa 2)
-│   ├── indexing_core.py       # Core de indexación de documentos
-│   └── config.py              # Configuración centralizada
+├── app/                        # Módulos del asistente (26 módulos)
+│   ├── __init__.py             # Inicialización del paquete
+│   ├── intelligence.py         # Orquestador principal (16 carriles)
+│   ├── router.py               # Router híbrido 3 capas
+│   ├── rag_engine.py           # Motor RAG
+│   ├── memory_manager.py       # Guardián único de lectura/escritura de memoria
+│   ├── memory_store.py         # Persistencia de las 4 capas
+│   ├── memory_context.py       # Recuperación selectiva por tipo de memoria
+│   ├── episode_store.py        # Almacén de episodios y experiencias
+│   ├── fidelity_check.py       # Verificación de calidad de respuesta (2 modos)
+│   ├── semantic_cache.py       # Caché semántica de consultas
+│   ├── llm_client.py           # Cliente Ollama unificado
+│   ├── tools.py                # Herramientas ejecutables (5)
+│   ├── tool_registry.py        # Registro de herramientas disponibles
+│   ├── tool_helpers.py         # Utilidades para herramientas
+│   ├── schemas.py              # TypedDict — contratos de datos
+│   ├── metrics.py              # Registro de métricas por turno
+│   ├── chat_core.py            # Orquestación de turno e historial
+│   ├── chat_ui.py              # Interfaz de usuario (terminal + Telegram)
+│   ├── session_state.py        # Estado de sesión activa
+│   ├── prompts.py              # Plantillas de prompts
+│   ├── formatters.py           # Formatos de respuesta
+│   ├── text_utils.py           # Normalización de texto
+│   ├── logger.py               # Logging estructurado
+│   ├── intent_index.py         # Interfaz de intent_index (Capa 2)
+│   ├── indexing_core.py        # Core de indexación de documentos
+│   └── config.py               # Configuración centralizada
 │
-├── docs/                      # Documentación del proyecto
-│   ├── adr/                   # Decisiones de arquitectura (ADR-001 a ADR-006)
-│   ├── vision-agente.md       # Visión y hoja de ruta
+├── docs/                       # Documentación del proyecto
+│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-008)
+│   ├── vision-agente.md        # Visión y hoja de ruta
 │   ├── arquitectura-memoria.md # Detalle de las 4 capas de memoria
-│   └── hardware-modelos.md    # Hardware y modelos recomendados
+│   └── hardware-modelos.md     # Hardware y modelos recomendados
 │
-├── data/                      # Documentos a indexar
-└── tests/                     # Tests del proyecto
+├── data/                       # Documentos a indexar
+└── tests/                      # Tests del proyecto
 ```
 
 > `storage/` (ChromaDB e índices) y `.venv/` se generan localmente
@@ -140,6 +140,9 @@ El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
 - `rag` — Consultas a documentos (RAG)
 - `unsupported` — Solicitudes no soportadas
 
+> Nota: los 9 carriles originales se refinaron en subtipos de memoria.
+> La arquitectura actual trabaja con 16 carriles lógicos documentados arriba.
+
 ---
 
 ## Herramientas Disponibles (5)
@@ -202,6 +205,7 @@ Al arrancar una nueva sesión, el agente ejecuta automáticamente `main_memory_f
 ```python
 from app.memory_manager import main_memory_flow
 
+
 # Llamar una vez por sesión, al arranque
 tareas_nuevas = main_memory_flow()
 print(f"{tareas_nuevas} tarea(s) sugeridas desde episodios anteriores")
@@ -261,7 +265,7 @@ Todas las demás opciones de configuración (modelos, rutas, umbrales) se encuen
 
 ## Uso
 
-```
+```text
 Tú: ¿Qué hace el módulo router.py?
 Agente: [responde basándose en documentos indexados + memoria]
 
@@ -283,3 +287,39 @@ python show_metrics.py
 ```
 
 Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `latency_ms`, `tokens`, `rag_quality`, `fidelity_score`, `fidelity_mode`.
+
+---
+
+## Documentación
+
+| Documento | Contenido |
+|---|---|
+| [ADR-001](docs/adr/ADR-001-router-hibrido.md) | Router híbrido 3 capas |
+| [ADR-002](docs/adr/ADR-002-memoria-en-capas.md) | Memoria en capas y tipos formales |
+| [ADR-003](docs/adr/ADR-003-memory-manager.md) | memory_manager como guardián único |
+| [ADR-004](docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
+| [ADR-005](docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
+| [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
+| [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
+| [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
+| [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
+| [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
+| [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
+
+---
+
+## Estado del proyecto
+
+✅ Fases 1-8 completadas — base funcional, memoria, router, inteligencia, herramientas  
+✅ R1 — Sistema de métricas por turno  
+✅ R2 — Dashboard de métricas con análisis de drift  
+✅ R3 — Caché semántica + mejoras fidelity  
+✅ R4 — Recuperación selectiva de memoria por tipo  
+
+🔭 Próximo: pruebas integrales + definir siguiente dirección
+
+---
+
+## Autor
+
+**Jose Torres** — [@Jose-TorresCL](https://github.com/Jose-TorresCL)

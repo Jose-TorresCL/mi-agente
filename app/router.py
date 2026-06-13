@@ -23,137 +23,41 @@ Logging diferenciado:
 Requisito previo para la Capa 2:
   Ejecutar python build_intent_index.py una vez para crear storage/intent_index.
   Si el índice no existe, la Capa 2 se salta silenciosamente.
-
-Fix 6B:
-  classify_memory_query: añadido tipo 'episode' para preguntas sobre
-  sesiones anteriores, aprendizajes pasados y episodios de trabajo.
-  Se conecta a memory_manager.get_episodic_context() en la fase 6B-2.
-
-Fix R1-E:
-  El singleton de Chroma para intent_index vive en app.intent_index.
-  router.py es función pura de clasificación — sin imports de Chroma.
-
-Fix P13:
-  Agregado 'sprint' y variantes a MEMORY_PROJECT_FACTS_KEYWORDS.
-
-Fix B1:
-  Agregado '!estado' al set de comandos especiales en _route_by_keywords.
-  Antes '!estado' caía a embeddings y se enrutaba como 'memory' (incorrecto).
-
-Fix B2:
-  Nueva lista AGENT_IDENTITY_KEYWORDS → carril 'identity'.
-  Se evalúa ANTES de classify_memory_query en _route_by_keywords para que
-  'quién eres tú', 'qué puedes hacer', etc. nunca lleguen al clasificador
-  de embeddings y no caigan erróneamente en el carril 'memory' ni 'rag'.
-  intelligence.py devuelve respuesta fija para este carril — 0ms, sin LLM.
-
-Fix N1+N2:
-  _normalize(text) movida a app/text_utils.py (fix-circular-import).
-  router.py la importa desde allí. Mismo comportamiento, sin ciclo.
-  Todas las listas de keywords solo tienen la versión sin tilde.
-
-Fix N3:
-  _COMPLETE_TASK_PATTERN ampliado: ahora acepta texto libre además de
-  número de tarea. 'completé la tarea de tests' ahora matchea correctamente
-  en tool_complete_task antes de llegar a tool_update_work_state.
-
-Fix R4+R7:
-  RAG_HINTS ahora se evalúa DESPUÉS de identity y memory en _route_by_keywords.
-  Antes: 'que es lo que tengo pendiente' → RAG (por 'que es' en RAG_HINTS).
-  Ahora: identity → memory → RAG_HINTS → fallback.
-  Eliminadas de RAG_HINTS las keywords demasiado genéricas que competían con
-  memory e identity: 'que es', 'objetivo', 'explicame', 'para que sirve',
-  'componentes'. Solo quedan señales ineuquívocamente documentales.
-
-Fix R6:
-  Eliminadas 'crear', 'nuevo', 'nuevas' de _TASK_SUGGESTION_SIGNALS.
-  Antes: 'crear tarea' bloqueaba el carril tasks porque 'crear' era señal
-  de sugerencia. Ahora solo bloquean señales que indican intención de
-  proponer ideas, no de ejecutar acciones.
-
-Fix R8:
-  Confirmado: route_query ya aplica _normalize() antes del chequeo de
-  _EXIT_WORDS. 'Adiós', 'CHAO', 'hasta luego' matchean correctamente
-  sin importar tildes ni mayúsculas.
-
-Fix P5-Paso1:
-  _route_by_keywords ahora retorna 'memory:<subtipo>' en vez de 'memory'.
-  Ejemplos: 'memory:tasks', 'memory:profile', 'memory:work_state',
-            'memory:project_facts', 'memory:episode'.
-  Esto permite que intelligence.py use contexto selectivo en lugar de
-  get_full_context(). Pendiente: Paso 2 (Capa 2) y Paso 4 (intelligence.py).
-  VALID_LANES actualizado con los subtipos para que _route_by_embeddings
-  no los rechace cuando la Capa 2 empiece a propagarlos.
-
-Fix B3:
-  Bug1 — extract_file_path disparaba tool_read_file para cualquier pregunta
-  que mencionara un archivo (ej: '¿qué hace intelligence.py?'). Ahora se
-  requiere que haya un verbo lector explícito (leer, abre, muéstrame, ver,
-  lee, mostrar, abrir) junto con el nombre de archivo. Sin verbo, la pregunta
-  sigue al siguiente carril (RAG_HINTS → rag).
-
-  Bug2 — '¿qué es el retriever en LangChain?' llegaba a embeddings y se
-  clasificaba como memory:work_state (similitud 0.71). Agregados a RAG_HINTS:
-  'que es el', 'que es la', 'que es un', 'que es una'. Son señales
-  inequívocamente documentales que la Capa 1 debe interceptar.
-
-Fix B4:
-  'para que sirve fidelity_check.py' llegaba a Capa 2 y se clasificaba
-  como memory:project_facts (similitud 0.71). Agregado 'para que sirve'
-  a RAG_HINTS para que la Capa 1 lo intercepte antes de embeddings.
-  'para que sirves' (identity) se evalúa antes de RAG_HINTS → sin colisión.
-
-Fix C1 (este commit):
-  from app.tools import extract_file_path movido de nivel de módulo a
-  import local dentro de _route_by_keywords(). Rompe el ciclo:
-    router → tools → memory_manager → router (💥 antes)
-  Mismo comportamiento funcional, sin ImportError al cargar el módulo.
-
-Brecha 2 (este commit):
-  Nuevo carril 'tool_set_session_goal' para que el usuario pueda escribir
-  frases como 'mi objetivo hoy es X' y Lautaro las guarde en work_state.
-  Keywords en TOOL_SET_SESSION_GOAL_KEYWORDS, evaluadas en Capa 1 junto
-  a los otros tool_*. VALID_LANES actualizado.
-
-Fix exit-cerrar-sesion:
-  'cerrar sesión' y variantes no estaban en _EXIT_WORDS → caían a embeddings
-  con similitud 0.96 a 'identity' (bug observado en Telegram).
-  Agregadas: 'cerrar sesion', 'cerrar la sesion', 'terminar sesion',
-  'terminar la sesion', 'fin de sesion', 'finalizar sesion'.
-  Se evalúan en _EXIT_WORDS ANTES de _route_by_keywords → salida limpia.
-
-Fix rag-que-es:
-  'qué es Chroma' no matcheaba RAG_HINTS porque Chroma no lleva artículo
-  (el/la/un/una). Caía a embeddings → identity (similitud 0.79).
-  Agregado 'que es' como hint RAG genérico. Se evalúa DESPUÉS de
-  AGENT_IDENTITY_KEYWORDS en _route_by_keywords → sin colisión con
-  'qué eres' / 'qué eres tú' que siguen yendo a identity.
-
-Fix Gap3 (25/05/2026):
-  MEMORY_PROFILE_KEYWORDS tenía mezcladas keywords de cierre de sesión
-  ('cerrar sesion', 'cerrar', 'terminar', 'hasta manana', 'goodbye', etc.)
-  que no pertenecen al perfil del usuario. Si una frase de salida pasaba
-  el chequeo de _EXIT_WORDS por cualquier motivo, caía en memory:profile
-  en vez de exit. Limpiadas: solo quedan keywords genuinamente sobre
-  identidad/perfil del usuario.
 """
 from __future__ import annotations
 
-import re
-import unicodedata
-from pathlib import Path
+from typing import Any
 
-from app.config import MODEL_NAME, OLLAMA_URL
 from app.text_utils import _normalize
 from app.logger import get_logger
 from app import intent_index
+from app.router_config import (
+    _EXIT_WORDS,
+    _WRITE_LANES,
+    _READ_VERBS,
+    TOOL_LIST_KEYWORDS,
+    TOOL_READ_KEYWORDS,
+    MEMORY_PROFILE_KEYWORDS,
+    MEMORY_WORK_STATE_KEYWORDS,
+    MEMORY_TASKS_KEYWORDS,
+    _TASK_SUGGESTION_SIGNALS,
+    MEMORY_PROJECT_FACTS_KEYWORDS,
+    MEMORY_EPISODE_KEYWORDS,
+    AGENT_IDENTITY_KEYWORDS,
+    TOOL_SAVE_FACT_KEYWORDS,
+    TOOL_CREATE_TASK_KEYWORDS,
+    TOOL_COMPLETE_TASK_KEYWORDS,
+    _COMPLETE_TASK_PATTERN,
+    TOOL_UPDATE_WORK_STATE_KEYWORDS,
+    TOOL_SET_SESSION_GOAL_KEYWORDS,
+    TOOL_UNSUPPORTED_KEYWORDS,
+    RAG_HINTS,
+    VALID_LANES,
+    RouterDebugInfo,
+)
 
 log = get_logger(__name__)
 
-
-# ───────────────────────────────────────────────
-# Estadísticas de sesión — para !estado
-# ───────────────────────────────────────────────
 
 SESSION_STATS: dict[str, int] = {
     "kw":    0,
@@ -162,262 +66,24 @@ SESSION_STATS: dict[str, int] = {
     "total": 0,
 }
 
-
-# ───────────────────────────────────────────────
-# Configuración de embeddings (Capa 2)
-# ───────────────────────────────────────────────
-
 EMBED_THRESHOLD = intent_index.EMBED_THRESHOLD
 EMBED_TOP_K     = intent_index.EMBED_TOP_K
-
-
-# ───────────────────────────────────────────────
-# Palabras de salida
-# ───────────────────────────────────────────────
-
-_EXIT_WORDS = {
-    "salir", "exit", "quit", "bye",
-    "sal", "salo", "sali", "salie",
-    "chao", "chau",
-    "adios",
-    "hasta luego", "hasta pronto",
-    "nos vemos",
-    "me voy", "cierro",
-    "by",
-    # Fix exit-cerrar-sesion: variantes de cierre con frase compuesta
-    "cerrar sesion", "cerrar la sesion",
-    "terminar sesion", "terminar la sesion",
-    "fin de sesion", "finalizar sesion",
-}
-
-
-# ───────────────────────────────────────────────
-# Carriles de escritura
-# ───────────────────────────────────────────────
-
-_WRITE_LANES = {
-    "tool_save_fact", "tool_create_task", "tool_complete_task",
-    "tool_update_work_state", "tool_set_session_goal",
-}
-
-
-# ───────────────────────────────────────────────
-# Fix B3 — verbos lectores
-# ───────────────────────────────────────────────
-
-_READ_VERBS = {
-    "leer", "lee", "abre", "abrir",
-    "muestrame", "mostrar", "ver", "open",
-}
 
 
 def _has_read_verb(q_normalized: str) -> bool:
     return any(verb in q_normalized for verb in _READ_VERBS)
 
 
-# ───────────────────────────────────────────────
-# Listas de keywords (Capa 1)
-# ───────────────────────────────────────────────
-
-TOOL_LIST_KEYWORDS = [
-    "listar archivos", "lista de archivos", "que archivos",
-    "archivos del proyecto", "ver archivos", "mostrar archivos",
-    "muestrame los archivos",
-    "que hay en el proyecto",
-]
-
-TOOL_READ_KEYWORDS = [
-    "leer archivo", "muestrame el archivo",
-    "abre el archivo", "ver archivo", "mostrar archivo", "lee el archivo",
-    "leer docs", "leer documentacion", "leer documento", "mostrar documento",
-]
-
-# Fix Gap3 (25/05/2026): limpiada de keywords que pertenecen a _EXIT_WORDS.
-# Antes contenía: 'cerrar sesion', 'cierra la sesion', 'cerrar', 'terminar',
-# 'terminar sesion', 'salida', 'hasta manana', 'hasta mañana',
-# 'good bye', 'goodbye'.
-# Esas frases tienen su lugar correcto en _EXIT_WORDS (evaluadas primero
-# en route_query). Mezclarlas aquí crea un carril de escape incorrecto:
-# si por algún motivo pasaban _EXIT_WORDS, caían en memory:profile.
-# Ahora MEMORY_PROFILE_KEYWORDS solo contiene keywords genuinas de perfil.
-MEMORY_PROFILE_KEYWORDS = [
-    "mi estilo", "estilo preferido", "preferencia", "preferido",
-    "como prefiero", "como trabajo",
-    "perfil", "mi perfil",
-    "quien soy", "quien soy yo",
-    "como me llamo", "mi nombre", "cual es mi nombre",
-]
-
-MEMORY_WORK_STATE_KEYWORDS = [
-    "estado actual", "foco actual", "siguiente paso",
-    "en que vamos", "que sigue",
-    "en que estoy", "que estoy haciendo",
-    "ultimo paso", "en que quedamos",
-    "que hago hoy", "cual es el plan",
-    "que hicimos", "en que estamos",
-    "cual es mi foco", "que estoy trabajando",
-    "que estaba haciendo", "a que me dedico ahora",
-]
-
-MEMORY_TASKS_KEYWORDS = [
-    "que tareas hay", "mis tareas", "mis tareas pendientes",
-    "lista de tareas pendientes",
-    "tareas pendientes", "tareas abiertas",
-    "que tengo pendiente", "que tareas tengo",
-    "ponme al dia",
-    "tareas", "ver tareas", "mostrar tareas",
-    "tareas hechas", "tareas completadas", "tareas cerradas",
-    "que tareas hice",
-    "lista todas las tareas", "todas las tareas",
-]
-
-_TASK_SUGGESTION_SIGNALS = [
-    "podriamos", "podrias",
-    "agregar", "sugerir",
-    "posibles", "ideas", "proponer", "que mas",
-    "implementar", "anadir",
-]
-
-MEMORY_PROJECT_FACTS_KEYWORDS = [
-    "fase actual", "fase del proyecto", "estado del proyecto",
-    "hechos del proyecto", "datos del proyecto",
-    "en que fase", "nombre del proyecto",
-    "sprint", "en que sprint",
-    "que sprint", "sprint actual",
-]
-
-MEMORY_EPISODE_KEYWORDS = [
-    "que aprendi", "que aprendimos",
-    "sesion anterior", "ultima sesion",
-    "sesiones anteriores", "la semana pasada", "ayer trabajamos",
-    "que hicimos antes", "que trabajamos",
-    "historial de sesiones", "episodios anteriores",
-    "que avance", "que avanzamos",
-    "ultima vez que",
-]
-
-AGENT_IDENTITY_KEYWORDS = [
-    "quien eres", "quien eres tu",
-    "que eres", "que eres tu",
-    "que puedes hacer", "que puedes",
-    "que sabes hacer",
-    "para que sirves",
-    "cuentame de ti", "cuentame sobre ti",
-    "dime quien eres",
-    "como te llamas", "cual es tu nombre",
-    "que modelo eres",
-    "cuales son tus capacidades",
-    "que herramientas tienes",
-    "tus limites", "que no puedes hacer",
-    "tus capacidades",
-]
-
-TOOL_SAVE_FACT_KEYWORDS = [
-    "guarda como hecho", "guardar hecho", "registra que", "anota que",
-    "guarda el hecho", "registra el hecho", "guarda esto como hecho",
-]
-
-TOOL_CREATE_TASK_KEYWORDS = [
-    "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
-    "nueva tarea", "anade una tarea", "anota una tarea", "registra una tarea",
-]
-
-TOOL_COMPLETE_TASK_KEYWORDS = [
-    "marca como completada", "marca como completado",
-    "marcar como completada", "marcar como completado",
-    "cierra la tarea", "cerrar tarea",
-    "complete la tarea",
-    "tarea completada", "completar tarea",
-    "como completada", "como completado",
-]
-
-_COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|complete)\s+(t-\d+|la tarea|el issue|el paso)",
-    re.IGNORECASE,
-)
-
-TOOL_UPDATE_WORK_STATE_KEYWORDS = [
-    "actualiza el foco", "cambia el foco", "enfocate en", "ahora estoy en",
-    "complete", "termine", "acabe", "ya hice", "listo:",
-    "el siguiente paso es", "sigue:", "proximo paso",
-    "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
-]
-
-# Brecha 2: keywords para guardar el objetivo de la sesión actual.
-# Frases intencionalmente distintas de MEMORY_WORK_STATE_KEYWORDS
-# (que son consultas de lectura) para evitar colisión.
-TOOL_SET_SESSION_GOAL_KEYWORDS = [
-    "mi objetivo hoy es",
-    "mi objetivo para hoy es",
-    "objetivo de esta sesion",
-    "objetivo de hoy",
-    "quiero lograr hoy",
-    "quiero lograr esta sesion",
-    "meta de hoy es",
-    "meta de esta sesion",
-    "hoy quiero",
-    "en esta sesion quiero",
-    "define mi objetivo",
-    "guarda mi objetivo",
-    "mi meta hoy",
-]
-
-TOOL_UNSUPPORTED_KEYWORDS = [
-    "cuantas lineas",
-    "lineas de codigo", "lineas tiene",
-    "cuanto codigo", "cuantas lineas de codigo",
-    "tamano del proyecto", "peso del proyecto",
-    "cuantos archivos hay", "cuantos archivos tiene",
-    "cuantas funciones hay", "cuantas funciones tiene",
-    "cuantas clases hay", "cuantas clases tiene",
-    "cuantas funciones", "cuantas clases",
-]
-
-RAG_HINTS = [
-    "segun los documentos", "como se usa", "diferencia de", "que es", "para que sirve", "componentes", "partes", "metodos",
-    "segun la documentacion",
-    "segun los archivos",
-    "que dice", "que hace",
-    "como funciona", "como esta",
-    "arquitectura",
-    "relacion entre",
-    "diferencia entre",
-    "que es el", "que es la", "que es un", "que es una",
-    # Fix rag-que-es: 'qué es Chroma' no lleva artículo → necesita hint genérico.
-    # Se evalúa DESPUÉS de AGENT_IDENTITY_KEYWORDS → 'qué eres' sigue a identity.
-    "que es",
-    "para que sirve",
-    "explicame", "explicame el", "explicame la",
-    "para que sirve el", "para que sirve la",
-]
-
-VALID_LANES = {
-    "tool_list_files", "tool_read_file", "tool_save_fact",
-    "tool_create_task", "tool_complete_task", "tool_update_work_state",
-    "tool_set_session_goal",   # Brecha 2
-    "memory",
-    "memory:profile", "memory:work_state", "memory:tasks",
-    "memory:project_facts", "memory:episode",
-    "rag", "identity",
-    "unsupported",
-}
-
-
-# ───────────────────────────────────────────────
-# Funciones internas
-# ───────────────────────────────────────────────
-
 def _has_task_suggestion_signal(q: str) -> bool:
     return any(signal in q for signal in _TASK_SUGGESTION_SIGNALS)
 
 
 def classify_memory_query(question: str) -> str | None:
-    """Clasifica el tipo de consulta de memoria."""
     q = _normalize(question)
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
-    if any(k in q for k in MEMORY_TASKS_KEYWORDS) \
-            and not _has_task_suggestion_signal(q):         return "tasks"
+    if any(k in q for k in MEMORY_TASKS_KEYWORDS) and not _has_task_suggestion_signal(q):
+        return "tasks"
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
     if any(k in q for k in MEMORY_EPISODE_KEYWORDS):       return "episode"
     return None
@@ -433,16 +99,14 @@ def _handle_unsupported(question: str) -> str:
         "Todavía no tengo una herramienta para calcular métricas del código "
         "(líneas, funciones, tamaño de archivos) de forma precisa.\n\n"
         "Puedes obtener ese dato en tu terminal:\n"
-        "  \u2022 PowerShell:  `Get-ChildItem app/ -Recurse -Filter *.py | "
+        "  • PowerShell:  `Get-ChildItem app/ -Recurse -Filter *.py | "
         "ForEach-Object { (Get-Content $_).Count } | Measure-Object -Sum`\n"
-        "  \u2022 Git Bash / WSL:  `find app/ -name '*.py' | xargs wc -l`\n\n"
+        "  • Git Bash / WSL:  `find app/ -name '*.py' | xargs wc -l`\n\n"
         "Pronto tendré la herramienta `tool_code_stats` para responder esto directamente."
     )
 
 
 def _route_by_keywords(question: str) -> str | None:
-    """Capa 1: clasificación instantánea por keywords."""
-    # Fix C1: import local para evitar ciclo router → tools → memory_manager → router
     from app.tools import extract_file_path
 
     q = _normalize(question)
@@ -452,11 +116,10 @@ def _route_by_keywords(question: str) -> str | None:
 
     if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):                return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):              return "tool_create_task"
-    if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) \
-            or _COMPLETE_TASK_PATTERN.search(q):                    return "tool_complete_task"
-    if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):         return "tool_set_session_goal"  # Brecha 2
+    if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) or _COMPLETE_TASK_PATTERN.search(q):
+        return "tool_complete_task"
+    if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):         return "tool_set_session_goal"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):        return "tool_update_work_state"
-
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):              return "unsupported"
 
     if extract_file_path(question) is not None and _has_read_verb(q):
@@ -476,14 +139,11 @@ def _route_by_keywords(question: str) -> str | None:
 
 
 def _route_by_embeddings(question: str) -> str | None:
-    """Capa 2: clasificación por similitud semántica via intent_index."""
     vectordb = intent_index.get_intent_db()
     if vectordb is None:
         return None
     try:
-        results = vectordb.similarity_search_with_score(
-            query=question, k=intent_index.EMBED_TOP_K
-        )
+        results = vectordb.similarity_search_with_score(query=question, k=EMBED_TOP_K)
         if not results:
             return None
         doc, distance = results[0]
@@ -493,21 +153,16 @@ def _route_by_embeddings(question: str) -> str | None:
         if _is_question(question) and lane in _WRITE_LANES:
             log.debug("[router:emb] pregunta detectada — bloqueando '%s' → fallback rag", lane)
             return None
-        if similarity >= intent_index.EMBED_THRESHOLD and lane in VALID_LANES:
+        if similarity >= EMBED_THRESHOLD and lane in VALID_LANES:
             return lane
-        log.debug("[router:emb] similitud baja (%.2f < %.2f) → fallback rag", similarity, intent_index.EMBED_THRESHOLD)
+        log.debug("[router:emb] similitud baja (%.2f < %.2f) → fallback rag", similarity, EMBED_THRESHOLD)
         return None
     except Exception as e:
         log.warning("[router:emb] error: %s → fallback rag", e)
         return None
 
 
-# ───────────────────────────────────────────────
-# !estado — display del estado de sesión
-# ───────────────────────────────────────────────
-
 def format_estado() -> str:
-    """Genera el bloque de texto para el comando !estado / !estatus."""
     from app.semantic_cache import cache_stats
 
     stats  = cache_stats()
@@ -540,12 +195,7 @@ def format_estado() -> str:
     )
 
 
-# ───────────────────────────────────────────────
-# Punto de entrada público
-# ───────────────────────────────────────────────
-
 def route_query(question: str) -> str:
-    """Clasifica la pregunta en el carril de ejecución correcto."""
     _q_norm = _normalize(question)
     if _q_norm in _EXIT_WORDS or _q_norm.startswith(("_exit", "__exit")):
         return "exit"
@@ -567,3 +217,20 @@ def route_query(question: str) -> str:
     SESSION_STATS["llm"] += 1
     log.info("[router:llm] '%s' → rag", question[:50])
     return "rag"
+
+
+def debug_route_layers(question: str) -> RouterDebugInfo:
+    """Devuelve qué capa decidió y qué lane, sin efectos secundarios en SESSION_STATS."""
+    _q_norm = _normalize(question)
+    if _q_norm in _EXIT_WORDS or _q_norm.startswith(("_exit", "__exit")):
+        return {"layer": "exit", "lane": "exit"}
+
+    lane_kw = _route_by_keywords(question)
+    if lane_kw is not None:
+        return {"layer": "kw", "lane": lane_kw}
+
+    lane_emb = _route_by_embeddings(question)
+    if lane_emb is not None:
+        return {"layer": "emb", "lane": lane_emb}
+
+    return {"layer": "fallback", "lane": "rag"}
