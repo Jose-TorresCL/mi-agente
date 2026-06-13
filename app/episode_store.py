@@ -463,10 +463,10 @@ def close_session_episode() -> None:
 
         t = threading.Thread(target=_ask, daemon=True)
         t.start()
-        t.join(timeout=15)
+        t.join(timeout=90)
 
         if not answered.is_set() or respuesta[0] is None:
-            log.info("[episode_store] close_session: sin respuesta en 15s — sin marcar")
+            log.info("[episode_store] close_session: sin respuesta en 90s — sin marcar")
             return
 
         if respuesta[0] in ("s", "si", "sí", "y", "yes"):

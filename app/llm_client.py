@@ -13,6 +13,9 @@ Historial:
     fix-singleton — generate_raw() usaba ChatOllama nuevo en cada llamada.
                     Ahora reutiliza el singleton vía .bind(), eliminando el
                     overhead de reconexión por turno.
+    fix-timeout   — timeout subido de 30s a 120s. Bajo carga concurrente
+                    (llm + embedder en CPU) el modelo puede tardar 35s+;
+                    30s causaba fallback en síntesis de memoria.
 """
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ def generate_raw(
     prompt: str,
     temperature: float = 0.3,
     num_predict: int = 150,
-    timeout: int = 30,
+    timeout: int = 120,
 ) -> str | None:
     """Llama al LLM con un prompt libre, sin RAG ni chain LangChain.
 
@@ -55,7 +58,9 @@ def generate_raw(
         prompt:      Texto completo del prompt a enviar al LLM.
         temperature: Temperatura de generación (default 0.3).
         num_predict: Máximo de tokens a generar.
-        timeout:     Segundos antes de abortar la llamada.
+        timeout:     Segundos antes de abortar la llamada (default 120).
+                     Subido de 30s — bajo carga CPU concurrente el modelo
+                     puede tardar 35s+.
 
     Returns:
         Texto generado, o None si la llamada falló.
