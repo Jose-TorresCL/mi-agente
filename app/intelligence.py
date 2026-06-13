@@ -57,6 +57,11 @@ H-B1 — hardening Opción B: tabla _DIRECT_ROUTES + _make_direct_result (CERRAD
   - process_turn despacha via bucle en vez de if-elif repetidos.
   - Sin cambio de comportamiento. Reduce if-chain de 8 a 5 ramas.
   - Añadir un nuevo carril directo ahora es agregar 1 línea a _DIRECT_ROUTES.
+Fix RAG-1 — pasar memory_context a chain.invoke() (CERRADO):
+  - ChatPromptTemplate esperaba {'memory_context'} pero chain.invoke() no lo pasaba.
+  - Se extrae rag_ctx['memory_context'] y se pasa explícitamente en la llamada.
+  - Sin cambio de comportamiento — build_chain() ya recibía memory_context
+    para construir el SystemMessage; ahora también llega vía invoke().
 """
 from __future__ import annotations
 
@@ -400,9 +405,10 @@ def _generate_rag_answer(
     t_llm_start = time.perf_counter()
     chain = build_chain(QA_SYSTEM_PROMPT, rag_ctx["memory_context"])
     answer = chain.invoke({
-        "question":     user_input,
-        "context":      rag_ctx["context_text"],
-        "chat_history": chat_history_text,
+        "question":       user_input,
+        "context":        rag_ctx["context_text"],
+        "chat_history":   chat_history_text,
+        "memory_context": rag_ctx["memory_context"],  # Fix RAG-1
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 

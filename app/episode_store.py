@@ -40,6 +40,11 @@ D6  — decay temporal (Park et al. 2023 — Generative Agents) (CERRADO):
   Se aplica en search_episodes() y experience_lookup_with_score().
   El boost de exitosos (8C) se aplica sobre score post-decay.
   Fallback: sin fecha válida, el score no se modifica.
+
+Fix T90 — timeout de close_session_episode subido de 15s a 90s (CERRADO):
+  Razón: 15s era demasiado corto para el flujo natural de cierre
+  (el LLM genera el resumen ~15-40s antes de que aparezca el input).
+  90s da tiempo real de respuesta sin bloquear el proceso indefinidamente.
 """
 from __future__ import annotations
 
@@ -71,6 +76,8 @@ _FALLIDO_HIDE_THRESHOLD = 0.65
 
 _DECAY_ALPHA  = 0.75
 _DECAY_LAMBDA = 0.05
+
+_CLOSE_SESSION_TIMEOUT = 90  # Fix T90: subido de 15s a 90s
 
 # ─────────────────────────────────────────────
 # Inicialización lazy del cliente Chroma
@@ -463,10 +470,13 @@ def close_session_episode() -> None:
 
         t = threading.Thread(target=_ask, daemon=True)
         t.start()
-        t.join(timeout=15)
+        t.join(timeout=_CLOSE_SESSION_TIMEOUT)  # Fix T90: era 15, ahora 90s
 
         if not answered.is_set() or respuesta[0] is None:
-            log.info("[episode_store] close_session: sin respuesta en 15s — sin marcar")
+            log.info(
+                "[episode_store] close_session: sin respuesta en %ds — sin marcar",
+                _CLOSE_SESSION_TIMEOUT,
+            )
             return
 
         if respuesta[0] in ("s", "si", "sí", "y", "yes"):
