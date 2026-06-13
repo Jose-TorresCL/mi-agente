@@ -29,9 +29,11 @@ Interfaces públicas:
   Composición multi-capa (R4-B):
     detect_memory_intents(question)   → lista de tipos detectados en la pregunta
     get_composed_context(intents)     → contexto combinado de múltiples capas
-                                        Si hay 2+ intents Y se pasa question,
-                                        sintetiza con LLM (Fix 3). Fallback
-                                        seguro a concatenación si LLM falla.
+                                        (concatenación pura — sin LLM).
+                                        La síntesis LLM ocurre en intelligence.py
+                                        (_synthesize_memory_answer) que recibe este
+                                        texto como contexto y lo procesa con el
+                                        MEMORY_SYNTHESIS_PROMPT oficial + historial.
 
   Lectura directa:
     get_profile()           → dict del perfil
@@ -69,12 +71,6 @@ Nivel 4 (este commit):
   _classify_session_state: patrones momentum y recovering basados en
   last_ep.exitoso. Permiten que el briefing de arranque use la memoria
   episódica para contextualizar el estado — sin LLM.
-
-Fix 3 (multi-intent synthesis):
-  get_composed_context() acepta parámetro opcional `question`. Cuando hay
-  2+ intents detectados y se provee la pregunta, llama a generate_raw() para
-  que el LLM razone sobre todas las capas juntas. Si el LLM falla, retorna
-  el contexto concatenado como fallback seguro.
 """
 from __future__ import annotations
 
@@ -147,25 +143,23 @@ def detect_memory_intents(question: str) -> list[str]:
     return [t for t in _INTENT_ORDER if t in detected]
 
 
-def get_composed_context(intents: list[str], question: str = "") -> str:
-    """Compone contexto de múltiples capas de memoria.
+def get_composed_context(intents: list[str]) -> str:
+    """Compone contexto de múltiples capas de memoria (concatenación pura).
 
-    Si hay 2+ intents Y se provee la pregunta original, llama al LLM para
-    que sintetice una respuesta razonando sobre todas las capas juntas
-    (Fix 3 — multi-intent synthesis).
+    Recorre cada intent, obtiene el texto de su capa y lo une en secciones
+    etiquetadas. No llama al LLM — es una función pura de recuperación.
 
-    Fallback seguro: si el LLM falla (Ollama caído, timeout, etc.) o no se
-    provee pregunta, devuelve el contexto concatenado en texto plano, igual
-    que antes. El flujo nunca se rompe.
+    La síntesis LLM sobre este contexto ocurre en intelligence.py:
+      _decide_memory() → needs_llm=True → _synthesize_memory_answer()
+    que usa MEMORY_SYNTHESIS_PROMPT + historial de conversación.
 
     Args:
-        intents:  Lista de tipos de memoria a componer (ej. ['tasks', 'work_state']).
-        question: Pregunta original del usuario (opcional). Si se provee y hay
-                  2+ intents, habilita la síntesis LLM.
+        intents: Lista de tipos de memoria a componer
+                 (ej. ['tasks', 'work_state']).
 
     Returns:
-        Texto con el contexto compuesto. Puede ser respuesta sintetizada por
-        el LLM o concatenación de secciones como fallback.
+        Texto con secciones etiquetadas listo para pasar al sintetizador.
+        Cadena vacía si ninguna capa tiene contenido.
     """
     _LABELS = {
         "profile":       "Perfil del usuario",
@@ -182,57 +176,7 @@ def get_composed_context(intents: list[str], question: str = "") -> str:
             label = _LABELS.get(intent_type, intent_type)
             sections.append(f"=== {label} ===\n{content.strip()}")
 
-    composed = "\n\n".join(sections)
-
-    # Fix 3: síntesis LLM cuando hay múltiples intents y pregunta disponible.
-    # Solo se activa si hay 2+ capas con contenido real y pregunta provista.
-    if len(sections) >= 2 and question.strip():
-        synthesized = _synthesize_with_llm(question, composed)
-        if synthesized:
-            log.debug(
-                "get_composed_context: síntesis LLM aplicada (%d intents)",
-                len(intents),
-            )
-            return synthesized
-        # Fallback: LLM falló, devolver concatenación original
-        log.debug(
-            "get_composed_context: síntesis LLM falló — fallback a concatenación"
-        )
-
-    return composed
-
-
-def _synthesize_with_llm(question: str, context: str) -> str | None:
-    """Llama al LLM para sintetizar una respuesta cruzando múltiples capas de memoria.
-
-    Importación lazy de generate_raw para evitar importación circular en arranque.
-    Retorna None si el LLM falla, para que get_composed_context use el fallback.
-
-    Args:
-        question: Pregunta original del usuario.
-        context:  Contexto compuesto con todas las capas de memoria relevantes.
-
-    Returns:
-        Texto sintetizado por el LLM, o None si falló.
-    """
-    try:
-        from app.llm_client import generate_raw  # importación lazy — evita circular
-    except ImportError:
-        log.warning("_synthesize_with_llm: no se pudo importar generate_raw")
-        return None
-
-    prompt = (
-        f"Eres un asistente personal. Tienes acceso a la siguiente información "
-        f"de memoria del usuario:\n\n"
-        f"{context}\n\n"
-        f"Pregunta del usuario: {question}\n\n"
-        f"Responde de forma directa y concisa, cruzando la información de todas "
-        f"las secciones anteriores que sean relevantes para responder la pregunta. "
-        f"Si hay relación entre el estado de trabajo y las tareas, explícala. "
-        f"No repitas las secciones completas — sintetiza."
-    )
-
-    return generate_raw(prompt, temperature=0.3, num_predict=300, timeout=30)
+    return "\n\n".join(sections)
 
 
 # ─────────────────────────────────────────────
