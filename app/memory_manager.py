@@ -48,6 +48,11 @@ Interfaces públicas:
     complete_task(task_id)          → None
     record_episode(summary, turns)  → None
 
+  Flujo automático de memoria episódica:
+    suggest_new_tasks(episodes)     → list[dict] de tareas sugeridas a partir de episodios
+    add_task_to_memory(task)        → str con el ID de la tarea creada/existente
+    main_memory_flow()              → int con cantidad de tareas nuevas registradas
+
 Anotaciones MemoryType (8D):
   Cada función pública indica qué capa de memoria accede.
   Ver app.schemas.MemoryType para la definición del enum.
@@ -73,12 +78,14 @@ from app.memory_store import (
     load_tasks,
     load_work_state,
     load_last_episode,
+    load_episodes,
     save_project_fact,
     add_task,
     update_task_status,
     update_work_state,
     update_session_goal,
     save_episode,
+    validate_memory_file,
 )
 from app.memory_context import build_memory_context
 
@@ -311,11 +318,10 @@ def _classify_session_state(
     if blockers:
         return "blocked"
 
-    # Nivel 4: usar campo exitoso del episodio anterior
     if last_ep is not None:
         ep_exitoso = last_ep.get("exitoso", "unmarked")
         if ep_exitoso is True or ep_exitoso == "true":
-            if foco:  # solo momentum si hay foco activo
+            if foco:
                 return "momentum"
         elif ep_exitoso is False or ep_exitoso == "false":
             return "recovering"
@@ -337,36 +343,55 @@ def get_session_briefing() -> dict:
 
     Returns dict con:
       foco           → str: foco actual de work_state
-      session_goal   → str: objetivo específico de esta sesión (puede estar vacío)
+      session_goal   → str: objetivo específico de esta sesión
       next_step      → str: siguiente paso registrado
       last_completed → str: último completado
       blockers       → list[str]: bloqueos activos
       tasks          → dict: clasificación fresh/aging/stale/all_open
-      last_episode   → dict | None: episodio anterior con todos sus campos
-                        incluyendo exitoso y carril_dominante (Paso A)
+      last_episode   → dict | None: episodio anterior
       session_state  → str: patrón clasificado
-      suggestion     → str: acción concreta sugerida según el patrón
+      suggestion     → str: acción concreta sugerida
+      freshness_score→ float: 0.0–1.0 basado en días desde último episodio
     """
     ws         = load_work_state()
     tasks_data = load_tasks()
     tasks      = tasks_data.get("tasks", []) if tasks_data else []
-    last_ep    = load_last_episode()  # Paso A: incluye exitoso + carril_dominante
+    last_ep    = load_last_episode()
 
     task_classes = _classify_tasks(tasks)
     state        = _classify_session_state(ws, task_classes, last_ep)
+    suggestion   = _build_suggestion(state, ws, task_classes)
 
-    suggestion = _build_suggestion(state, ws, task_classes)
+    def _days_since_iso(iso: str | None) -> int | None:
+        if not iso:
+            return None
+        try:
+            return (datetime.now() - datetime.fromisoformat(iso)).days
+        except Exception:
+            return None
+
+    freshness = 0.0
+    last_ep_date = last_ep.get("date") if last_ep else None
+    days = _days_since_iso(last_ep_date)
+    if days is not None:
+        freshness = max(0.0, 1.0 - min(days, 30) / 30.0)
+    else:
+        task_dates = [t.get("updated_at") or t.get("created_at") for t in tasks]
+        task_days = [d for d in (_days_since_iso(d) for d in task_dates) if d is not None]
+        if task_days:
+            freshness = max(0.0, 1.0 - min(task_days) / 30.0)
 
     return {
-        "foco":           ws.get("current_focus", ""),
-        "session_goal":   ws.get("session_goal", ""),
-        "next_step":      ws.get("next_step", ""),
-        "last_completed": ws.get("last_completed", ""),
-        "blockers":       ws.get("current_blockers", []),
-        "tasks":          task_classes,
-        "last_episode":   last_ep,
-        "session_state":  state,
-        "suggestion":     suggestion,
+        "foco":            ws.get("current_focus", ""),
+        "session_goal":    ws.get("session_goal", ""),
+        "next_step":       ws.get("next_step", ""),
+        "last_completed":  ws.get("last_completed", ""),
+        "blockers":        ws.get("current_blockers", []),
+        "tasks":           task_classes,
+        "last_episode":    last_ep,
+        "session_state":   state,
+        "suggestion":      suggestion,
+        "freshness_score": round(freshness, 3),
     }
 
 
@@ -414,7 +439,6 @@ def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
             return f"Objetivo de hoy: '{session_goal}'. ¿Comenzamos?"
         return "Todo en orden. ¿Por dónde empezamos?"
 
-    # drifting
     return "Foco no definido. ¿Quieres revisar el estado del proyecto o definir el objetivo de hoy?"
 
 
@@ -522,3 +546,136 @@ def record_episode(summary: str, turns: int) -> None:
         return
     save_episode(summary=summary.strip(), turns=turns)
     log.debug("Episodio registrado: %d turnos", turns)
+
+
+def create_task_from_episode(episode: dict) -> dict:
+    summary = str(episode.get("summary", "")).strip()
+    if not summary:
+        return {}
+
+    title = "Extraer acción de episodio"
+    lower_summary = summary.lower()
+    if "decisión" in lower_summary or "decisiones" in lower_summary:
+        title = "Revisar decisión mencionada en episodio"
+    elif "tarea" in lower_summary or "tareas" in lower_summary:
+        title = "Registrar tarea detectada en episodio"
+
+    first_sentence = summary.split(".")[0].strip()
+    if first_sentence:
+        title = f"{title}: {first_sentence}"
+    if len(title) > 120:
+        title = title[:117].rstrip() + "..."
+
+    notes = f"Episodio {episode.get('date', '')} {episode.get('time', '')}. "
+    notes += summary
+    return {
+        "title": title,
+        "priority": "medium",
+        "notes": notes,
+    }
+
+
+def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
+    """Genera sugerencias de tareas a partir de una lista de episodios.
+
+    Recorre los episodios buscando señales de acción en el resumen
+    (palabras clave: 'decisión', 'tarea', 'acción'). Por cada episodio
+    que contenga alguna señal, delega en create_task_from_episode()
+    para construir el dict de tarea sugerida.
+
+    Args:
+        episodes: Lista de dicts de episodio tal como los devuelve
+                  load_episodes(). Cada dict debe tener al menos 'summary'.
+
+    Returns:
+        Lista de dicts con campos 'title', 'priority' y 'notes',
+        listos para pasarse a add_task_to_memory(). Puede ser vacía
+        si ningún episodio contiene señales de acción.
+
+    Nota:
+        No escribe en disco. Solo construye la lista de sugerencias.
+        La escritura real ocurre en main_memory_flow() → add_task_to_memory().
+    """
+    new_tasks: list[dict] = []
+    for episode in episodes:
+        summary = str(episode.get("summary", "")).lower()
+        if not summary:
+            continue
+        if "decisión" in summary or "tarea" in summary or "acción" in summary:
+            task = create_task_from_episode(episode)
+            if task:
+                new_tasks.append(task)
+    return new_tasks
+
+
+def add_task_to_memory(task: dict | str) -> str:
+    """Crea una tarea en memoria a partir de un dict o un string de título.
+
+    Wrapper sobre create_task() que acepta dos formas de entrada:
+
+    Forma dict (desde suggest_new_tasks):
+        task = {"title": "...", "priority": "medium", "notes": "..."}
+        task_id = add_task_to_memory(task)
+
+    Forma string (uso directo):
+        task_id = add_task_to_memory("Revisar fidelity_check")
+
+    Args:
+        task: Dict con campos 'title', 'priority' (opcional) y 'notes'
+              (opcional), o string con el título de la tarea.
+
+    Returns:
+        ID de la tarea creada (ej. 'T-007'), o ID existente si ya había
+        una tarea pendiente con el mismo título. Devuelve '' si el título
+        está vacío o la entrada no es válida.
+
+    Advertencia:
+        create_task() evita duplicados por título normalizado, pero si
+        el mismo episodio se procesa dos veces (ej. main_memory_flow()
+        llamado sin control), pueden generarse títulos ligeramente
+        distintos que sí se registren como tareas separadas. Verificar
+        con get_tasks() antes de llamar en bucle.
+    """
+    if isinstance(task, str):
+        return create_task(task)
+    if not isinstance(task, dict):
+        return ""
+    return create_task(
+        title=task.get("title", ""),
+        priority=task.get("priority", "medium"),
+        notes=task.get("notes", ""),
+    )
+
+
+def main_memory_flow() -> int:
+    """Flujo principal de mantenimiento automático de memoria episódica.
+
+    Ejecuta el ciclo completo: leer episodios → detectar acciones →
+    crear tareas sugeridas en memoria. Diseñado para llamarse al arranque
+    de sesión o desde un script de mantenimiento, no en cada turno.
+
+    Flujo interno:
+        1. load_episodes()       → carga todos los episodios del historial
+        2. suggest_new_tasks()   → filtra episodios con señales de acción
+        3. add_task_to_memory()  → registra cada sugerencia (evita duplicados)
+
+    Returns:
+        Número de tareas nuevas efectivamente registradas en esta ejecución.
+        Devuelve 0 si no hay episodios, si ninguno tiene señales de acción,
+        o si todas las tareas sugeridas ya existían como pendientes.
+
+    Advertencia:
+        Produce escritura en disco (storage/tasks.json). No llamar en bucle
+        sin control — cada llamada releerá todos los episodios y podría
+        crear tareas duplicadas si los resúmenes cambian entre ejecuciones.
+        Para uso seguro en arranque: llamar una vez por sesión desde chat_core.
+    """
+    episodes = load_episodes()
+    suggested_tasks = suggest_new_tasks(episodes)
+    added = 0
+    for task in suggested_tasks:
+        task_id = add_task_to_memory(task)
+        if task_id:
+            added += 1
+    log.debug("main_memory_flow: %d sugerencias de tarea procesadas", added)
+    return added

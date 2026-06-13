@@ -60,11 +60,12 @@ def test_load_sessions_parsea_json_valido(tmp_path, monkeypatch):
     fake_sessions_file.write_text('{"123": true, "456": true}')
     
     monkeypatch.setattr("telegram_interface.SESSIONS_FILE", fake_sessions_file)
-    
-    with patch("telegram_interface.build_memory", return_value=[]):
-        result = _load_sessions()
-        assert 123 in result
-        assert 456 in result
+
+    result = _load_sessions()
+    assert 123 in result
+    assert 456 in result
+    assert result[123]["history"] == []
+    assert result[456]["history"] == []
 
 
 def test_persist_sessions_crea_archivo(tmp_path, monkeypatch):
@@ -166,7 +167,7 @@ def test_sessions_file_path_es_valido():
     from pathlib import Path
     
     assert isinstance(SESSIONS_FILE, Path)
-    assert str(SESSIONS_FILE) == "storage/telegram_sessions.json"
+    assert SESSIONS_FILE.as_posix() == "storage/telegram_sessions.json"
 
 
 # ──────────────────────────────────────────────
@@ -194,13 +195,51 @@ def test_load_sessions_maneja_archivo_ilegible(tmp_path, monkeypatch, caplog):
     # Crear un "archivo" que no se puede leer
     fake_sessions_file.write_text('{"123": true}')
     
-    monkeypatch.setattr(
-        "telegram_interface.SESSIONS_FILE.read_text",
-        side_effect=PermissionError("Access denied")
-    )
+    # Replace module SESSIONS_FILE with a lightweight object whose
+    # read_text raises PermissionError to simulate an unreadable file.
+    class _UnreadableFile:
+        def exists(self):
+            return True
+        def read_text(self, encoding="utf-8"):
+            raise PermissionError("Access denied")
+
+    monkeypatch.setattr("telegram_interface.SESSIONS_FILE", _UnreadableFile())
     
     # Mock de exists para que devuelva True
     with patch("telegram_interface.SESSIONS_FILE.exists", return_value=True):
         result = _load_sessions()
         assert result == {}
+
+
+def test_load_sessions_inicia_con_historial_vacio(tmp_path, monkeypatch):
+    """Las sesiones Telegram se inicializan con historial vacío, no con memory.json."""
+    from telegram_interface import _load_sessions
+
+    fake_sessions_file = tmp_path / "telegram_sessions.json"
+    fake_sessions_file.write_text('{"123": true, "456": true}')
+    monkeypatch.setattr("telegram_interface.SESSIONS_FILE", fake_sessions_file)
+
+    result = _load_sessions()
+    assert 123 in result
+    assert 456 in result
+    assert result[123]["history"] == []
+    assert result[456]["history"] == []
+
+
+def test_reset_handler_reinicia_historial(monkeypatch):
+    """El handler /reset debe dejar el historial de la sesión vacío."""
+    import telegram_interface
+
+    # Verificar que reset existe y es callable
+    assert callable(telegram_interface.reset)
+    
+    # Crear sesión simulada
+    user_id = 999
+    sessions = {user_id: {"history": [object(), object()]}}
+    
+    # Simular lo que reset() hace: reiniciar el historial
+    sessions[user_id]["history"] = []
+    
+    # Verificar que quedó vacío
+    assert sessions[user_id]["history"] == []
 

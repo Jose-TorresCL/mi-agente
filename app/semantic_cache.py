@@ -1,118 +1,86 @@
-"""Caché semántica para el carril RAG — con TTL de expiración
+"""Caché semántica de respuestas RAG.
 
-Cómo funciona:
-  1. Antes de llamar al LLM, se calcula el embedding de la pregunta nueva.
-  2. Se compara contra los embeddings de preguntas ya cacheadas.
-  3. Si la similitud coseno supera SIMILARITY_THRESHOLD, se devuelve
-     la respuesta guardada sin tocar Chroma ni el LLM.
-  4. Si no hay hit, el flujo RAG normal sigue y al final guarda el par
-     (embedding, respuesta) para futuras consultas.
-  5. Entradas con más de CACHE_TTL_HOURS horas se descartan automáticamente
-     al leer la caché — evita envenenar respuestas con información obsoleta.
+Evita llamadas repetidas al LLM para preguntas funcionalmente equivalentes.
+Usa embeddings coseno para detectar preguntas similares (no idénticas).
 
-Configuración:
-  SIMILARITY_THRESHOLD — qué tan parecidas deben ser dos preguntas para
-    considerarlas iguales.
-    0.82: equilibrio entre precisión y hit-rate para español con/sin tilde.
-    0.86: más conservador (antiguo valor).
+Arquitectura:
+  - Almacenamiento: lista en memoria (CACHE) + archivo JSON en storage/
+  - Similitud: embeddings de Ollama via /api/embeddings + coseno
+  - Lookup: busca la entrada más similar; devuelve la respuesta si sim >= CACHE_THRESHOLD
+  - Persistencia: se carga al importar el módulo y se guarda en cada cache_save()
 
-  MAX_CACHE_SIZE — número máximo de entradas. Al superar el límite se
-    descartan las más antiguas (FIFO).
+Constantes de configuración:
+  CACHE_THRESHOLD = 0.85   Similitud mínima para considerar un hit
+  CACHE_MAX_SIZE  = 200    Máximo de entradas en el caché (FIFO)
 
-  CACHE_TTL_HOURS — horas de vida de cada entrada. Por defecto 24h.
-    Pasado ese tiempo la entrada se descarta aunque sea semánticamente
-    similar — garantiza que cambios en los docs se reflejen al día siguiente.
+Funciones públicas:
+  get_embedding(text)          → list[float] | None
+  cache_lookup(query)          → str | None
+  cache_save(query, answer)    → None
+  cache_stats()                → dict
 """
 from __future__ import annotations
 
 import json
 import math
 from pathlib import Path
-from datetime import datetime, timedelta
 
+import requests
+
+from app.config import MODEL_NAME, OLLAMA_URL
 from app.logger import get_logger
 
 log = get_logger(__name__)
 
+CACHE_THRESHOLD  = 0.85
+CACHE_MAX_SIZE   = 200
+_EMBED_TIMEOUT   = 10
 
-CACHE_FILE           = Path("storage/semantic_cache.json")
-SIMILARITY_THRESHOLD = 0.82
-MAX_CACHE_SIZE       = 200
-CACHE_TTL_HOURS      = 24
-EMBED_MODEL          = "nomic-embed-text"
-OLLAMA_URL           = "http://localhost:11434"
+_CACHE_FILE = Path("storage") / "semantic_cache.json"
 
-_embed_client = None
+# Estructura interna: lista de dicts {"query": str, "answer": str, "embedding": list[float]}
+CACHE: list[dict] = []
 
 
-# ─────────────────────────────────────────────
-# Helpers internos
-# ─────────────────────────────────────────────
+def _load_cache() -> None:
+    """Carga el caché desde disco al inicializar el módulo.
 
-def _get_embed_client():
-    global _embed_client
-    if _embed_client is None:
-        from langchain_ollama import OllamaEmbeddings
-        _embed_client = OllamaEmbeddings(
-            model=EMBED_MODEL,
-            base_url=OLLAMA_URL,
+    Lee storage/semantic_cache.json si existe y tiene formato válido.
+    Silencia errores de lectura/parseo para no bloquear el arranque.
+    """
+    global CACHE
+    if not _CACHE_FILE.exists():
+        return
+    try:
+        data = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            CACHE = data
+            log.debug("Caché semántica cargada: %d entradas", len(CACHE))
+    except Exception as exc:
+        log.warning("No se pudo cargar semantic_cache.json: %s", exc)
+
+
+def _save_cache() -> None:
+    """Persiste el caché en disco después de cada escritura.
+
+    Escribe storage/semantic_cache.json con indent=2.
+    Silencia errores de escritura — el caché en memoria sigue funcionando.
+    """
+    try:
+        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CACHE_FILE.write_text(
+            json.dumps(CACHE, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
-    return _embed_client
+    except Exception as exc:
+        log.warning("No se pudo guardar semantic_cache.json: %s", exc)
 
 
-def _is_expired(entry: dict) -> bool:
-    """Devuelve True si la entrada supera CACHE_TTL_HOURS."""
-    saved_at = entry.get("saved_at")
-    if not saved_at:
-        return True
-    try:
-        age = datetime.now() - datetime.fromisoformat(saved_at)
-        return age > timedelta(hours=CACHE_TTL_HOURS)
-    except (ValueError, TypeError):
-        return True
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Similitud coseno entre dos vectores de igual longitud.
 
-
-def _entry_age_hours(entry: dict) -> float | None:
-    """Devuelve la edad de una entrada en horas, o None si no hay saved_at."""
-    saved_at = entry.get("saved_at")
-    if not saved_at:
-        return None
-    try:
-        age = datetime.now() - datetime.fromisoformat(saved_at)
-        return age.total_seconds() / 3600
-    except (ValueError, TypeError):
-        return None
-
-
-def _load_cache() -> list[dict]:
-    """Lee la caché desde disco, descartando entradas expiradas."""
-    if not CACHE_FILE.exists():
-        return []
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        all_entries = data.get("entries", [])
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    valid = [e for e in all_entries if not _is_expired(e)]
-
-    expired_count = len(all_entries) - len(valid)
-    if expired_count:
-        log.info("[cache] %d entrada(s) expiradas descartadas (TTL=%dh)", expired_count, CACHE_TTL_HOURS)
-        _save_cache(valid)
-
-    return valid
-
-
-def _save_cache(entries: list[dict]) -> None:
-    """Escribe la caché en disco."""
-    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"entries": entries}, f, ensure_ascii=False, indent=2)
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    Returns 0.0 si alguno de los vectores tiene norma cero.
+    """
     dot    = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -122,113 +90,123 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def get_embedding(text: str) -> list[float] | None:
+    """Obtiene el embedding de un texto desde Ollama.
+
+    Llama a POST /api/embeddings con el modelo configurado en MODEL_NAME.
+    Usada tanto por cache_lookup/cache_save como por fidelity_check.py.
+
+    Args:
+        text: Texto a embeber. No se trunca — el llamador es responsable de
+              limitar la longitud si es necesario (ver _MAX_CONTEXT_CHARS en fidelity_check).
+
+    Returns:
+        Lista de floats con el vector de embedding, o None si Ollama no
+        está disponible o la llamada falla.
+
+    Timeout: _EMBED_TIMEOUT (10s). Nunca lanza excepciones.
+    """
     try:
-        client = _get_embed_client()
-        return client.embed_query(text)
-    except Exception as e:
-        log.warning("[cache] error al obtener embedding: %s", e)
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json={"model": MODEL_NAME, "prompt": text},
+            timeout=_EMBED_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json().get("embedding")
+    except Exception as exc:
+        log.debug("get_embedding falló: %s", exc)
         return None
 
 
-# ─────────────────────────────────────────────
-# API pública
-# ─────────────────────────────────────────────
+def cache_lookup(query: str) -> str | None:
+    """Busca en el caché semántico una respuesta para la consulta dada.
 
-def cache_lookup(question: str) -> str | None:
-    """Busca una respuesta cacheada para la pregunta."""
-    entries = _load_cache()
-    if not entries:
+    Obtiene el embedding de la consulta y lo compara con todos los embeddings
+    almacenados. Si la similitud máxima supera CACHE_THRESHOLD, devuelve la
+    respuesta asociada (hit). En caso contrario devuelve None (miss).
+
+    Args:
+        query: Texto de la pregunta del usuario.
+
+    Returns:
+        Respuesta cacheada como string si hay hit semántico, None si miss
+        o si Ollama no está disponible para obtener el embedding.
+
+    Complejidad: O(n) sobre el tamaño del caché. Aceptable hasta CACHE_MAX_SIZE=200.
+    """
+    if not CACHE:
+        return None
+    q_emb = get_embedding(query)
+    if q_emb is None:
         return None
 
-    q_embedding = get_embedding(question)
-    if q_embedding is None:
-        return None
-
-    best_sim    = 0.0
-    best_answer = None
-
-    for entry in entries:
-        cached_emb = entry.get("embedding")
-        if not cached_emb:
+    best_score = 0.0
+    best_answer: str | None = None
+    for entry in CACHE:
+        stored_emb = entry.get("embedding")
+        if not stored_emb:
             continue
-        sim = _cosine_similarity(q_embedding, cached_emb)
-        if sim > best_sim:
-            best_sim    = sim
-            best_answer = entry.get("answer")
+        score = _cosine(q_emb, stored_emb)
+        if score > best_score:
+            best_score = score
+            best_answer = entry["answer"]
 
-    if best_sim >= SIMILARITY_THRESHOLD and best_answer:
-        log.info("[cache:hit]  similitud=%.3f", best_sim)
+    if best_score >= CACHE_THRESHOLD:
+        log.debug("[cache:hit] sim=%.3f query='%s'", best_score, query[:60])
         return best_answer
 
-    log.debug("[cache:miss] mejor similitud=%.3f (umbral=%.2f)", best_sim, SIMILARITY_THRESHOLD)
+    log.debug("[cache:miss] best_sim=%.3f query='%s'", best_score, query[:60])
     return None
 
 
-def cache_save(question: str, answer: str) -> None:
-    """Guarda un par (pregunta, respuesta) en la caché."""
-    q_embedding = get_embedding(question)
-    if q_embedding is None:
+def cache_save(query: str, answer: str) -> None:
+    """Guarda una nueva entrada en el caché semántico.
+
+    Obtiene el embedding de la consulta y añade la entrada al caché en memoria
+    y en disco. Si el caché supera CACHE_MAX_SIZE, elimina la entrada más antigua
+    (política FIFO).
+
+    Args:
+        query:  Texto de la pregunta (usada para generar el embedding de búsqueda).
+        answer: Respuesta generada por el LLM que se quiere cachear.
+
+    No guarda si Ollama no está disponible (embedding = None).
+    No lanza excepciones.
+    """
+    q_emb = get_embedding(query)
+    if q_emb is None:
+        log.debug("[cache:skip] no se pudo obtener embedding para guardar")
         return
 
-    entries = _load_cache()
+    CACHE.append({"query": query, "answer": answer, "embedding": q_emb})
 
-    for entry in entries:
-        cached_emb = entry.get("embedding")
-        if cached_emb and _cosine_similarity(q_embedding, cached_emb) >= 0.99:
-            return
+    if len(CACHE) > CACHE_MAX_SIZE:
+        CACHE.pop(0)
 
-    entries.append({
-        "question":  question,
-        "answer":    answer,
-        "embedding": q_embedding,
-        "saved_at":  datetime.now().isoformat(timespec="seconds"),
-    })
-
-    if len(entries) > MAX_CACHE_SIZE:
-        entries = entries[-MAX_CACHE_SIZE:]
-
-    _save_cache(entries)
-    log.debug("[cache] entrada guardada para: %s", question[:60])
-
-
-def cache_invalidate() -> None:
-    """Borra toda la caché semántica."""
-    if CACHE_FILE.exists():
-        CACHE_FILE.unlink()
-    log.info("[cache] caché semántica limpiada.")
+    _save_cache()
+    log.debug("[cache:saved] total_entries=%d", len(CACHE))
 
 
 def cache_stats() -> dict:
-    """Devuelve estadísticas de la caché incluyendo edad de entradas.
+    """Devuelve estadísticas del estado actual del caché.
 
-    Campos devueltos:
-        entries          — número de entradas válidas (no expiradas)
-        max_size         — límite máximo configurado
-        threshold        — umbral de similitud coseno
-        ttl_hours        — tiempo de vida configurado en horas
-        avg_age_hours    — edad promedio de entradas en horas
-        oldest_hours     — entrada más vieja en horas
-        newest_hours     — entrada más reciente en horas
-        near_expiry_count — entradas con más de (TTL - 4)h (próximas a expirar)
+    Returns:
+        dict con:
+          total_entries: Número de entradas en memoria.
+          cache_file:    Ruta del archivo de persistencia.
+          file_exists:   True si el archivo JSON existe en disco.
+
+    Útil para el comando !estado y scripts de diagnóstico.
+    Ejemplo:
+        from app.semantic_cache import cache_stats
+        print(cache_stats())
     """
-    entries = _load_cache()
-
-    ages: list[float] = []
-    for e in entries:
-        age = _entry_age_hours(e)
-        if age is not None:
-            ages.append(age)
-
-    near_expiry_threshold = max(0.0, CACHE_TTL_HOURS - 4)
-    near_expiry_count = sum(1 for a in ages if a >= near_expiry_threshold)
-
     return {
-        "entries":           len(entries),
-        "max_size":          MAX_CACHE_SIZE,
-        "threshold":         SIMILARITY_THRESHOLD,
-        "ttl_hours":         CACHE_TTL_HOURS,
-        "avg_age_hours":     round(sum(ages) / len(ages), 1) if ages else 0.0,
-        "oldest_hours":      round(max(ages), 1) if ages else 0.0,
-        "newest_hours":      round(min(ages), 1) if ages else 0.0,
-        "near_expiry_count": near_expiry_count,
+        "total_entries": len(CACHE),
+        "cache_file":    str(_CACHE_FILE),
+        "file_exists":   _CACHE_FILE.exists(),
     }
+
+
+# Cargar caché al importar el módulo
+_load_cache()

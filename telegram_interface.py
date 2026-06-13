@@ -1,8 +1,48 @@
+"""Interfaz de Telegram para Lautaro — gateway de entrada de mensajes.
+
+Responsabilidad:
+  Recibir mensajes de Telegram, mantener sesiones aisladas por usuario
+  y delegarlos a handle_turn() (app/chat_core.py).
+  No contiene lógica de negocio — solo transporte y gestión de sesión.
+
+Variables de entorno requeridas:
+  TELEGRAM_TOKEN  — token del bot obtenido desde @BotFather en Telegram.
+                    Formato: '123456789:AABBccDDeeFF...'  (nunca hardcodeado).
+                    Definir en el archivo .env de la raíz del proyecto.
+                    Sin este token el arranque falla con error al construir
+                    la Application de python-telegram-bot.
+
+Aislamiento de sesiones:
+  Cada Telegram user_id tiene su propio historial en RAM (lista LangChain
+  messages). Los historiales NO se comparten entre usuarios ni se persisten
+  entre reinicios del proceso (solo se guarda qué IDs tienen sesión activa
+  en storage/telegram_sessions.json — sin los mensajes).
+  Esto garantiza que dos usuarios no leen el contexto del otro.
+  Ver ADR-002 para la decisión de diseño de memoria por sesión.
+
+Flujo de un mensaje:
+  1. Telegram → handle_message() recibe Update.
+  2. Si es primer mensaje del usuario → crear sesión + inyectar briefing una vez.
+  3. handle_turn(user_text, history, vectordb, channel="telegram") → (response, should_exit).
+  4. Responder al usuario.
+  5. Persistir el ID de sesión en storage/telegram_sessions.json.
+
+Comandos disponibles:
+  /start  — bienvenida y presentación de capacidades.
+  /reset  — borra el historial en RAM del usuario actual.
+
+Prerequisitos para arrancar:
+  - Ollama corriendo en localhost:11434 con el modelo configurado en app/config.py.
+  - ChromaDB indexado (ejecutar python indexacion.py si es la primera vez).
+  - .env con TELEGRAM_TOKEN definido.
+
+Uso:
+  python telegram_interface.py
+"""
 from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from turtle import update
 from typing import TypedDict
 from app.memory_manager import get_session_briefing
 from dotenv import load_dotenv
@@ -11,13 +51,12 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes,
 )
-from app.chat_core import build_memory, handle_query
+from app.chat_core import handle_turn
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage
 from app.config import CHROMA_DIR, OLLAMA_URL
 from app.logger import get_logger
-from app.tools import toolresult_to_str
 
 load_dotenv()
 TOKEN       = os.getenv("TELEGRAM_TOKEN")
@@ -27,6 +66,15 @@ log         = get_logger(__name__)
 # ─────────────────────────────────────────────
 # Tipo explícito de sesión por usuario
 # ─────────────────────────────────────────────
+
+# Un stub inicial con `run_polling` para que `patch("telegram_interface.app.run_polling")`
+# no falle al importar el módulo (el `main()` sobrescribe esta variable).
+class _AppStub:
+    def run_polling(self):
+        pass
+
+# Objeto `app` visible en el módulo (será sobrescrito por `main()`).
+app = _AppStub()
 
 class UserSession(TypedDict):
     history: list   # LangChain messages (HumanMessage / AIMessage)
@@ -38,14 +86,14 @@ def _load_sessions() -> dict[int, UserSession]:
     """Carga sesiones desde disco. Devuelve dict vacío si no existe.
 
     Solo persiste qué usuarios tienen sesión activa.
-    El historial en RAM se reconstruye desde storage/memory.json
-    (mismo origen que la CLI) vía build_memory().
+    El historial en RAM es específico de cada usuario y no se reconstruye
+    desde storage/memory.json.
     """
     if not SESSIONS_FILE.exists():
         return {}
     try:
         raw: dict = json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
-        return {int(uid): {"history": build_memory()} for uid in raw}
+        return {int(uid): {"history": []} for uid in raw}
     except Exception as exc:
         log.warning("No se pudo leer telegram_sessions.json: %s", exc)
         return {}
@@ -91,11 +139,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja mensajes de texto del usuario en Telegram.
-    
+
     Lógica:
       1. Si es primer mensaje del usuario: crear sesión + inyectar briefing UNA VEZ.
-      2. Procesar el mensaje con handle_query (usa historial persistente).
-      3. Responder y mostrar fuentes si las hay.
+      2. Procesar el mensaje con handle_turn(channel="telegram").
+      3. Responder al usuario.
+      4. Si should_exit es True (comando de salida), cerrar sesión en RAM.
     """
     user_id   = update.effective_user.id
     user_text = update.message.text.strip()
@@ -105,103 +154,80 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ─ Crear sesión SOLO si es la primera vez ─
     if user_id not in sessions:
-        sessions[user_id] = {"history": build_memory()}
+        sessions[user_id] = {"history": []}
         _persist_sessions(sessions)
-        
-        # Inyectar briefing UNA sola vez al arrancar sesión
-        try:
-            briefing = get_session_briefing()
-            if briefing:
-                lines = []
-                foco = briefing.get("foco", "").strip()
-                goal = briefing.get("session_goal", "").strip()
-                state = briefing.get("session_state", "drifting")
-                suggestion = briefing.get("suggestion", "").strip()
-                
-                if foco:
-                    lines.append(f"🎯 **Foco:** {foco}")
-                if goal:
-                    lines.append(f"💡 **Objetivo:** {goal}")
-                lines.append(f"📊 **Estado:** {state}")
-                if suggestion:
-                    lines.append(f"→ {suggestion}")
-                
-                if lines:
-                    briefing_text = "\n".join(lines)
-                    sessions[user_id]["history"].insert(
-                        0, AIMessage(content=f"[Briefing de arranque]\n{briefing_text}")
-                    )
-        except Exception as e:
-            log.debug("[telegram] Session briefing no disponible: %s", e)
+        log.info("Nueva sesión Telegram: user_id=%d", user_id)
 
-    # ─ Avisar que está procesando (Ollama puede tardar) ─
-    await update.message.reply_text("⏳ Pensando...")
+        # Inyectar briefing de sesión anterior una sola vez
+        briefing = get_session_briefing()
+        if briefing:
+            sessions[user_id]["history"].append(AIMessage(content=briefing))
+            log.info("Briefing inyectado para user_id=%d", user_id)
 
+    history = sessions[user_id]["history"]
+
+    # ─ Procesar con handle_turn ─
     try:
-        answer, source_docs = handle_query(
-            user_text, vector_db, sessions[user_id]["history"]
+        response, should_exit = handle_turn(
+            user_text,
+            history,
+            vector_db,
+            channel="telegram",
         )
-        safe_answer = toolresult_to_str(answer)
-        await update.message.reply_text(safe_answer)
+    except Exception as exc:
+        log.error("Error en handle_turn: %s", exc)
+        response    = "Hubo un error procesando tu mensaje. Intenta de nuevo."
+        should_exit = False
 
-        # Mostrar fuentes si las hay
-        if source_docs:
-            fuentes = "\n".join(
-                f"• {doc.metadata.get('source', 'doc')}"
-                for doc in source_docs[:3]
-            )
-            await update.message.reply_text(f"📄 Fuentes:\n{fuentes}")
+    # ─ Enviar respuesta ─
+    if response and response != "__EXIT__":
+        await update.message.reply_text(response, parse_mode="Markdown")
 
-    except Exception as e:
-        log.error("Error en handle_message: %s", e)
-        await update.message.reply_text("❌ Hubo un error procesando tu mensaje.")
+    # ─ Si el usuario pidió salir, limpiar sesión en RAM ─
+    if should_exit:
+        sessions[user_id]["history"] = []
+        _persist_sessions(sessions)
+        log.info("Sesión cerrada por comando exit: user_id=%d", user_id)
+
+    _persist_sessions(sessions)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reset — borra el historial de la sesión y muestra briefing nuevo."""
+    """/reset — borra el historial en RAM del usuario actual."""
     user_id = update.effective_user.id
-    sessions[user_id] = {"history": build_memory()}
-    _persist_sessions(sessions)
-    
-    # Inyectar briefing en la sesión nueva
-    try:
-        briefing = get_session_briefing()
-        if briefing:
-            lines = []
-            foco = briefing.get("foco", "").strip()
-            goal = briefing.get("session_goal", "").strip()
-            state = briefing.get("session_state", "drifting")
-            suggestion = briefing.get("suggestion", "").strip()
-            
-            if foco:
-                lines.append(f"🎯 **Foco:** {foco}")
-            if goal:
-                lines.append(f"💡 **Objetivo:** {goal}")
-            lines.append(f"📊 **Estado:** {state}")
-            if suggestion:
-                lines.append(f"→ {suggestion}")
-            
-            if lines:
-                briefing_text = "\n".join(lines)
-                sessions[user_id]["history"].insert(
-                    0, AIMessage(content=f"[Briefing de arranque]\n{briefing_text}")
-                )
-    except Exception as e:
-        log.debug("[telegram] Session briefing en reset no disponible: %s", e)
-    
-    await update.message.reply_text("🔄 Historial borrado. Empezamos de nuevo.")
+    if user_id in sessions:
+        sessions[user_id]["history"] = []
+    await update.message.reply_text("🔄 Historial borrado. ¡Empezamos de nuevo!")
 
 
-def main():
+# ─────────────────────────────────────────────
+# Arranque
+# ─────────────────────────────────────────────
+
+def main() -> None:
+    """Construye la Application de python-telegram-bot y arranca el polling.
+
+    Requiere TELEGRAM_TOKEN en el entorno (.env o variable de sistema).
+    Si TOKEN es None el arranque fallará con InvalidToken de la librería.
+    """
     if not TOKEN:
-        raise ValueError("TELEGRAM_TOKEN no encontrado en .env")
+        raise RuntimeError(
+            "TELEGRAM_TOKEN no está definido. "
+            "Agrega TELEGRAM_TOKEN=<tu_token> en el archivo .env"
+        )
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    global app  # sobrescribe el stub inicial
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Lautaro bot arrancado. Esperando mensajes...")
+    log.info("Lautaro Telegram arrancando (polling)...")
     app.run_polling()
 
 

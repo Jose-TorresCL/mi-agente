@@ -52,11 +52,16 @@ R-F1 — refactor de funciones puras y constantes (CERRADO):
     movidos a app/prompts.py
   - handle_list_files() movido a app/tool_helpers.py
   - Sin cambio de comportamiento. process_turn y contratos públicos intactos.
+H-B1 — hardening Opción B: tabla _DIRECT_ROUTES + _make_direct_result (CERRADO):
+  - Carriles sin lógica (identity, unsupported, !estado) unificados en _DIRECT_ROUTES.
+  - process_turn despacha via bucle en vez de if-elif repetidos.
+  - Sin cambio de comportamiento. Reduce if-chain de 8 a 5 ramas.
+  - Añadir un nuevo carril directo ahora es agregar 1 línea a _DIRECT_ROUTES.
 """
 from __future__ import annotations
 
 import time
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 from langchain_core.messages import HumanMessage
 
@@ -78,7 +83,7 @@ from app.rag_engine import retrieve_context, build_chain, generate_raw
 from app.semantic_cache import cache_lookup, cache_save
 from app.fidelity_check import verify_fidelity, NO_EVIDENCE_MSG
 from app.router import classify_memory_query
-from app.tool_registry import TOOLS, dispatch_tool
+from app.tool_registry import TOOLS, dispatch_tool_str
 from app.prompts import (
     QA_SYSTEM_PROMPT,
     MEMORY_SYNTHESIS_PROMPT,
@@ -97,7 +102,7 @@ from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
-_EPISODE_TIMEOUT           = 20
+_EPISODE_TIMEOUT           = 40
 _MEMORY_SYNTHESIS_TIMEOUT  = 30
 _HISTORY_LINE_MAX          = 80
 _CACHE_MIN_SCORE           = 0.55
@@ -133,6 +138,46 @@ class RagContext(TypedDict):
     memory_context: str
     experience_injected: bool
     retrieval_ms: int
+
+
+# ───────────────────────────────────────────────
+# H-B1: helper + tabla de carriles directos
+# ───────────────────────────────────────────────
+
+def _make_direct_result(route: str, response_fn: Callable[[], str]) -> DecisionResult:
+    """Construye un DecisionResult para carriles sin LLM ni RAG.
+
+    Centraliza los 7 campos fijos de una respuesta directa.
+    response_fn es un callable sin argumentos para soportar tanto
+    strings fijos como funciones que leen estado (ej. format_estado).
+    """
+    return DecisionResult(
+        route=route,
+        response=response_fn(),
+        cached=False,
+        source="direct",
+        source_docs=[],
+        retrieval_ms=0,
+        llm_ms=0,
+        tokens_est=0,
+    )
+
+
+# Carriles que devuelven una respuesta fija o de estado sin LLM ni RAG.
+# Para añadir un nuevo carril directo: una línea aquí, sin tocar process_turn.
+# El valor es un callable sin argumentos que devuelve el string de respuesta.
+def _get_direct_routes() -> dict[str, Callable[[], str]]:
+    """Construye el mapa de carriles directos en tiempo de llamada.
+
+    Se evalúa en cada invocación para que format_estado() lea el estado
+    actual del sistema en el momento del despacho, no al importar el módulo.
+    """
+    from app.router import format_estado
+    return {
+        "identity":    lambda: IDENTITY_MSG,
+        "unsupported": lambda: UNSUPPORTED_MSG,
+        "!estado":     format_estado,
+    }
 
 
 # ───────────────────────────────────────────────
@@ -496,8 +541,10 @@ def process_turn(
         user_input   = ctx["query"]
         vectordb     = ctx["vectordb"]
         chat_history = ctx["chat_history"]
+        channel      = ctx.get("channel", "cli")
     else:
         route = route_or_ctx
+        channel = "cli"
 
     if chat_history is None:
         chat_history = []
@@ -505,42 +552,20 @@ def process_turn(
     # ── exit ────────────────────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
-        _record_metric(route="exit", intent_type="exit")
+        _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 
-    # ── identity ────────────────────────────────────────────────────────
-    if route == "identity":
-        _record_metric(route="identity", intent_type="identity")
-        return DecisionResult(
-            route="identity",
-            response=IDENTITY_MSG,
-            cached=False,
-            source="direct",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=0,
-            tokens_est=0,
-        )
-
-    # ── !estado ──────────────────────────────────────────────────────────────
-    if route == "!estado":
-        from app.router import format_estado
-        _record_metric(route="!estado", intent_type="!estado")
-        return DecisionResult(
-            route="!estado",
-            response=format_estado(),
-            cached=False,
-            source="direct",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=0,
-            tokens_est=0,
-        )
+    # ── H-B1: carriles directos (identity, unsupported, !estado) ────────────
+    # Para añadir un carril directo nuevo: agregar una línea a _get_direct_routes().
+    direct_routes = _get_direct_routes()
+    if route in direct_routes:
+        _record_metric(route=route, intent_type=route, channel=channel)
+        return _make_direct_result(route, direct_routes[route])
 
     # ── tool_list_files ─────────────────────────────────────────────────────
     if route == "tool_list_files":
         answer = handle_list_files(user_input)
-        _record_metric(route=route, intent_type="tool_list_files")
+        _record_metric(route=route, intent_type="tool_list_files", channel=channel)
         return DecisionResult(
             route=route,
             response=answer,
@@ -555,9 +580,9 @@ def process_turn(
     # ── tools registradas ───────────────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
-        answer = dispatch_tool(route, user_input)
+        answer = dispatch_tool_str(route, user_input)
         llm_ms = int((time.perf_counter() - t0) * 1000)
-        _record_metric(route=route, intent_type=route, llm_ms=llm_ms)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms, channel=channel)
         return DecisionResult(
             route=route,
             response=answer,
@@ -595,7 +620,7 @@ def process_turn(
 
         # Normalizar route a "memory" para métricas consistentes
         _record_metric(route="memory", intent_type=memory_intent,
-                       llm_ms=llm_ms, tokens_est=tokens_est)
+                       llm_ms=llm_ms, tokens_est=tokens_est, channel=channel)
         return DecisionResult(
             route="memory",
             response=answer,
@@ -605,20 +630,6 @@ def process_turn(
             retrieval_ms=0,
             llm_ms=llm_ms,
             tokens_est=tokens_est,
-        )
-
-    # ── unsupported ─────────────────────────────────────────────────────────
-    if route == "unsupported":
-        _record_metric(route=route, intent_type="unsupported")
-        return DecisionResult(
-            route=route,
-            response=UNSUPPORTED_MSG,
-            cached=False,
-            source="direct",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=0,
-            tokens_est=0,
         )
 
     # ── rag (fallback) ───────────────────────────────────────────────────────
@@ -631,6 +642,7 @@ def process_turn(
         retrieval_ms=retrieval_ms, llm_ms=llm_ms,
         tokens_est=tokens_est,
         cached=cached, num_docs=len(source_docs),
+        channel=channel,
     )
     return DecisionResult(
         route=route,

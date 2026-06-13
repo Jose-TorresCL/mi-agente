@@ -1,131 +1,170 @@
-"""Orquestador de conversación.
+"""Núcleo de la sesión de chat — orquestador de turno por turno.
 
-Responsabilidad única: gestionar el flujo de sesión y el historial.
-Delega TODO el procesamiento de intención a la capa de inteligencia.
+Responsabilidades:
+  - Inicializar la sesión (vectordb, historial, estado).
+  - Construir el TurnContext para cada turno y delegarlo a intelligence.py.
+  - Actualizar el historial de conversación después de cada turno.
+  - Emitir el resumen episódico al cerrar la sesión.
 
-Contrato público
-─────────────────
-    build_memory()   -> list[Message]
-    handle_query(user_input, vectordb, chat_history) -> (str, list)
+NO conoce la UI (chat_ui.py, telegram_bot.py) — solo recibe strings
+y devuelve strings. La capa de presentación es responsabilidad del llamador.
 
-Dirección de dependencias:
-    chat_core  →  intelligence  →  memory_manager / rag_engine / ...
-    chat_core  NO importa router, rag_engine, fidelity_check ni tools directamente.
-
-E3: process_turn ahora devuelve DecisionResult (TypedDict).
-    handle_query desempaqueta result["response"] y result.get("source_docs", []).
-    El contrato público de handle_query (str, list) no cambia.
+Contrato público:
+  run_session(channel)          → bucle interactivo de CLI
+  handle_turn(ctx) → str        → procesa un turno y devuelve la respuesta
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
-
-from app.config import MAX_TURNS, MODEL_NAME, OLLAMA_URL
-from app.logger import get_logger
-from app.intelligence import process_turn
-from app.schemas import TurnContext
-
 from langchain_core.messages import HumanMessage, AIMessage
+
+from app.intelligence import process_turn
+from app.logger import get_logger
+from app.memory_manager import main_memory_flow
+from app.schemas import TurnContext
 
 log = get_logger(__name__)
 
-MEMORY_FILE = Path("storage/memory.json")
+_MAX_HISTORY = 20   # líneas totales (10 turnos usuario+asistente)
 
 
-# ─────────────────────────────────────────────
-# Historial de conversación
-# ─────────────────────────────────────────────
+def _init_vectordb():
+    """Inicializa y devuelve el vectorstore Chroma.
 
-def build_memory() -> list:
-    """Lee el historial desde memory.json."""
-    if not MEMORY_FILE.exists():
-        return []
-    try:
-        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        messages = []
-        for m in data.get("messages", [])[-(MAX_TURNS * 2):]:
-            if m.get("role") == "human":
-                messages.append(HumanMessage(content=m["content"]))
-            elif m.get("role") == "ai":
-                messages.append(AIMessage(content=m["content"]))
-        return messages
-    except Exception as exc:
-        log.warning("No se pudo leer memory.json: %s", exc)
-        return []
-
-
-def _persist_turn(user_input: str, answer: str) -> None:
-    """Agrega un turno al historial persistente."""
-    if MEMORY_FILE.exists():
-        try:
-            data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data.get("messages"), list):
-                data = {"messages": []}
-        except Exception:
-            data = {"messages": []}
-    else:
-        MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        data = {"messages": []}
-    data["messages"].append({"role": "human", "content": user_input})
-    data["messages"].append({"role": "ai",    "content": answer})
-    if len(data["messages"]) > MAX_TURNS * 2:
-        data["messages"] = data["messages"][-(MAX_TURNS * 2):]
-    MEMORY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
-# ─────────────────────────────────────────────
-# Punto de entrada público
-# ─────────────────────────────────────────────
-
-def handle_query(
-    user_input: str,
-    vectordb: Any,
-    chat_history: list,
-) -> tuple[str, list]:
-    """Clasifica la consulta, construye TurnContext y delega a process_turn().
-
-    TurnContext agrupa los 4 parámetros del turno en un dict tipado.
-    process_turn() devuelve DecisionResult — se desempaquetan response y
-    source_docs para mantener el contrato público (str, list) de handle_query.
+    Importación tardía para evitar cargar Chroma en tests unitarios
+    que no necesitan el vectordb. Devuelve None si Chroma no está
+    disponible o si el índice todavía no existe.
 
     Returns:
-        (respuesta, source_docs)  — source_docs puede ser lista vacía.
+        Instancia de Chroma lista para consultar, o None si falla.
+    """
+    try:
+        from app.indexing_core import load_vectordb
+        return load_vectordb()
+    except Exception as exc:
+        log.warning("No se pudo cargar vectordb: %s", exc)
+        return None
+
+
+def _trim_history(history: list, max_lines: int = _MAX_HISTORY) -> list:
+    """Recorta el historial al máximo de líneas configurado.
+
+    Mantiene siempre los mensajes más recientes (últimos max_lines).
+    Necesario para no superar el context window del LLM en sesiones largas.
+
+    Args:
+        history:   Lista de HumanMessage / AIMessage de LangChain.
+        max_lines: Máximo de mensajes a conservar. Por defecto _MAX_HISTORY (20).
+
+    Returns:
+        Lista con como máximo max_lines mensajes (los más recientes).
+    """
+    if len(history) > max_lines:
+        return history[-max_lines:]
+    return history
+
+
+def handle_turn(
+    user_input: str,
+    chat_history: list,
+    vectordb,
+    channel: str = "cli",
+    session: session_state.SessionState | None = None,
+) -> tuple[str, bool]:
+    """Procesa un turno completo y devuelve la respuesta del asistente.
+
+    Construye el TurnContext, invoca process_turn() de intelligence.py
+    y actualiza el historial de conversación con el par usuario/asistente.
+
+    Args:
+        user_input:   Texto del mensaje del usuario.
+        chat_history: Lista mutable de mensajes (se modifica in-place).
+        vectordb:     Instancia de Chroma o None si no está disponible.
+        channel:      Canal de origen ('cli', 'telegram'). Por defecto 'cli'.
+        session:      Estado de sesión opcional (para tracking de estadísticas).
+
+    Returns:
+        Tuple (response, should_exit):
+          response     → str con la respuesta del asistente.
+          should_exit  → True si el carril fue 'exit' y la sesión debe cerrarse.
+
+    Nunca lanza excepciones — los errores se capturan y se devuelve un
+    mensaje de error genérico al usuario.
     """
     from app.router import route_query
-    route = route_query(user_input)
-    log.debug("Ruta asignada: '%s' para: %s", route, user_input[:60])
 
-    # Construir TurnContext — contrato de entrada tipado
-    ctx = TurnContext(
-        route=route,
-        query=user_input,
-        vectordb=vectordb,
-        chat_history=chat_history,
-    )
+    try:
+        route = route_query(user_input)
+        ctx = TurnContext(
+            route=route,
+            query=user_input,
+            vectordb=vectordb,
+            chat_history=chat_history,
+            channel=channel,
+        )
+        result = process_turn(ctx)
+        response = result["response"]
+        should_exit = result["route"] == "exit"
 
-    # Delegar procesamiento completo a la capa de inteligencia
-    # E3: process_turn devuelve DecisionResult — desempaquetar campos explícitos
-    result      = process_turn(ctx)
-    answer      = result["response"]
-    source_docs = result.get("source_docs", [])
+        if not should_exit:
+            chat_history.append(HumanMessage(content=user_input))
+            chat_history.append(AIMessage(content=response))
+            _trim_history(chat_history)
 
-    # Log de métricas disponibles desde DecisionResult
-    log.debug(
-        "[handle_query] route=%s source=%s cached=%s llm_ms=%s retrieval_ms=%s",
-        result.get("route"), result.get("source"), result.get("cached"),
-        result.get("llm_ms"), result.get("retrieval_ms"),
-    )
+        return response, should_exit
 
-    # Persistir historial solo si no es exit ni respuesta de error de fidelidad
-    if answer != "__EXIT__":
-        _persist_turn(user_input, answer)
-        chat_history.append(HumanMessage(content=user_input))
-        chat_history.append(AIMessage(content=answer))
-        while len(chat_history) > MAX_TURNS * 2:
-            chat_history.pop(0)
+    except Exception as exc:
+        log.error("handle_turn error inesperado: %s", exc, exc_info=True)
+        return "Ocurrió un error interno. Por favor, intenta de nuevo.", False
 
-    return answer, source_docs
+
+def run_session(channel: str = "cli") -> None:
+    """Inicia y mantiene el bucle de sesión interactiva desde CLI.
+
+    Secuencia de arranque:
+      1. Inicializa vectordb (Chroma).
+      2. Ejecuta main_memory_flow() para sugerir tareas desde episodios.
+      3. Entra en el bucle interactivo: leer input → handle_turn → imprimir.
+      4. Cierra al recibir señal de exit o KeyboardInterrupt.
+
+    Args:
+        channel: Canal de la sesión ('cli' por defecto). Se pasa a handle_turn
+                 para que las métricas reflejen el canal correcto.
+
+    Esta función es el punto de entrada para `python -m app.chat_core`
+    y para scripts de prueba manual. La UI de Telegram usa handle_turn
+    directamente sin llamar a run_session.
+    """
+    vectordb     = _init_vectordb()
+    chat_history: list = []
+    session      = SessionState()
+
+    # Flujo de mantenimiento de memoria al arranque
+    try:
+        new_tasks = main_memory_flow()
+        if new_tasks:
+            log.info("main_memory_flow: %d tarea(s) nueva(s) registrada(s)", new_tasks)
+    except Exception as exc:
+        log.warning("main_memory_flow falló al arrancar (no bloquea): %s", exc)
+
+    print("Lautaro listo. Escribe 'salir' para terminar.")
+
+    while True:
+        try:
+            user_input = input("Tú: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nSesión interrumpida.")
+            break
+
+        if not user_input:
+            continue
+
+        response, should_exit = handle_turn(
+            user_input, chat_history, vectordb,
+            channel=channel, session=session,
+        )
+        print(f"Lautaro: {response}")
+
+        if should_exit:
+            break
+
+    log.info("Sesión terminada. Turnos: %d", session.turns if session else 0)

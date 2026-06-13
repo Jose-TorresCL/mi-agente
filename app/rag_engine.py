@@ -1,150 +1,148 @@
-"""Motor RAG — recuperación de documentos y construcción de la chain.
+"""Motor RAG — recuperación y generación de respuestas documentales.
 
-Responsabilidad única: todo lo relacionado con ChromaDB y LangChain RAG.
-Ningún módulo debe importar langchain_chroma ni OllamaEmbeddings directamente.
+Responsabilidades:
+  - retrieve_context()  → busca chunks relevantes en Chroma y devuelve texto + docs
+  - build_chain()       → construye la cadena LangChain con prompt y LLM
+  - generate_raw()      → genera texto libre con el LLM sin cadena RAG
 
-El cliente LLM (ChatOllama) vive en app/llm_client.py.
-Este módulo re-exporta get_llm y generate_raw por compatibilidad:
-    from app.rag_engine import generate_raw   ← sigue funcionando
-    from app.llm_client import generate_raw   ← forma canónica nueva
+El módulo no gestiona memoria ni historial — eso es responsabilidad de
+intelligence.py y memory_manager.py. Solo accede a vectordb y al LLM.
 
-Funciones RAG:
-    load_vector_store()  → carga ChromaDB
-    build_retriever()    → retriever MMR con filtro por doc_type
-    retrieve_context()   → recupera documentos y devuelve texto + source_docs
-    build_chain()        → chain RAG completa (prompt | llm | parser)
+Fix C2: cliente LLM unificado con generate_raw() — elimina duplicación
+de lógica de HTTP entre build_chain y _decide_exit.
 """
 from __future__ import annotations
 
-from typing import Any
+import requests
 
-from app.config import MODEL_NAME, OLLAMA_URL, CHROMA_DIR
-from app.logger import get_logger
-from app.llm_client import get_llm, generate_raw  # noqa: F401 — re-exporta para compatibilidad
-
-from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+from app.config import MODEL_NAME, OLLAMA_URL
+from app.logger import get_logger
+
 log = get_logger(__name__)
 
+_RETRIEVER_K       = 4
+_LLM_TIMEOUT       = 60
+_GENERATE_TIMEOUT  = 40
 
-# ─────────────────────────────────────────────
-# Vector store
-# ─────────────────────────────────────────────
 
-def load_vector_store() -> Chroma:
-    """Carga ChromaDB con el modelo de embeddings configurado."""
-    embeddings = OllamaEmbeddings(
-        model="nomic-embed-text",
+def retrieve_context(query: str, vectordb) -> tuple[str, list]:
+    """Recupera los chunks más relevantes de Chroma para la consulta dada.
+
+    Usa el retriever de LangChain (similarity search, top-K=4) sobre el
+    vectorstore Chroma. Concatena el contenido de los documentos recuperados
+    en un bloque de texto listo para inyectar en el prompt del LLM.
+
+    Args:
+        query:    Pregunta del usuario en texto libre.
+        vectordb: Instancia de Chroma (LangChain) ya inicializada.
+                  Si es None o el retriever falla, devuelve strings vacíos.
+
+    Returns:
+        Tuple (context_text, source_docs):
+          context_text → str con los chunks concatenados (separados por '\n\n').
+                         String vacío si no se recuperó nada.
+          source_docs  → list[Document] devuelto por el retriever.
+                         Lista vacía si falla o vectordb es None.
+
+    Nunca lanza excepciones — los errores se loguean como WARNING.
+    """
+    if vectordb is None:
+        return "", []
+    try:
+        retriever = vectordb.as_retriever(search_kwargs={"k": _RETRIEVER_K})
+        docs = retriever.invoke(query)
+        context_text = "\n\n".join(
+            doc.page_content for doc in docs if doc.page_content.strip()
+        )
+        return context_text, docs
+    except Exception as exc:
+        log.warning("retrieve_context falló: %s", exc)
+        return "", []
+
+
+def build_chain(system_prompt: str, memory_context: str = ""):
+    """Construye la cadena LangChain (prompt + LLM + parser) para respuestas RAG.
+
+    La cadena espera un dict con las claves:
+      - 'question'     → pregunta del usuario
+      - 'context'      → texto de chunks recuperados
+      - 'chat_history' → historial de conversación comprimido
+
+    Args:
+        system_prompt:   Prompt de sistema (desde app.prompts.QA_SYSTEM_PROMPT).
+        memory_context:  Contexto de memoria selectiva a inyectar como
+                         sección adicional en el system prompt. Por defecto ''.
+
+    Returns:
+        Cadena LangChain invocable (.invoke(dict)) que devuelve el texto
+        generado como string.
+
+    El MODEL_NAME y OLLAMA_URL se leen de app.config.
+    Timeout de generación: _LLM_TIMEOUT (60s por defecto).
+    """
+    full_system = system_prompt
+    if memory_context:
+        full_system = system_prompt + "\n\nContexto de memoria del usuario:\n" + memory_context
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", full_system),
+        ("human",  "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
+    ])
+    llm = ChatOllama(
+        model=MODEL_NAME,
         base_url=OLLAMA_URL,
+        timeout=_LLM_TIMEOUT,
     )
-    return Chroma(
-        embedding_function=embeddings,
-        persist_directory=CHROMA_DIR,
-    )
+    return prompt | llm | StrOutputParser()
 
 
-# ─────────────────────────────────────────────
-# Filtrado de documentos por tipo
-# ─────────────────────────────────────────────
+def generate_raw(
+    prompt: str,
+    temperature: float = 0.3,
+    num_predict: int = 150,
+    timeout: int = _GENERATE_TIMEOUT,
+) -> str | None:
+    """Genera texto libre con el LLM sin construir una cadena RAG completa.
 
-_DOC_TYPE_SIGNALS: dict[str, list[str]] = {
-    "arquitectura": [
-        "arquitectura", "componente", "componentes", "chat.py",
-        "indexacion", "índice", "indice", "vector store",
-        "base documental", "documentos fuente",
-    ],
-    "memoria": [
-        "memoria", "memoria híbrida", "memoria hibrida",
-        "grounded", "correcta", "corto plazo", "largo plazo",
-    ],
-    "estado": [
-        "estado", "próximos pasos", "proximos pasos",
-        "objetivo actual", "objetivo de esta etapa",
-        "estado del proyecto",
-    ],
-    "adr": [
-        "adr", "decisión arquitectural", "decision arquitectural",
-        "por qué se eligió", "por que se eligio",
-        "alternativa descartada", "registro de decisión",
-        "registro de decision", "ADR-001", "ADR-002", "ADR-003", "ADR-004",
-    ],
-    "general": [
-        "roadmap", "prioridad", "prioridades", "siguiente fase",
-        "qué falta", "que falta", "qué queda", "que queda",
-        "plan del proyecto", "próxima sesión", "proxima sesion",
-    ],
-    "paper": [
-        "slm-first", "slm first", "small language model first",
-        "moa", "mixture of agents", "mixture-of-agents",
-        "memgpt", "lightmem",
-        "phi3", "phi3:mini", "phi-3", "por qué falló", "por que falló",
-        "falló phi", "fallo phi",
-        "auto-refinamiento", "auto refinamiento", "self-refinement",
-        "modelos en paralelo", "modelo paralelo",
-        "qué dice el paper", "que dice el paper",
-        "paper de", "según el paper", "segun el paper",
-        "investigación sobre", "investigacion sobre",
-    ],
-}
+    Llama directamente a la API HTTP de Ollama (/api/generate) con el prompt
+    recibido. Usada para síntesis de memoria, resúmenes episódicos y
+    cualquier generación que no requiera retrieval de documentos.
 
-_FETCH_K_BY_TYPE: dict[str, int] = {
-    "paper": 30,
-}
-_DEFAULT_FETCH_K = 20
+    Args:
+        prompt:      Texto completo del prompt a enviar al modelo.
+        temperature: Temperatura de muestreo (0.0 = determinista, 1.0 = creativo).
+                     Por defecto 0.3 para respuestas equilibradas.
+        num_predict: Límite de tokens a generar. Por defecto 150.
+                     Bajar a 45 para resúmenes de sesión (D4-B).
+        timeout:     Timeout HTTP en segundos. Por defecto 40s.
 
+    Returns:
+        String con la respuesta generada, sin espacios sobrantes.
+        None si la llamada HTTP falla o Ollama no está disponible.
 
-def _infer_doc_types(question: str) -> list[str]:
-    q = question.lower()
-    return [
-        doc_type
-        for doc_type, signals in _DOC_TYPE_SIGNALS.items()
-        if any(s in q for s in signals)
-    ]
-
-
-def build_retriever(vectordb: Chroma, question: str):
-    """Construye el retriever con MMR y filtro opcional por tipo de documento."""
-    doc_types = _infer_doc_types(question)
-
-    fetch_k = max(
-        (_FETCH_K_BY_TYPE.get(dt, _DEFAULT_FETCH_K) for dt in doc_types),
-        default=_DEFAULT_FETCH_K,
-    )
-
-    search_kwargs: dict = {
-        "k": 5,
-        "fetch_k": fetch_k,
-        "lambda_mult": 0.6,
-    }
-    if len(doc_types) == 1:
-        search_kwargs["filter"] = {"doc_type": doc_types[0]}
-    elif len(doc_types) > 1:
-        search_kwargs["filter"] = {"$or": [{"doc_type": dt} for dt in doc_types]}
-    return vectordb.as_retriever(
-        search_type="mmr",
-        search_kwargs=search_kwargs,
-    )
-
-
-def retrieve_context(question: str, vectordb: Chroma) -> tuple[str, list]:
-    """Recupera documentos relevantes y devuelve (texto_contexto, source_docs)."""
-    retriever = build_retriever(vectordb, question)
-    source_docs = retriever.invoke(question)
-    log.debug("RAG: recuperados %d documentos", len(source_docs))
-    context_text = "\n\n".join(doc.page_content for doc in source_docs)
-    return context_text, source_docs
-
-
-# ─────────────────────────────────────────────
-# Chain LangChain
-# ─────────────────────────────────────────────
-
-def build_chain(prompt_template: str, memory_context: str):
-    """Construye la chain RAG: prompt | llm | parser."""
-    llm = get_llm()
-    qa_prompt = ChatPromptTemplate.from_template(prompt_template)
-    qa_prompt_with_memory = qa_prompt.partial(memory_context=memory_context)
-    return qa_prompt_with_memory | llm | StrOutputParser()
+    Nunca lanza excepciones — los errores se loguean como WARNING.
+    """
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model":       MODEL_NAME,
+                "prompt":      prompt,
+                "stream":      False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": num_predict,
+                },
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response", "").strip() or None
+    except Exception as exc:
+        log.warning("generate_raw falló: %s", exc)
+        return None
