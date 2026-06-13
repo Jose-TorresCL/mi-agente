@@ -10,6 +10,12 @@ intelligence.py y memory_manager.py. Solo accede a vectordb y al LLM.
 
 Fix C2: cliente LLM unificado con generate_raw() — elimina duplicación
 de lógica de HTTP entre build_chain y _decide_exit.
+
+Fix memory_context: build_chain ya no inyecta memory_context via
+concatenación de strings. El placeholder {memory_context} vive en
+QA_SYSTEM_PROMPT y se resuelve en chain.invoke() desde intelligence.py.
+Esto alinea el template con las 4 variables declaradas en prompts.py:
+{memory_context}, {chat_history}, {context}, {question}.
 """
 from __future__ import annotations
 
@@ -64,18 +70,23 @@ def retrieve_context(query: str, vectordb) -> tuple[str, list]:
         return "", []
 
 
-def build_chain(system_prompt: str, memory_context: str = ""):
+def build_chain(system_prompt: str):
     """Construye la cadena LangChain (prompt + LLM + parser) para respuestas RAG.
 
-    La cadena espera un dict con las claves:
-      - 'question'     → pregunta del usuario
-      - 'context'      → texto de chunks recuperados
-      - 'chat_history' → historial de conversación comprimido
+    La cadena espera un dict con exactamente las claves declaradas en
+    QA_SYSTEM_PROMPT (app/prompts.py):
+      - 'memory_context' → contexto de memoria selectiva (puede ser string vacío)
+      - 'chat_history'   → historial de conversación comprimido
+      - 'context'        → texto de chunks recuperados de Chroma
+      - 'question'       → pregunta del usuario
+
+    IMPORTANTE: memory_context NO se inyecta aquí via concatenación. Vive
+    como variable {memory_context} en el template para que chain.invoke()
+    lo resuelva correctamente desde intelligence.py.
 
     Args:
-        system_prompt:   Prompt de sistema (desde app.prompts.QA_SYSTEM_PROMPT).
-        memory_context:  Contexto de memoria selectiva a inyectar como
-                         sección adicional en el system prompt. Por defecto ''.
+        system_prompt: Prompt de sistema (desde app.prompts.QA_SYSTEM_PROMPT).
+                       Debe contener los 4 placeholders mencionados arriba.
 
     Returns:
         Cadena LangChain invocable (.invoke(dict)) que devuelve el texto
@@ -84,12 +95,8 @@ def build_chain(system_prompt: str, memory_context: str = ""):
     El MODEL_NAME y OLLAMA_URL se leen de app.config.
     Timeout de generación: _LLM_TIMEOUT (60s por defecto).
     """
-    full_system = system_prompt
-    if memory_context:
-        full_system = system_prompt + "\n\nContexto de memoria del usuario:\n" + memory_context
-
     prompt = ChatPromptTemplate.from_messages([
-        ("system", full_system),
+        ("system", system_prompt),
         ("human",  "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
     ])
     llm = ChatOllama(

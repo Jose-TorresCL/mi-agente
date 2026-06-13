@@ -57,6 +57,11 @@ H-B1 — hardening Opción B: tabla _DIRECT_ROUTES + _make_direct_result (CERRAD
   - process_turn despacha via bucle en vez de if-elif repetidos.
   - Sin cambio de comportamiento. Reduce if-chain de 8 a 5 ramas.
   - Añadir un nuevo carril directo ahora es agregar 1 línea a _DIRECT_ROUTES.
+Fix memory_context (CERRADO):
+  - QA_SYSTEM_PROMPT declara {memory_context} como variable de plantilla.
+  - build_chain() ya no inyecta memory_context via concatenación de strings.
+  - _generate_rag_answer() pasa 'memory_context' explícitamente a chain.invoke().
+  - Elimina KeyError y placeholder literal {memory_context} sin sustituir.
 """
 from __future__ import annotations
 
@@ -392,17 +397,43 @@ def _generate_rag_answer(
     rag_ctx: RagContext,
     chat_history: list,
 ) -> tuple[str, list, int, bool, float]:
+    """AGENTE GENERADOR RAG (R6-RAG).
+
+    Invoca la cadena LangChain pasando las 4 variables que QA_SYSTEM_PROMPT
+    declara como placeholders: memory_context, chat_history, context, question.
+
+    IMPORTANTE: 'memory_context' se pasa explícitamente a chain.invoke() para
+    que el ChatPromptTemplate lo sustituya en el system prompt. NO se inyecta
+    en build_chain() via concatenación — eso causaba que el placeholder quedara
+    literal o que chain.invoke() lanzara KeyError.
+
+    Args:
+        user_input:   Pregunta original del usuario.
+        rag_ctx:      RagContext devuelto por _retrieve_rag_context(). Contiene
+                      context_text, source_docs, memory_context y flags.
+        chat_history: Lista de mensajes LangChain (HumanMessage / AIMessage).
+
+    Returns:
+        Tuple (answer, source_docs, llm_ms, is_faithful, fidelity_score):
+          answer         → str con la respuesta generada (o NO_EVIDENCE_MSG).
+          source_docs    → list[Document] usados en el retrieval.
+          llm_ms         → latencia de la cadena LangChain en milisegundos.
+          is_faithful    → bool, True si pasó el chequeo de fidelidad.
+          fidelity_score → float del score de fidelidad (0.0–1.0).
+    """
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
     ) or "(sin historial previo)"
 
     t_llm_start = time.perf_counter()
-    chain = build_chain(QA_SYSTEM_PROMPT, rag_ctx["memory_context"])
+    # build_chain ya no recibe memory_context — se pasa aquí a invoke().
+    chain = build_chain(QA_SYSTEM_PROMPT)
     answer = chain.invoke({
-        "question":     user_input,
-        "context":      rag_ctx["context_text"],
-        "chat_history": chat_history_text,
+        "question":       user_input,
+        "context":        rag_ctx["context_text"],
+        "chat_history":   chat_history_text,
+        "memory_context": rag_ctx["memory_context"],
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
@@ -606,51 +637,44 @@ def process_turn(
             intents = [subtype]
             log.debug("[memory] subtipo desde carril: %s", subtype)
         else:
-            # Capa 2 o legacy — re-detectar como antes
+            # Capa 2 o legacy — re-detectar
             intents = detect_memory_intents(user_input)
-            log.debug("[memory] subtipo re-detectado: %s", intents)
+            log.debug("[memory] intents detectados: %s", intents)
 
-        memory_intent = intents[0] if intents else "memory_query"
-        if len(intents) > 1:
-            memory_intent = "multi:" + "+".join(intents)
-
-        answer = _decide_memory(user_input, intents=intents, chat_history=chat_history)
+        answer = _decide_memory(user_input, intents, chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
-        tokens_est = int(len(answer.split()) * 1.3)
-
-        # Normalizar route a "memory" para métricas consistentes
-        _record_metric(route="memory", intent_type=memory_intent,
-                       llm_ms=llm_ms, tokens_est=tokens_est, channel=channel)
+        # Normalizar route a 'memory' para que las métricas no fragmenten por subtipo
+        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
         return DecisionResult(
             route="memory",
             response=answer,
             cached=False,
-            source="json",
+            source="memory",
             source_docs=[],
             retrieval_ms=0,
             llm_ms=llm_ms,
-            tokens_est=tokens_est,
+            tokens_est=0,
         )
 
-    # ── rag (fallback) ───────────────────────────────────────────────────────
+    # ── rag ─────────────────────────────────────────────────────────────────
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
-        user_input, vectordb, chat_history, route=route
+        user_input, vectordb, chat_history, route
     )
-    tokens_est = int(len(answer.split()) * 1.3)
     _record_metric(
-        route=route, intent_type=route,
-        retrieval_ms=retrieval_ms, llm_ms=llm_ms,
-        tokens_est=tokens_est,
-        cached=cached, num_docs=len(source_docs),
+        route="rag",
+        intent_type="rag",
+        num_docs=len(source_docs),
+        retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms,
         channel=channel,
     )
     return DecisionResult(
-        route=route,
+        route="rag",
         response=answer,
         cached=cached,
-        source="cache" if cached else "chroma",
+        source="rag",
         source_docs=source_docs,
         retrieval_ms=retrieval_ms,
         llm_ms=llm_ms,
-        tokens_est=tokens_est,
+        tokens_est=0,
     )
