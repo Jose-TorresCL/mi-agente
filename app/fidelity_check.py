@@ -20,6 +20,9 @@ Qué hace:
          legítima y rara vez son el dato clave que se quiere verificar.
        - Números en la pregunta original: omitidos — son referencia del usuario,
          no claims del LLM.
+       - IDs de tarea (T-NNNN, formato NNNNNNNNNN de 10 dígitos): omitidos —
+         son referencias de sistema generadas por el proyecto, no claims
+         factuales del LLM. Aparecen en memoria JSON, no en chunks RAG.
 
 Optimización perf:
   Similitud: 2 llamadas HTTP (embed respuesta + embed contexto concatenado).
@@ -76,8 +79,12 @@ _MAX_CONTEXT_CHARS = 4000
 # Números a ignorar en la verificación literal:
 #   - un solo dígito (0-9): demasiado comunes y ambiguos
 #   - años plausibles (1900-2099): el LLM los deduce legítimamente del contexto
+#   - IDs de tarea T-NNNN o timestamps de 10 dígitos generados por el proyecto:
+#     son referencias de sistema en memoria JSON, no claims factuales del LLM.
+#     No existen en chunks RAG → causan falsos positivos si no se excluyen.
 _RE_SINGLE_DIGIT = re.compile(r'^\d$')
 _RE_YEAR         = re.compile(r'^(19|20)\d{2}$')
+_RE_TASK_ID      = re.compile(r'^\d{9,12}$')   # timestamps de 10 dígitos: 0612230517
 
 # Patrón para extraer números de texto libre:
 #   acepta enteros, decimales (con . o ,), porcentajes, miles con separador
@@ -110,7 +117,15 @@ def _dynamic_threshold(question: str) -> float:
 
 
 def _extract_numbers(text: str) -> set[str]:
-    """Extrae números significativos del texto, descartando dígitos solos y años."""
+    """Extrae números significativos del texto, descartando ruido.
+
+    Excluye:
+      - Dígitos solos (0-9): demasiado comunes y ambiguos.
+      - Años (1900-2099): el LLM los deduce legítimamente del contexto.
+      - IDs de tarea (9-12 dígitos): son timestamps de sistema generados
+        por el proyecto (ej. 0612230517). Existen en memoria JSON pero NO
+        en chunks RAG, por lo que causarían falsos positivos numéricos.
+    """
     raw = _RE_NUMBERS.findall(text)
     result: set[str] = set()
     for num in raw:
@@ -118,6 +133,8 @@ def _extract_numbers(text: str) -> set[str]:
         if _RE_SINGLE_DIGIT.match(clean):
             continue
         if _RE_YEAR.match(clean):
+            continue
+        if _RE_TASK_ID.match(clean):         # ← Fix 1: excluir IDs de tarea
             continue
         result.add(clean)
     return result
@@ -246,21 +263,7 @@ def log_fidelity_success(
     threshold: float,
     method: str = "semantic",
 ) -> None:
-    """Registra una respuesta que pasó fidelidad en storage/logs/fidelity_successes.jsonl.
-
-    Args:
-        question:  Pregunta original (truncada a 120 chars).
-        score:     Similitud coseno alcanzada (1.0 para bypasses de respuesta corta).
-        threshold: Umbral dinámico que se aplicó para esta pregunta.
-        method:    Cómo pasó la verificación:
-                     'semantic'      → similitud coseno >= umbral (paso 4)
-                     'short_bypass'  → respuesta corta (<7 palabras) con chunks (paso 3)
-
-    Junto con log_fidelity_failure(), permite calcular la tasa de rechazo real:
-        tasa_rechazo = failures / (failures + successes)
-
-    Never raises.
-    """
+    """Registra una respuesta que pasó fidelidad en storage/logs/fidelity_successes.jsonl."""
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -292,25 +295,7 @@ def log_fidelity_uncertain(question: str, reason: str) -> None:
 
 
 def fidelity_stats() -> dict:
-    """Lee ambos logs y devuelve un resumen de fidelidad.
-
-    Returns:
-        dict con:
-          total_ok:       Número de respuestas que pasaron.
-          total_blocked:  Número de respuestas bloqueadas.
-          total:          total_ok + total_blocked.
-          rejection_rate: Tasa de rechazo (0.0–1.0). 0.0 si no hay datos.
-
-    Never raises.
-
-    Uso desde terminal:
-        python -c "from app.fidelity_check import fidelity_stats; print(fidelity_stats())"
-
-    Uso desde run_eval.py o !estado:
-        from app.fidelity_check import fidelity_stats
-        stats = fidelity_stats()
-        print(f"Tasa de rechazo: {stats['rejection_rate']:.1%}")
-    """
+    """Lee ambos logs y devuelve un resumen de fidelidad."""
     def _count_lines(path: Path) -> int:
         if not path.exists():
             return 0
@@ -319,18 +304,18 @@ def fidelity_stats() -> dict:
         except Exception:
             return 0
 
-    total_ok      = _count_lines(SUCCESSES_LOG)
-    total_blocked = _count_lines(FAILURES_LOG)
+    total_ok        = _count_lines(SUCCESSES_LOG)
+    total_blocked   = _count_lines(FAILURES_LOG)
     total_uncertain = _count_lines(UNCERTAIN_LOG)
-    total         = total_ok + total_blocked
-    rejection_rate = (total_blocked / total) if total > 0 else 0.0
+    total           = total_ok + total_blocked
+    rejection_rate  = (total_blocked / total) if total > 0 else 0.0
 
     return {
-        "total_ok":       total_ok,
-        "total_blocked":  total_blocked,
+        "total_ok":        total_ok,
+        "total_blocked":   total_blocked,
         "total_uncertain": total_uncertain,
-        "total":          total,
-        "rejection_rate": round(rejection_rate, 4),
+        "total":           total,
+        "rejection_rate":  round(rejection_rate, 4),
     }
 
 
@@ -340,26 +325,10 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
     Pipeline de verificación (en orden):
       1. Sin chunks → bloquear.
       2. Verificación numérica literal (0 llamadas HTTP).
-         Si la respuesta contiene números que no aparecen en los chunks, bloquear.
+         IDs de tarea (9-12 dígitos), años y dígitos solos se ignoran.
       3. Bypass de similitud para respuestas muy cortas (<7 palabras) CON chunks.
-         Fix 6C: si no hay chunks_texts, también se bloquea aquí.
-      4. Similitud semántica (2 llamadas HTTP): embed(respuesta) vs embed(contexto).
-
-    Args:
-        answer:      Texto generado por el LLM.
-        source_docs: Lista de Document devuelta por el retriever.
-        question:    Texto de la pregunta (para umbral dinámico y exclusión de números).
-
-    Returns:
-        tuple[bool, float]:
-          True  → respuesta fiel, mostrar al usuario.
-          False → respuesta sospechosa, reemplazar por NO_EVIDENCE_MSG.
-          float → similitud coseno (0.0 si bloquó antes del paso semántico).
-
-    Never raises.
+      4. Similitud semántica (2 llamadas HTTP).
     """
-    threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
-
     return _validate_fidelity(answer, source_docs, question, numeric_strict=True)
 
 
@@ -461,42 +430,7 @@ def fidelity_check(
     question: str = "",
     mode: str = "numeric",
 ) -> tuple[bool, float]:
-    """Punto de entrada alternativo a verify_fidelity con selección explícita de modo.
-
-    A diferencia de verify_fidelity() (que siempre usa mode='numeric'),
-    esta función permite elegir la estrategia de validación según el carril:
-
-    Modos disponibles:
-
-      mode='numeric'  (por defecto)
-        Usa numeric_validation() → _validate_fidelity(numeric_strict=True).
-        Además de similitud semántica, verifica que cada número de la respuesta
-        aparezca literalmente en los chunks fuente.
-        Cuándo usarlo: carriles técnicos o documentales ('rag') donde el LLM
-        podría inventar cifras precisas con alta similitud semántica.
-        Ejemplo: '¿Cuántas líneas tiene router.py?' — si el LLM dice '342 líneas'
-        pero el chunk no lo menciona, se bloquea aunque la similitud sea 0.80.
-
-      mode='semantic'
-        Usa semantic_validation() → _validate_fidelity(numeric_strict=False).
-        Solo verifica similitud coseno contra el umbral dinámico.
-        Cuándo usarlo: carriles donde los números son estimaciones o contexto
-        (memory, work_state, tasks) y un bloqueo numérico falso empeoraría la UX.
-        Ejemplo: 'tengo 3 tareas pendientes' — el 3 viene del JSON de memoria,
-        no de un chunk RAG, así que la verificación numérica literal no aplica.
-
-    Args:
-        answer:      Texto generado por el LLM.
-        source_docs: Lista de Document del retriever (puede ser [] para memoria).
-        question:    Pregunta original (para umbral dinámico).
-        mode:        'numeric' | 'semantic'. Lanza ValueError si es otro valor.
-
-    Returns:
-        tuple[bool, float]: mismo contrato que verify_fidelity().
-
-    Raises:
-        ValueError: si mode no es 'numeric' ni 'semantic'.
-    """
+    """Punto de entrada alternativo a verify_fidelity con selección explícita de modo."""
     if mode == "numeric":
         return numeric_validation(answer, source_docs, question)
     elif mode == "semantic":

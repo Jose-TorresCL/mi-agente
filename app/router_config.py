@@ -62,6 +62,18 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "que hicimos", "en que estamos",
     "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
+    # Fix 2: preguntas de bloqueo/impedimento → work_state.current_blockers
+    # Estas preguntas preguntan por qué no avanza el proyecto, que es
+    # exactamente el campo current_blockers de work_state. Sin estas keywords,
+    # el router caía a RAG que no tiene ese contexto.
+    "que bloquea", "que esta bloqueando", "que esta frenando",
+    "que me bloquea", "que nos bloquea", "que bloqueo hay",
+    "hay algun bloqueo", "cuales son los bloqueos",
+    "que impide", "que me impide", "que nos impide",
+    "que obstaculiza", "hay obstaculos", "que obstaculo hay",
+    "que frena", "que frena el avance", "que esta frenando el avance",
+    "por que no avanzamos", "por que no avanzo",
+    "que me detiene", "que nos detiene",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
