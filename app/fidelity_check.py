@@ -19,7 +19,9 @@ Qué hace:
        - Años (1900-2099): omitidos — el LLM los deduce del contexto de forma
          legítima y rara vez son el dato clave que se quiere verificar.
        - Números en la pregunta original: omitidos — son referencia del usuario,
-         no claims del LLM.
+         no claims del LLM. Fix: se extraen TODOS los números del enunciado
+         (incluyendo los que viajan en el historial concatenado) para evitar
+         que un número de una pregunta anterior bloquee la siguiente.
        - IDs de tarea (T-NNNN, formato NNNNNNNNNN de 10 dígitos): omitidos —
          son referencias de sistema generadas por el proyecto, no claims
          factuales del LLM. Aparecen en memoria JSON, no en chunks RAG.
@@ -81,7 +83,7 @@ _MAX_CONTEXT_CHARS = 4000
 #   - años plausibles (1900-2099): el LLM los deduce legítimamente del contexto
 #   - IDs de tarea T-NNNN o timestamps de 10 dígitos generados por el proyecto:
 #     son referencias de sistema en memoria JSON, no claims factuales del LLM.
-#     No existen en chunks RAG → causan falsos positivos si no se excluyen.
+#     No existen en chunks RAG → causarían falsos positivos si no se excluyen.
 _RE_SINGLE_DIGIT = re.compile(r'^\d$')
 _RE_YEAR         = re.compile(r'^(19|20)\d{2}$')
 _RE_TASK_ID      = re.compile(r'^\d{9,12}$')   # timestamps de 10 dígitos: 0612230517
@@ -207,11 +209,20 @@ def _check_numeric_claims(
     chunks_texts: list[str],
     question: str = "",
 ) -> tuple[bool, str]:
-    """Verifica que los números de la respuesta aparezcan en los chunks mediante comparación numérica."""
+    """Verifica que los números de la respuesta aparezcan en los chunks.
+
+    Fix contaminación: extrae TODOS los números del enunciado completo
+    (no solo palabras exactas) y los excluye de la verificación. Esto evita
+    que un número de una pregunta anterior que viajó en el string `question`
+    (por ejemplo '847' en '6. ¿Cuánto es 847 dividido 13?') bloquee la
+    respuesta de la siguiente pregunta que no tiene relación.
+    """
     answer_nums = _extract_numbers(answer)
     if not answer_nums:
         return True, ""
 
+    # Excluir TODOS los números presentes en el enunciado (incluyendo
+    # los que viajan en el historial concatenado como prefijo)
     if question:
         question_nums = _extract_numbers(question)
         answer_nums -= question_nums
@@ -228,6 +239,11 @@ def _check_numeric_claims(
     }
 
     for num in answer_nums:
+        # Excluir números de 2 dígitos que aparecen literalmente en la pregunta
+        # (ej. '13' en '847 dividido 13') por si _extract_numbers los perdió
+        # por el filtro de dígito único ampliado. Comparación directa de texto.
+        if question and num in question:
+            continue
         normalized = _normalize_number_token(num)
         if normalized is None:
             continue
@@ -326,6 +342,7 @@ def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple
       1. Sin chunks → bloquear.
       2. Verificación numérica literal (0 llamadas HTTP).
          IDs de tarea (9-12 dígitos), años y dígitos solos se ignoran.
+         Números del enunciado completo se excluyen (fix contaminación).
       3. Bypass de similitud para respuestas muy cortas (<7 palabras) CON chunks.
       4. Similitud semántica (2 llamadas HTTP).
     """

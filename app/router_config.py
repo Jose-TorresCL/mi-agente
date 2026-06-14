@@ -63,9 +63,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
     # Fix 2: preguntas de bloqueo/impedimento → work_state.current_blockers
-    # Estas preguntas preguntan por qué no avanza el proyecto, que es
-    # exactamente el campo current_blockers de work_state. Sin estas keywords,
-    # el router caía a RAG que no tiene ese contexto.
     "que bloquea", "que esta bloqueando", "que esta frenando",
     "que me bloquea", "que nos bloquea", "que bloqueo hay",
     "hay algun bloqueo", "cuales son los bloqueos",
@@ -134,6 +131,17 @@ TOOL_SAVE_FACT_KEYWORDS = [
     "guarda el hecho", "registra el hecho", "guarda esto como hecho",
 ]
 
+# Fix: keywords para guardar notas libres → tool_save_fact
+# Antes estas frases caían a RAG porque no había keywords de nota.
+TOOL_SAVE_NOTE_KEYWORDS = [
+    "guarda esta nota", "guarda esta anotacion", "guarda esto",
+    "anota esto", "anotá esto", "guardá esto",
+    "guardá esta nota", "registrá esto", "registra esto",
+    "guarda el siguiente apunte", "apunta esto", "apuntá esto",
+    "nota:", "apunte:", "quiero guardar",
+    "guarda que", "guardá que",
+]
+
 TOOL_CREATE_TASK_KEYWORDS = [
     "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
     "nueva tarea", "anade una tarea", "anota una tarea", "registra una tarea",
@@ -187,6 +195,32 @@ TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas funciones", "cuantas clases",
 ]
 
+# Fix: carril math para preguntas aritméticas y matemáticas puras
+# Antes estas preguntas caían a RAG donde el fidelity las bloqueaba
+# porque los números del enunciado no aparecen en ningún chunk.
+MATH_KEYWORDS = [
+    # Operaciones explícitas
+    "dividido", "dividido entre", "dividido por",
+    "multiplicado", "multiplicado por",
+    "mas menos", "cuanto es", "cuanto da",
+    "resultado de", "calcula", "calculame",
+    "calculá", "calculame esto",
+    "cuanto suma", "cuanto resta",
+    "cuanto multiplica",
+    "raiz de", "raiz cuadrada",
+    "potencia de", "al cuadrado", "al cubo",
+    "porcentaje de", "el porcentaje",
+    "cuantos son",
+    # Patrones numéricos directos (ej. "847 / 13", "20 * 5")
+    # Se evalúan con regex en router.py, no como keyword exacta
+]
+
+# Patrón regex para expresiones matemáticas directas: "847 / 13", "20 * 5", "3 + 4"
+_RE_MATH_EXPR = re.compile(
+    r'^\s*[\d.,]+\s*[+\-*/÷x×]\s*[\d.,]+\s*$',
+    re.IGNORECASE,
+)
+
 RAG_HINTS = [
     "segun los documentos", "como se usa", "diferencia de", "que es", "para que sirve", "componentes", "partes", "metodos",
     "segun la documentacion",
@@ -204,38 +238,28 @@ RAG_HINTS = [
 ]
 
 # [A] Fix A: keywords de razonamiento personal → memory:work_state
-# REGLA: frases de 3+ palabras con pronombre/contexto personal implícito.
-# Esto evita capturar preguntas técnicas puras como "debería usar RAG aquí".
-# Estas frases expresan decisión o priorización sobre el trabajo propio del usuario.
 MEMORY_REASONING_KEYWORDS = [
-    # Variantes de "qué me conviene"
     "que me conviene hacer",
     "que me conviene atacar",
     "que me conviene primero",
-    # Variantes de "qué debería"
     "que deberia hacer primero",
     "que deberia atacar primero",
     "que deberia hacer hoy",
     "que deberiamos hacer primero",
     "que deberiamos atacar",
-    # Variantes de "por dónde empiezo"
     "por donde empiezo",
     "por donde empezamos",
     "por donde arranco",
     "por donde arrancamos",
-    # Variantes de "qué me recomendas"
     "que me recomendas hacer",
     "que me recomendas atacar",
     "que me recomendarías",
-    # Variantes de "qué es lo más importante"
     "que es lo mas importante para mi",
     "cual es lo mas importante para mi",
     "que es lo primero que debo hacer",
-    # Variantes de "cómo priorizo"
     "como priorizo mis tareas",
     "como priorizamos",
     "como ordeno mis tareas",
-    # Variantes de "qué hago primero"
     "que hago primero",
     "que hacemos primero",
     "cual es mi prioridad ahora",
@@ -251,6 +275,8 @@ VALID_LANES = {
     "memory:project_facts", "memory:episode",
     "rag", "identity",
     "unsupported",
+    "math",           # Fix: carril para preguntas matemáticas puras
+    "tool_save_note", # Fix: carril para guardar notas libres
 }
 
 class RouterDebugInfo(TypedDict):
@@ -271,12 +297,15 @@ __all__ = [
     "MEMORY_EPISODE_KEYWORDS",
     "AGENT_IDENTITY_KEYWORDS",
     "TOOL_SAVE_FACT_KEYWORDS",
+    "TOOL_SAVE_NOTE_KEYWORDS",
     "TOOL_CREATE_TASK_KEYWORDS",
     "TOOL_COMPLETE_TASK_KEYWORDS",
     "_COMPLETE_TASK_PATTERN",
     "TOOL_UPDATE_WORK_STATE_KEYWORDS",
     "TOOL_SET_SESSION_GOAL_KEYWORDS",
     "TOOL_UNSUPPORTED_KEYWORDS",
+    "MATH_KEYWORDS",
+    "_RE_MATH_EXPR",
     "RAG_HINTS",
     "MEMORY_REASONING_KEYWORDS",
     "VALID_LANES",
