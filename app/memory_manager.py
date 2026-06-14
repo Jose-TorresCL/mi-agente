@@ -67,10 +67,24 @@ Fix N1-MM:
   Mismo normalizador que Capa 1: minúsculas + sin tildes + espacios comprimidos.
   Eliminados pares duplicados (con/sin tilde) de _INTENT_SIGNALS.
 
+Fix suggest_new_tasks:
+  suggest_new_tasks ahora aplica _normalize(summary) antes de buscar señales
+  de acción. Sin este fix, resúmenes sin tildes (frecuentes en modelos locales
+  cuantizados) silenciaban todo el flujo episódico sin error visible.
+
+Fix _days_since_iso:
+  Eliminada closure _days_since_iso duplicada dentro de get_session_briefing.
+  Se reutiliza _days_since() de nivel módulo, que tiene lógica idéntica.
+
 Nivel 4 (este commit):
   _classify_session_state: patrones momentum y recovering basados en
   last_ep.exitoso. Permiten que el briefing de arranque use la memoria
   episódica para contextualizar el estado — sin LLM.
+
+  Edge case exitoso: si last_ep["exitoso"] es None, ausente o "unmarked",
+  ninguna rama episódica se activa y el estado cae a reglas de tareas
+  (overloaded, stale, focused, drifting). Este comportamiento es intencional
+  — se trata como "sin señal episódica disponible".
 """
 from __future__ import annotations
 
@@ -330,6 +344,10 @@ def _classify_session_state(
     momentum y recovering se evalúan después de blocked para no interferir
     con bloqueos activos, pero antes de overloaded/stale para que la señal
     episódica tenga peso cuando la sesión está relativamente limpia.
+
+    Edge case exitoso: si last_ep["exitoso"] es None, ausente o "unmarked",
+    ninguna rama episódica se activa — se trata como "sin señal disponible"
+    y el estado cae a las reglas de tareas (overloaded, stale, etc.).
     """
     blockers   = ws.get("current_blockers", [])
     all_open   = task_classes["all_open"]
@@ -383,22 +401,14 @@ def get_session_briefing() -> dict:
     state        = _classify_session_state(ws, task_classes, last_ep)
     suggestion   = _build_suggestion(state, ws, task_classes)
 
-    def _days_since_iso(iso: str | None) -> int | None:
-        if not iso:
-            return None
-        try:
-            return (datetime.now() - datetime.fromisoformat(iso)).days
-        except Exception:
-            return None
-
     freshness = 0.0
     last_ep_date = last_ep.get("date") if last_ep else None
-    days = _days_since_iso(last_ep_date)
+    days = _days_since(last_ep_date)
     if days is not None:
         freshness = max(0.0, 1.0 - min(days, 30) / 30.0)
     else:
         task_dates = [t.get("updated_at") or t.get("created_at") for t in tasks]
-        task_days = [d for d in (_days_since_iso(d) for d in task_dates) if d is not None]
+        task_days = [d for d in (_days_since(d) for d in task_dates) if d is not None]
         if task_days:
             freshness = max(0.0, 1.0 - min(task_days) / 30.0)
 
@@ -600,9 +610,13 @@ def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
     """Genera sugerencias de tareas a partir de una lista de episodios.
 
     Recorre los episodios buscando señales de acción en el resumen
-    (palabras clave: 'decisión', 'tarea', 'acción'). Por cada episodio
-    que contenga alguna señal, delega en create_task_from_episode()
-    para construir el dict de tarea sugerida.
+    (palabras clave: 'decision', 'tarea', 'accion' — sin tildes).
+    Por cada episodio que contenga alguna señal, delega en
+    create_task_from_episode() para construir el dict de tarea sugerida.
+
+    Fix suggest_new_tasks: usa _normalize(summary) antes de buscar señales.
+    Esto garantiza que resúmenes generados sin tildes (frecuente en modelos
+    locales cuantizados) también activen el flujo episódico.
 
     Args:
         episodes: Lista de dicts de episodio tal como los devuelve
@@ -619,10 +633,10 @@ def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
     """
     new_tasks: list[dict] = []
     for episode in episodes:
-        summary = str(episode.get("summary", "")).lower()
+        summary = _normalize(str(episode.get("summary", "")))
         if not summary:
             continue
-        if "decisión" in summary or "tarea" in summary or "acción" in summary:
+        if "decision" in summary or "tarea" in summary or "accion" in summary:
             task = create_task_from_episode(episode)
             if task:
                 new_tasks.append(task)
