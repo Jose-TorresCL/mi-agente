@@ -4,10 +4,15 @@ Extraídas de intelligence.py (refactor R-F1) para mantener
 intelligence.py como orquestador puro sin lógica de presentación.
 
 Funciones públicas:
-  format_profile_answer(profile)         → str con perfil formateado en Markdown
-  format_tasks_answer(tasks_data, ...)   → str con lista de tareas pendientes/hechas
+  format_profile_answer(profile)         → str con perfil en lenguaje natural
+  format_tasks_answer(tasks_data, ...)   → str con tareas en lenguaje natural
   build_history_snippet(chat_history)    → str con últimas 3 líneas de historial
   format_episodes_context(episodes)      → str con resúmenes episódicos formateados
+
+Fix conversacional: las tres funciones de formato ahora devuelven texto
+en primera persona y lenguaje natural en vez de serializar campos con
+**Label:** valor. Esto evita que el fallback de síntesis suene robótico
+cuando generate_raw no está disponible.
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ _HISTORY_LINE_MAX = 80
 
 
 def format_profile_answer(profile: dict) -> str:
-    """Formatea el dict de perfil del usuario en texto Markdown legible.
+    """Devuelve el perfil del usuario en lenguaje natural conversacional.
 
     Args:
         profile: Dict tal como lo devuelve memory_store.load_profile().
@@ -26,52 +31,74 @@ def format_profile_answer(profile: dict) -> str:
                  learning_style, preferred_language.
 
     Returns:
-        String con los campos disponibles en formato '**Label:** valor',
-        uno por línea. Devuelve string vacío si profile es None o vacío.
+        String en primera persona, listo para mostrar al usuario.
+        Devuelve string vacío si profile es None o vacío.
 
     Ejemplo de salida:
-        **Nombre:** José
-        **Nivel:** junior
-        **Proyecto:** asistente IA local
+        Te llamo José Torres. Sos desarrollador junior y estás trabajando
+        en tu asistente IA local. Preferís aprender entendiendo el fondo,
+        con analogías y ejemplos antes/después.
     """
     if not profile:
         return ""
-    lines = []
-    field_labels = [
-        ("user_name",          "Nombre"),
-        ("user_level",         "Nivel"),
-        ("project_type",       "Proyecto"),
-        ("learning_style",     "Estilo de aprendizaje"),
-        ("preferred_language", "Lenguaje preferido"),
-    ]
-    for key, label in field_labels:
-        value = profile.get(key, "")
-        if value:
-            lines.append(f"**{label}:** {value}")
-    return "\n".join(lines)
+
+    name    = profile.get("user_name", "")
+    level   = profile.get("user_level", "")
+    project = profile.get("project_type", "")
+    style   = profile.get("learning_style", {})
+
+    parts = []
+
+    # Nombre
+    if name:
+        parts.append(f"Tu nombre es **{name}**.")
+
+    # Nivel y proyecto
+    nivel_proyecto = ""
+    if level and project:
+        nivel_proyecto = f"Sos **{level}** y estás trabajando en **{project}**."
+    elif level:
+        nivel_proyecto = f"Sos **{level}**."
+    elif project:
+        nivel_proyecto = f"Estás trabajando en **{project}**."
+    if nivel_proyecto:
+        parts.append(nivel_proyecto)
+
+    # Estilo de aprendizaje — solo si tiene campos útiles
+    if isinstance(style, dict) and style:
+ n        style_items = []
+        if style.get("wants_to_understand"):
+            style_items.append("entender el fondo")
+        if style.get("prefers_analogies"):
+            style_items.append("analogías")
+        if style.get("prefers_before_after_examples"):
+            style_items.append("ejemplos antes/después")
+        if style.get("not_just_copy_commands"):
+            style_items.append("no solo copiar comandos")
+        if style_items:
+            parts.append(f"Tu estilo de aprendizaje: preferís {', '.join(style_items)}.")
+
+    return " ".join(parts) if parts else ""
 
 
 def format_tasks_answer(tasks_data: dict, question: str = "") -> str:
-    """Formatea la lista de tareas en texto legible según la pregunta del usuario.
+    """Devuelve las tareas del usuario en lenguaje natural.
 
-    Detecta si la pregunta pregunta por tareas 'hechas' (completadas) o por
-    tareas pendientes (comportamiento por defecto). Muestra máximo 10 ítems
-    para no saturar la respuesta.
+    Detecta si la pregunta pide tareas completadas o pendientes.
+    Muestra máximo 10 ítems. Oculta los IDs técnicos internos.
 
     Args:
         tasks_data: Dict tal como lo devuelve memory_store.load_tasks().
-                    Debe contener la clave 'tasks' con lista de dicts de tarea.
-        question:   Texto de la pregunta del usuario (para detectar si pide
-                    tareas completadas). Por defecto muestra pendientes.
+        question:   Pregunta del usuario para detectar intención.
 
     Returns:
-        String con la lista de tareas en formato '- [ID] título (prioridad)',
-        precedido por un encabezado. Devuelve mensaje informativo si no hay tareas.
+        String conversacional con la lista de tareas.
 
-    Ejemplo de salida (pendientes):
-        **Tareas pendientes:**
-        - [T-001] Documentar memory_manager (high)
-        - [T-002] Agregar tests fidelidad (medium)
+    Ejemplo de salida:
+        Tenés 3 tareas abiertas:
+        · actualizar plan-robustecimiento.md (alta prioridad)
+        · documentar fase 9 (prioridad media)
+        · revisar storage en git (prioridad media)
     """
     if not tasks_data:
         return "No encontré tareas registradas."
@@ -82,26 +109,27 @@ def format_tasks_answer(tasks_data: dict, question: str = "") -> str:
 
     question_lower = question.lower() if question else ""
     wants_done = any(kw in question_lower for kw in
-                     ("hechas", "completadas", "terminadas", "done", "completé", "completé"))
+                     ("hechas", "completadas", "terminadas", "done", "completé"))
+
+    priority_label = {"high": "alta prioridad", "medium": "prioridad media", "low": "baja prioridad"}
 
     if wants_done:
         filtered = [t for t in tasks if t.get("status") in ("done", "completed")]
-        header = "**Tareas completadas:**"
-        empty_msg = "No hay tareas completadas aún."
+        if not filtered:
+            return "No hay tareas completadas aún."
+        intro = f"Completaste {len(filtered)} tarea{'s' if len(filtered) != 1 else ''}:"
     else:
         filtered = [t for t in tasks if t.get("status") not in ("done", "completed")]
-        header = "**Tareas pendientes:**"
-        empty_msg = "No hay tareas pendientes. ¡Todo al día!"
+        if not filtered:
+            return "No hay tareas pendientes. ¡Todo al día!"
+        intro = f"Tenés {len(filtered)} tarea{'s' if len(filtered) != 1 else ''} abierta{'s' if len(filtered) != 1 else ''}:"
 
-    if not filtered:
-        return empty_msg
-
-    lines = [header]
+    lines = [intro]
     for t in filtered[:10]:
-        task_id = t.get("id", "?")
-        title = t.get("title", "(sin título)")
+        title    = t.get("title", "(sin título)")
         priority = t.get("priority", "medium")
-        lines.append(f"- [{task_id}] {title} ({priority})")
+        label    = priority_label.get(priority, priority)
+        lines.append(f"· {title} ({label})")
 
     if len(filtered) > 10:
         lines.append(f"... y {len(filtered) - 10} más.")
@@ -149,16 +177,23 @@ def format_episodes_context(episodes: list[dict]) -> str:
                   Se espera que ya estén filtrados — sin episodios vacíos.
 
     Returns:
-        String con un bloque por episodio en formato:
+        String con intro conversacional seguida de un bloque por episodio:
+            Esto es lo que recuerdo de tus sesiones anteriores:
+
             Sesión YYYY-MM-DD HH:MM (N turnos):
             <resumen>
         Bloques separados por línea en blanco.
     """
+    if not episodes:
+        return ""
+
     blocks: list[str] = []
     for ep in episodes:
         date_str = f"{ep.get('date', '')} {ep.get('time', '')}".strip()
-        turns = ep.get("turns", 0)
-        summary = ep.get("summary", "").strip()
-        header = f"Sesión {date_str} ({turns} turnos):"
+        turns    = ep.get("turns", 0)
+        summary  = ep.get("summary", "").strip()
+        header   = f"Sesión {date_str} ({turns} turnos):"
         blocks.append(f"{header}\n{summary}")
-    return "\n\n".join(blocks)
+
+    intro = "Esto es lo que recuerdo de tus sesiones anteriores:"
+    return intro + "\n\n" + "\n\n".join(blocks)

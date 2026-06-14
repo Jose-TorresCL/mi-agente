@@ -16,6 +16,9 @@ concatenación de strings. El placeholder {memory_context} vive en
 QA_SYSTEM_PROMPT y se resuelve en chain.invoke() desde intelligence.py.
 Esto alinea el template con las 4 variables declaradas en prompts.py:
 {memory_context}, {chat_history}, {context}, {question}.
+
+Fix timeout: _LLM_TIMEOUT y _GENERATE_TIMEOUT subidos a 120s para alinear
+con llm_client.py y evitar fallback en síntesis de memoria bajo carga CPU.
 """
 from __future__ import annotations
 
@@ -31,8 +34,8 @@ from app.logger import get_logger
 log = get_logger(__name__)
 
 _RETRIEVER_K       = 4
-_LLM_TIMEOUT       = 60
-_GENERATE_TIMEOUT  = 40
+_LLM_TIMEOUT       = 120
+_GENERATE_TIMEOUT  = 120
 
 
 def retrieve_context(query: str, vectordb) -> tuple[str, list]:
@@ -93,7 +96,7 @@ def build_chain(system_prompt: str):
         generado como string.
 
     El MODEL_NAME y OLLAMA_URL se leen de app.config.
-    Timeout de generación: _LLM_TIMEOUT (60s por defecto).
+    Timeout de generación: _LLM_TIMEOUT (120s).
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
@@ -125,7 +128,7 @@ def generate_raw(
                      Por defecto 0.3 para respuestas equilibradas.
         num_predict: Límite de tokens a generar. Por defecto 150.
                      Bajar a 45 para resúmenes de sesión (D4-B).
-        timeout:     Timeout HTTP en segundos. Por defecto 40s.
+        timeout:     Timeout HTTP en segundos. Por defecto 120s.
 
     Returns:
         String con la respuesta generada, sin espacios sobrantes.
