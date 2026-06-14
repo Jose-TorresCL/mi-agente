@@ -45,12 +45,15 @@ from app.router_config import (
     MEMORY_EPISODE_KEYWORDS,
     AGENT_IDENTITY_KEYWORDS,
     TOOL_SAVE_FACT_KEYWORDS,
+    TOOL_SAVE_NOTE_KEYWORDS,
     TOOL_CREATE_TASK_KEYWORDS,
     TOOL_COMPLETE_TASK_KEYWORDS,
     _COMPLETE_TASK_PATTERN,
     TOOL_UPDATE_WORK_STATE_KEYWORDS,
     TOOL_SET_SESSION_GOAL_KEYWORDS,
     TOOL_UNSUPPORTED_KEYWORDS,
+    MATH_KEYWORDS,
+    _RE_MATH_EXPR,
     RAG_HINTS,
     MEMORY_REASONING_KEYWORDS,
     VALID_LANES,
@@ -131,13 +134,19 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):                return "identity"
 
     # [A] Fix A: razonamiento personal antes de classify_memory_query.
-    # Frases de 3+ palabras con contexto personal → van directo a memory:work_state.
-    # Se evalúan ANTES de classify_memory_query para que no caigan al fallback RAG.
     if any(k in q for k in MEMORY_REASONING_KEYWORDS):              return "memory:work_state"
 
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
+
+    # Fix: notas libres → tool_save_fact (antes caían a RAG)
+    # Se evalúa ANTES de math para no capturar frases con números dentro de una nota.
+    if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):                return "tool_save_fact"
+
+    # Fix: preguntas matemáticas → math (antes caían a RAG y fidelity las bloqueaba)
+    # Se evalúa por keyword y por expresión directa (ej. '847 / 13').
+    if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q): return "math"
 
     if any(k in q for k in RAG_HINTS):                              return "rag"
 
