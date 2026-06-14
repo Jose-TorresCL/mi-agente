@@ -28,7 +28,6 @@ Nota de arquitectura:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from datetime import datetime
 
 from app.memory_manager import (
@@ -36,7 +35,9 @@ from app.memory_manager import (
     create_task as _mm_create_task,
     complete_task as _mm_complete_task,
     get_tasks as _mm_get_tasks,
+    get_work_state as _mm_get_work_state,
     set_session_goal as _mm_set_session_goal,
+    update_state as _mm_update_state,
 )
 from app.schemas import ToolResult
 
@@ -53,9 +54,9 @@ from app.tool_helpers import (  # noqa: F401
 )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: guardar hecho
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_save_fact(content) -> ToolResult:
     """Guarda un hecho en project_facts.json.
@@ -115,9 +116,9 @@ def tool_save_fact(content) -> ToolResult:
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: crear tarea
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> ToolResult:
     """R6-A: retorna ToolResult."""
@@ -150,9 +151,9 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> T
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: completar tarea
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_complete_task(task_id: str) -> ToolResult:
     """R6-A: retorna ToolResult."""
@@ -200,9 +201,9 @@ def tool_complete_task(task_id: str) -> ToolResult:
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: actualizar work_state
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_update_work_state(
     texto: str = "",
@@ -213,37 +214,35 @@ def tool_update_work_state(
 ) -> ToolResult:
     """Actualiza work_state.json desde conversación libre o desde kwargs directos.
 
+    Delega toda escritura en memory_manager.update_state(field, value)
+    respetando el contrato de arquitectura: nadie toca disco directamente
+    excepto memory_store.
+
     R6-A: retorna ToolResult.
     """
-    import json
-
-    path = Path("storage/work_state.json")
-    try:
-        state: dict = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        state = {}
-
     cambios: list[str] = []
 
+    # — kwargs directos —
     if current_focus is not None:
         val = current_focus.strip()
         if val:
-            state["current_focus"] = val
+            _mm_update_state("current_focus", val)
             cambios.append(f"current_focus → '{val}'")
 
     if next_step is not None:
         val = next_step.strip()
         if val:
-            state["next_step"] = val
+            _mm_update_state("next_step", val)
             cambios.append(f"next_step → '{val}'")
 
     if last_completed_step is not None:
         val = last_completed_step.strip()
         if val:
             fecha = datetime.now().strftime("%d/%m/%Y")
-            state["last_completed"] = f"{val} — {fecha}"
+            _mm_update_state("last_completed", f"{val} — {fecha}")
             cambios.append(f"last_completed → '{val}'")
 
+    # — texto libre —
     if texto:
         texto_lower = texto.lower()
 
@@ -254,7 +253,7 @@ def tool_update_work_state(
                 if m:
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
-                        state["current_focus"] = valor
+                        _mm_update_state("current_focus", valor)
                         cambios.append(f"current_focus → '{valor}'")
                     break
 
@@ -268,7 +267,7 @@ def tool_update_work_state(
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
                         fecha = datetime.now().strftime("%d/%m/%Y")
-                        state["last_completed"] = f"{valor} — {fecha}"
+                        _mm_update_state("last_completed", f"{valor} — {fecha}")
                         cambios.append(f"last_completed → '{valor}'")
                     break
 
@@ -281,7 +280,7 @@ def tool_update_work_state(
                 if m:
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
-                        state["next_step"] = valor
+                        _mm_update_state("next_step", valor)
                         cambios.append(f"next_step → '{valor}'")
                     break
 
@@ -293,17 +292,8 @@ def tool_update_work_state(
             tool_name="tool_update_work_state",
         )
 
-    state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    try:
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        return ToolResult(
-            ok=False,
-            message=f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}",
-            error_code="WRITE_ERROR",
-            data={"cambios_intentados": cambios},
-            tool_name="tool_update_work_state",
-        )
+    # Actualizar timestamp via memory_manager
+    _mm_update_state("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
     return ToolResult(
@@ -315,9 +305,9 @@ def tool_update_work_state(
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: definir objetivo de sesión
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_set_session_goal(content: str) -> ToolResult:
     """Guarda el objetivo específico para la sesión actual.
@@ -358,6 +348,7 @@ def tool_set_session_goal(content: str) -> ToolResult:
         tool_name="tool_set_session_goal",
     )
 
+
 def toolresult_to_str(result: ToolResult) -> str:
     """Convierte ToolResult en texto plano seguro para AIMessage."""
     if not isinstance(result, ToolResult):
@@ -371,23 +362,24 @@ def toolresult_to_str(result: ToolResult) -> str:
     return msg
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Sugerencia automática post-actualización
 # (retorna str — helper interno, no es tool pública)
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def suggest_next_step() -> str:
-    """Lee work_state.json y tasks.json y devuelve una sugerencia del siguiente paso."""
-    import json
+    """Lee work_state y tasks vía memory_manager y devuelve una sugerencia.
 
-    ws_path = Path("storage/work_state.json")
-    state = json.loads(ws_path.read_text(encoding="utf-8")) if ws_path.exists() else {}
+    Fix 3: ya no accede a disco directamente. Usa _mm_get_work_state()
+    y _mm_get_tasks() como el resto del sistema.
+    """
+    state   = _mm_get_work_state()
+    tasks_data = _mm_get_tasks()
 
     next_step     = state.get("next_step", "")
     current_focus = state.get("current_focus", "")
     last_done     = state.get("last_completed", "")
 
-    tasks_data = _mm_get_tasks()
     pending = [
         t for t in tasks_data.get("tasks", [])
         if t.get("status") not in ("done", "completed")
@@ -413,4 +405,3 @@ def suggest_next_step() -> str:
         lines.append(f"  ✅  Último completado: {last_done}")
 
     return "\n".join(lines)
-
