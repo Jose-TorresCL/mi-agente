@@ -47,9 +47,14 @@ Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO):
   Y pronombre personal. Si el router mandó 'rag' pero la pregunta es
   razonamiento personal, se fuerza 'memory:work_state' antes del bloque RAG.
   Segunda línea de defensa después de keywords (A) y embeddings (B).
+feat: carril 'math' — eval restringido para aritmética básica (CERRADO).
+  _decide_math() evalua la expresión con ast + eval restringido.
+  No toca RAG ni fidelity_check. Devuelve resultado o mensaje amigable.
 """
 from __future__ import annotations
 
+import ast
+import operator
 import time
 from typing import Any, Callable, TypedDict
 
@@ -104,10 +109,7 @@ _MEMORY_HISTORY_TURNS      = 3
 # D3: umbral propio de intelligence.py para inyección episódica.
 _MIN_EXPERIENCE_SCORE      = 0.70
 
-# Fix 3: señales de razonamiento — cuando la pregunta las contiene,
-# _decide_memory fuerza síntesis LLM aunque needs_llm=False.
-# Esto evita que Lautaro devuelva listas planas cuando el usuario
-# pide recomendación, priorización o análisis cruzado.
+# Fix 3: señales de razonamiento.
 _REASONING_SIGNALS = {
     "recomendar", "recomendas", "recomiendas", "recomendarías",
     "mejor", "primero", "atacar", "prioridad", "priorizar",
@@ -121,10 +123,7 @@ _REASONING_SIGNALS = {
     "qué conviene", "que conviene",
 }
 
-# [C] Fix C: pronombres personales que distinguen razonamiento propio
-# de preguntas técnicas generales.
-# "debería usar RAG"  → no tiene pronombre personal → NO es personal
-# "qué me conviene"   → tiene "me"                  → SÍ es personal
+# [C] Pronombres personales.
 _PERSONAL_PRONOUNS = {
     "me ", " me ", "mi ", " mi ", " yo ", "yo ",
     "nos ", " nos ", "nuestro", "nuestra",
@@ -134,6 +133,19 @@ _PERSONAL_PRONOUNS = {
     "arranco", "empiezo", "empezamos",
     "hago primero", "hacemos primero",
     "mis tareas", "mi prioridad", "mis prioridades",
+}
+
+# Operadores permitidos para eval restringido de matemáticas.
+_SAFE_MATH_OPS: dict = {
+    ast.Add:  operator.add,
+    ast.Sub:  operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div:  operator.truediv,
+    ast.Pow:  operator.pow,
+    ast.Mod:  operator.mod,
+    ast.FloorDiv: operator.floordiv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
 }
 
 
@@ -181,6 +193,77 @@ def _get_direct_routes() -> dict[str, Callable[[], str]]:
         "unsupported": lambda: UNSUPPORTED_MSG,
         "!estado":     format_estado,
     }
+
+
+# ──────────────────────────────────────────────
+# Math — eval restringido para aritmética básica
+# ──────────────────────────────────────────────
+
+def _safe_eval(node: ast.AST) -> float | int:
+    """Recorre el AST de una expresión y la evalúa sin exec() ni eval().
+
+    Solo permite números, operadores aritméticos y paréntesis.
+    Lanza ValueError para cualquier construcción no permitida.
+    """
+    if isinstance(node, ast.Expression):
+        return _safe_eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_MATH_OPS:
+        left  = _safe_eval(node.left)
+        right = _safe_eval(node.right)
+        return _SAFE_MATH_OPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_MATH_OPS:
+        return _SAFE_MATH_OPS[type(node.op)](_safe_eval(node.operand))
+    raise ValueError(f"Construcción no permitida: {ast.dump(node)}")
+
+
+def _extract_math_expr(question: str) -> str:
+    """Extrae la expresión matemática de la pregunta del usuario.
+
+    Elimina prefijos conversacionales como 'cuánto es', 'calcula', etc.
+    y devuelve solo la parte numérica para parsear.
+    """
+    import re
+    prefixes = [
+        r"^(cu[aá]nto\s+es\s+)?",
+        r"^(calc[uo]l[ao]\s+)?",
+        r"^(cu[aá]nto\s+da\s+)?",
+        r"^(resuelve\s+)?",
+        r"^(cu[aá]nto\s+son\s+)?",
+        r"^(\u00bfcu[aá]nto\s+es\s+)?",
+        r"^\u00bf",
+        r"\?$",
+    ]
+    expr = question.strip().lower()
+    for p in prefixes:
+        expr = re.sub(p, "", expr).strip()
+    return expr
+
+
+def _decide_math(question: str) -> str:
+    """Evalúa una expresión aritmética de forma segura.
+
+    Usa _safe_eval() sobre el AST — sin exec(), sin eval() de Python,
+    sin acceso a builtins. Solo números y los 7 operadores de _SAFE_MATH_OPS.
+    Si el parse falla devuelve un mensaje amigable sin romper el flujo.
+    """
+    expr = _extract_math_expr(question)
+    try:
+        tree = ast.parse(expr, mode="eval")
+        result = _safe_eval(tree)
+        # Formatear: si es entero exacto, mostrar sin decimales.
+        if isinstance(result, float) and result.is_integer():
+            result = int(result)
+        return f"{result}"
+    except ZeroDivisionError:
+        return "No se puede dividir entre cero."
+    except Exception:
+        log.debug("[math] no pude parsear: '%s'", expr)
+        return (
+            f"No pude calcular eso. Probá escribiendo la expresión directamente, "
+            f"por ejemplo: `847 / 13` o `(12 + 8) * 3`."
+        )
 
 
 # ──────────────────────────────────────────────
@@ -310,28 +393,11 @@ def _synthesize_memory_answer(
 # ──────────────────────────────────────────────
 
 def _has_reasoning_signal(question: str) -> bool:
-    """Retorna True si la pregunta contiene señales de razonamiento/recomendación.
-
-    Fix 3: cuando el usuario pide priorizar, recomendar o analizar,
-    Lautaro debe sintetizar con LLM en vez de devolver datos crudos.
-    La normalización convierte tildes y mayúsculas para comparación limpia.
-    """
     q_lower = question.lower()
     return any(signal in q_lower for signal in _REASONING_SIGNALS)
 
 
 def _is_personal_reasoning(question: str) -> bool:
-    """[C] Retorna True si la pregunta combina razonamiento + pronombre personal.
-
-    Distingue:
-      'qué me conviene hacer primero'  → True  (tiene señal + pronombre personal)
-      'debería usar RAG aquí'          → False  (señal pero sin pronombre personal)
-      'cómo funciona el router'        → False  (ni señal ni pronombre)
-
-    Se usa en process_turn como segunda línea de defensa:
-    si el router clasificó como 'rag' pero la pregunta es razonamiento
-    personal, se fuerza 'memory:work_state' antes de ejecutar RAG.
-    """
     q_lower = question.lower()
     has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
     has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
@@ -343,14 +409,6 @@ def _decide_memory(
     intents: list[str],
     chat_history: list | None = None,
 ) -> str:
-    """D5: recibe intents ya detectados desde process_turn — no los re-detecta.
-
-    Fix 3: si needs_llm=False pero la pregunta tiene señales de razonamiento
-    (recomendar, priorizar, mejor, debería, etc.), fuerza síntesis LLM.
-    El context_text se usa cuando está disponible; si está vacío pero el
-    fallback tiene datos útiles, se usa el fallback como contexto.
-    Si el LLM falla, se devuelve el fallback original sin romper nada.
-    """
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
 
     if not intents:
@@ -360,16 +418,12 @@ def _decide_memory(
     log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
               mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]))
 
-    # Ruta directa: si ya necesita LLM, sintetizar siempre
     if mem_ctx["needs_llm"]:
         return _synthesize_memory_answer(
             question, mem_ctx["context_text"], mem_ctx["fallback"],
             chat_history=chat_history,
         )
 
-    # Fix 3: aunque needs_llm=False, forzar síntesis si la pregunta
-    # pide razonamiento (priorizar, recomendar, analizar, etc.).
-    # El contexto para el LLM es el fallback (ya tiene los datos formateados).
     if _has_reasoning_signal(question):
         context_for_llm = mem_ctx["context_text"] or mem_ctx["fallback"]
         if context_for_llm.strip():
@@ -383,7 +437,7 @@ def _decide_memory(
 
 
 # ──────────────────────────────────────────────
-# R6-RAG — CACHÉ
+# R6-RAG — CACĈ
 # ──────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
@@ -582,19 +636,19 @@ def process_turn(
     if chat_history is None:
         chat_history = []
 
-    # ── exit ──────────────────────────────────────────────────────────────
+    # ── exit ───────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
         _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 
-    # ── H-B1: carriles directos (identity, unsupported, !estado) ──────────
+    # ── H-B1: carriles directos (identity, unsupported, !estado) ─────────────
     direct_routes = _get_direct_routes()
     if route in direct_routes:
         _record_metric(route=route, intent_type=route, channel=channel)
         return _make_direct_result(route, direct_routes[route])
 
-    # ── tool_list_files ───────────────────────────────────────────────────
+    # ── tool_list_files ──────────────────────────────────────────────
     if route == "tool_list_files":
         answer = handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files", channel=channel)
@@ -609,7 +663,7 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── tools registradas ─────────────────────────────────────────────────
+    # ── tools registradas ─────────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool_str(route, user_input)
@@ -626,7 +680,7 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── memory ───────────────────────────────────────────────────────────
+    # ── memory ───────────────────────────────────────────────────
     if route == "memory" or route.startswith("memory:"):
         t0 = time.perf_counter()
 
@@ -652,10 +706,22 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── [C] Pre-filtro: razonamiento personal que el router mandó a RAG ───
-    # Si route=='rag' pero la pregunta tiene señal de razonamiento + pronombre
-    # personal, forzamos memory:work_state. Esta es la tercera línea de defensa
-    # después de keywords (A) y embeddings (B). No actúa sobre ningún otro carril.
+    # ── math ───────────────────────────────────────────────────
+    if route == "math":
+        answer = _decide_math(user_input)
+        _record_metric(route="math", intent_type="math", channel=channel)
+        return DecisionResult(
+            route="math",
+            response=answer,
+            cached=False,
+            source="direct",
+            source_docs=[],
+            retrieval_ms=0,
+            llm_ms=0,
+            tokens_est=0,
+        )
+
+    # ── [C] Pre-filtro: razonamiento personal que el router mandó a RAG ─────
     if route == "rag" and _is_personal_reasoning(user_input):
         log.debug("[pre-filtro C] razonamiento personal detectado → forzando memory:work_state")
         t0 = time.perf_counter()
@@ -673,7 +739,7 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── rag ───────────────────────────────────────────────────────────────
+    # ── rag ───────────────────────────────────────────────────
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route
     )
