@@ -66,7 +66,7 @@ def format_profile_answer(profile: dict) -> str:
 
     # Estilo de aprendizaje — solo si tiene campos útiles
     if isinstance(style, dict) and style:
- n        style_items = []
+        style_items = []
         if style.get("wants_to_understand"):
             style_items.append("entender el fondo")
         if style.get("prefers_analogies"):
