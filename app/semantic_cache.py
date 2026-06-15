@@ -37,7 +37,9 @@ CACHE_THRESHOLD   = 0.85
 CACHE_MAX_SIZE    = 200
 _EMBED_TIMEOUT    = 90   # subido de 10s: bajo carga CPU el embed puede tardar más
 _EMBED_RETRIES    = 2    # reintentos si falla (total: 3 intentos)
-_EMBED_RETRY_WAIT = 10   # segundos de espera entre reintentos
+_EMBED_RETRY_WAIT = 40   # segundos de espera entre reintentos (subido de 10s a 40s:
+                         # qwen3:8b en CPU puede tardar 2+ min en liberar recursos
+                         # post-generación; 40s da margen real sin exceder 60s)
 
 _CACHE_FILE = Path("storage") / "semantic_cache.json"
 
@@ -88,7 +90,7 @@ def get_embedding(text: str) -> list[float] | None:
     los 10s originales. Por eso el timeout sube a 90s y se hacen hasta
     _EMBED_RETRIES reintentos con _EMBED_RETRY_WAIT segundos de espera.
 
-    Peor caso: 3 × 90s + 2 × 10s = 290s antes de devolver None.
+    Peor caso: 3 × 90s + 2 × 40s = 350s antes de devolver None.
 
     Args:
         text: Texto a embeber. No se trunca — el llamador es responsable de

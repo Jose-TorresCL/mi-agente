@@ -39,16 +39,17 @@ Limitaciones conocidas:
   - Respuestas muy cortas (<7 palabras) con chunks: bypass de similitud.
   - Respuestas muy cortas (<7 palabras) SIN chunks: bloqueadas (fix 6C).
   - Si Ollama está caído: retorna (True, 1.0) para no bloquear al usuario
-    pero NO se loguea como éxito real (bypass de emergencia).
+    pero se loguea en fidelity_uncertain.jsonl como bypass de emergencia.
 
 Contrato de retorno:
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones.
 
 Métricas disponibles:
-  log_fidelity_failure()  → storage/logs/fidelity_failures.jsonl
-  log_fidelity_success()  → storage/logs/fidelity_successes.jsonl
-  fidelity_stats()        → dict con total_ok, total_blocked, rejection_rate
+  log_fidelity_failure()   → storage/logs/fidelity_failures.jsonl
+  log_fidelity_success()   → storage/logs/fidelity_successes.jsonl
+  log_fidelity_uncertain() → storage/logs/fidelity_uncertain.jsonl
+  fidelity_stats()         → dict con total_ok, total_blocked, total_uncertain
 """
 from __future__ import annotations
 
@@ -397,7 +398,9 @@ def _validate_fidelity(
         return False, 0.0
 
     if ans_embedding is None:
-        print("[fidelity:skip] Ollama no disponible, se pasa")
+        reason = "embed respuesta devolvió None (Ollama ocupado post-LLM)"
+        print(f"[fidelity:skip] {reason}")
+        log_fidelity_uncertain(question or answer, reason)  # ← antes era silencioso
         return True, 1.0
 
     chunk_embeddings = []
