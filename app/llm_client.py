@@ -16,6 +16,10 @@ Historial:
     fix-timeout   — timeout subido de 30s a 120s. Bajo carga concurrente
                     (llm + embedder en CPU) el modelo puede tardar 35s+;
                     30s causaba fallback en síntesis de memoria.
+    fix-think     — qwen3:8b activa thinking mode por defecto, lo que triplica
+                    la latencia en CPU (~4 min vs ~40s). Se desactiva con
+                    think=False en options. num_ctx limitado a 4096 para
+                    reducir uso de memoria y acelerar inferencia.
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ def get_llm() -> ChatOllama:
             model=MODEL_NAME,
             base_url=OLLAMA_URL,
             temperature=0.1,
+            num_ctx=4096,
         )
         log.debug("LLM singleton inicializado: %s", MODEL_NAME)
     return _llm_instance
@@ -75,6 +80,7 @@ def generate_raw(
             options={
                 "temperature": temperature,
                 "num_predict": num_predict,
+                "think": False,
             },
         )
         result = llm.invoke([HumanMessage(content=prompt)])
