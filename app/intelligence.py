@@ -50,6 +50,8 @@ Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO):
 feat: carril 'math' — eval restringido para aritmética básica (CERRADO).
   _decide_math() evalua la expresión con ast + eval restringido.
   No toca RAG ni fidelity_check. Devuelve resultado o mensaje amigable.
+perf: _EPISODE_TIMEOUT subido de 40s a 90s y _MEMORY_SYNTHESIS_TIMEOUT
+  de 30s a 120s para alinear con tiempos reales de qwen3:8b en CPU.
 """
 from __future__ import annotations
 
@@ -97,8 +99,8 @@ from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
-_EPISODE_TIMEOUT           = 40
-_MEMORY_SYNTHESIS_TIMEOUT  = 30
+_EPISODE_TIMEOUT           = 90   # subido de 40s: qwen3:8b puede tardar más bajo carga CPU
+_MEMORY_SYNTHESIS_TIMEOUT  = 120  # subido de 30s: evita timeout en síntesis de memoria
 _HISTORY_LINE_MAX          = 80
 _CACHE_MIN_SCORE           = 0.55
 _COUNT_KEYWORDS            = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
@@ -200,11 +202,7 @@ def _get_direct_routes() -> dict[str, Callable[[], str]]:
 # ──────────────────────────────────────────────
 
 def _safe_eval(node: ast.AST) -> float | int:
-    """Recorre el AST de una expresión y la evalúa sin exec() ni eval().
-
-    Solo permite números, operadores aritméticos y paréntesis.
-    Lanza ValueError para cualquier construcción no permitida.
-    """
+    """Recorre el AST de una expresión y la evalúa sin exec() ni eval()."""
     if isinstance(node, ast.Expression):
         return _safe_eval(node.body)
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -219,11 +217,7 @@ def _safe_eval(node: ast.AST) -> float | int:
 
 
 def _extract_math_expr(question: str) -> str:
-    """Extrae la expresión matemática de la pregunta del usuario.
-
-    Elimina prefijos conversacionales como 'cuánto es', 'calcula', etc.
-    y devuelve solo la parte numérica para parsear.
-    """
+    """Extrae la expresión matemática de la pregunta del usuario."""
     import re
     prefixes = [
         r"^(cu[aá]nto\s+es\s+)?",
@@ -242,17 +236,11 @@ def _extract_math_expr(question: str) -> str:
 
 
 def _decide_math(question: str) -> str:
-    """Evalúa una expresión aritmética de forma segura.
-
-    Usa _safe_eval() sobre el AST — sin exec(), sin eval() de Python,
-    sin acceso a builtins. Solo números y los 7 operadores de _SAFE_MATH_OPS.
-    Si el parse falla devuelve un mensaje amigable sin romper el flujo.
-    """
+    """Evalúa una expresión aritmética de forma segura."""
     expr = _extract_math_expr(question)
     try:
         tree = ast.parse(expr, mode="eval")
         result = _safe_eval(tree)
-        # Formatear: si es entero exacto, mostrar sin decimales.
         if isinstance(result, float) and result.is_integer():
             result = int(result)
         return f"{result}"
@@ -437,7 +425,7 @@ def _decide_memory(
 
 
 # ──────────────────────────────────────────────
-# R6-RAG — CACĈ
+# R6-RAG — CACHÉ
 # ──────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
