@@ -20,6 +20,11 @@ Historial:
                     la latencia en CPU (~4 min vs ~40s). Se desactiva con
                     think=False en options. num_ctx limitado a 4096 para
                     reducir uso de memoria y acelerar inferencia.
+    fix-think-singleton — think=False añadido también al singleton base de
+                    get_llm(). Antes solo estaba en .bind() de generate_raw();
+                    si algún módulo llama get_llm().invoke() directamente,
+                    el thinking mode quedaba activo. Ahora el singleton ya
+                    nace con think=False y es imposible olvidarlo.
 """
 from __future__ import annotations
 
@@ -35,7 +40,12 @@ _llm_instance: ChatOllama | None = None
 
 
 def get_llm() -> ChatOllama:
-    """Devuelve el LLM singleton. Se crea solo la primera vez."""
+    """Devuelve el LLM singleton. Se crea solo la primera vez.
+
+    think=False desactiva el reasoning mode de qwen3:8b desde el singleton
+    base, garantizando que cualquier caller que use get_llm().invoke()
+    directamente tampoco active el thinking mode.
+    """
     global _llm_instance
     if _llm_instance is None:
         _llm_instance = ChatOllama(
@@ -43,6 +53,7 @@ def get_llm() -> ChatOllama:
             base_url=OLLAMA_URL,
             temperature=0.1,
             num_ctx=4096,
+            think=False,
         )
         log.debug("LLM singleton inicializado: %s", MODEL_NAME)
     return _llm_instance
