@@ -1,9 +1,9 @@
 """Motor RAG — recuperación y generación de respuestas documentales.
 
 Responsabilidades:
-  - retrieve_context()  → busca chunks relevantes en Chroma y devuelve texto + docs
-  - build_chain()       → construye la cadena LangChain con prompt y LLM
-  - generate_raw()      → genera texto libre con el LLM sin cadena RAG
+- retrieve_context() → busca chunks relevantes en Chroma y devuelve texto + docs
+- build_chain() → construye la cadena LangChain con prompt y LLM
+- generate_raw() → genera texto libre con el LLM sin cadena RAG
 
 El módulo no gestiona memoria ni historial — eso es responsabilidad de
 intelligence.py y memory_manager.py. Solo accede a vectordb y al LLM.
@@ -19,6 +19,10 @@ Esto alinea el template con las 4 variables declaradas en prompts.py:
 
 Fix timeout: _LLM_TIMEOUT y _GENERATE_TIMEOUT subidos a 120s para alinear
 con llm_client.py y evitar fallback en síntesis de memoria bajo carga CPU.
+
+Fix think: qwen3:8b activa thinking mode por defecto, triplicando latencia
+en CPU. Se desactiva con think=False en ChatOllama y en options de
+generate_raw. num_ctx limitado a 4096 para reducir uso de memoria.
 """
 from __future__ import annotations
 
@@ -33,9 +37,9 @@ from app.logger import get_logger
 
 log = get_logger(__name__)
 
-_RETRIEVER_K       = 4
-_LLM_TIMEOUT       = 120
-_GENERATE_TIMEOUT  = 120
+_RETRIEVER_K = 4
+_LLM_TIMEOUT = 120
+_GENERATE_TIMEOUT = 120
 
 
 def retrieve_context(query: str, vectordb) -> tuple[str, list]:
@@ -52,10 +56,10 @@ def retrieve_context(query: str, vectordb) -> tuple[str, list]:
 
     Returns:
         Tuple (context_text, source_docs):
-          context_text → str con los chunks concatenados (separados por '\n\n').
-                         String vacío si no se recuperó nada.
-          source_docs  → list[Document] devuelto por el retriever.
-                         Lista vacía si falla o vectordb es None.
+        context_text → str con los chunks concatenados (separados por '\n\n').
+                       String vacío si no se recuperó nada.
+        source_docs  → list[Document] devuelto por el retriever.
+                       Lista vacía si falla o vectordb es None.
 
     Nunca lanza excepciones — los errores se loguean como WARNING.
     """
@@ -78,10 +82,10 @@ def build_chain(system_prompt: str):
 
     La cadena espera un dict con exactamente las claves declaradas en
     QA_SYSTEM_PROMPT (app/prompts.py):
-      - 'memory_context' → contexto de memoria selectiva (puede ser string vacío)
-      - 'chat_history'   → historial de conversación comprimido
-      - 'context'        → texto de chunks recuperados de Chroma
-      - 'question'       → pregunta del usuario
+    - 'memory_context' → contexto de memoria selectiva (puede ser string vacío)
+    - 'chat_history'   → historial de conversación comprimido
+    - 'context'        → texto de chunks recuperados de Chroma
+    - 'question'       → pregunta del usuario
 
     IMPORTANTE: memory_context NO se inyecta aquí via concatenación. Vive
     como variable {memory_context} en el template para que chain.invoke()
@@ -97,15 +101,19 @@ def build_chain(system_prompt: str):
 
     El MODEL_NAME y OLLAMA_URL se leen de app.config.
     Timeout de generación: _LLM_TIMEOUT (120s).
+    think=False desactiva el reasoning mode de qwen3 para reducir latencia.
+    num_ctx=4096 limita la ventana de contexto para reducir uso de RAM.
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
-        ("human",  "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
+        ("human", "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
     ])
     llm = ChatOllama(
         model=MODEL_NAME,
         base_url=OLLAMA_URL,
         timeout=_LLM_TIMEOUT,
+        num_ctx=4096,
+        think=False,
     )
     return prompt | llm | StrOutputParser()
 
@@ -135,18 +143,21 @@ def generate_raw(
         None si la llamada HTTP falla o Ollama no está disponible.
 
     Nunca lanza excepciones — los errores se loguean como WARNING.
+    think=False desactiva el reasoning mode de qwen3 para reducir latencia.
     """
     try:
         resp = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={
-                "model":       MODEL_NAME,
-                "prompt":      prompt,
-                "stream":      False,
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
                 "options": {
                     "temperature": temperature,
                     "num_predict": num_predict,
+                    "num_ctx": 4096,
                 },
+                "think": False,
             },
             timeout=timeout,
         )
