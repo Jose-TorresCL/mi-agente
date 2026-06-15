@@ -108,6 +108,15 @@ MEMORY_EPISODE_KEYWORDS = [
     "historial de sesiones", "episodios anteriores",
     "que avance", "que avanzamos",
     "ultima vez que",
+    # Fix Bug 3: frases de briefing y retoma que iban a tool_update_work_state
+    "briefing", "dame un briefing",
+    "retomar el trabajo", "retomar trabajo", "retomar la sesion",
+    "desde el ultimo episodio", "desde el ultimo episodio sugiere",
+    "por donde empezar hoy", "por donde empezamos hoy",
+    "resumen de la sesion anterior", "dame un resumen de la sesion",
+    "que paso en la sesion anterior", "que hicimos en la sesion anterior",
+    "acciones concretas que deberia hacer hoy",
+    "sugerencias desde el ultimo episodio",
 ]
 
 AGENT_IDENTITY_KEYWORDS = [
@@ -145,6 +154,11 @@ TOOL_SAVE_NOTE_KEYWORDS = [
 TOOL_CREATE_TASK_KEYWORDS = [
     "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
     "nueva tarea", "anade una tarea", "anota una tarea", "registra una tarea",
+    # Fix Bug 2: variantes sin 'una' que el usuario usa naturalmente
+    "crea tarea", "crea la tarea", "crea tarea:",
+    "agrega tarea", "agrega la tarea",
+    "añade una tarea", "añade tarea",
+    "nueva tarea:", "tarea nueva:",
 ]
 
 TOOL_COMPLETE_TASK_KEYWORDS = [
@@ -166,6 +180,12 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "complete", "termine", "acabe", "ya hice", "listo:",
     "el siguiente paso es", "sigue:", "proximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
+    # Fix Bug 1: patrón corto 'foco a X' que el usuario usa naturalmente
+    "foco a ", "foco en ",
+    "mi foco es", "mi foco sera", "mi foco ahora es",
+    "cambio de foco", "cambio el foco",
+    "ahora me enfoco en", "me enfoco en",
+    "quiero enfocarme en", "voy a enfocarme en",
 ]
 
 TOOL_SET_SESSION_GOAL_KEYWORDS = [
