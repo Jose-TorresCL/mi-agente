@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 
 import requests
@@ -32,9 +33,11 @@ from app.logger import get_logger
 
 log = get_logger(__name__)
 
-CACHE_THRESHOLD  = 0.85
-CACHE_MAX_SIZE   = 200
-_EMBED_TIMEOUT   = 10
+CACHE_THRESHOLD   = 0.85
+CACHE_MAX_SIZE    = 200
+_EMBED_TIMEOUT    = 90   # subido de 10s: bajo carga CPU el embed puede tardar más
+_EMBED_RETRIES    = 2    # reintentos si falla (total: 3 intentos)
+_EMBED_RETRY_WAIT = 10   # segundos de espera entre reintentos
 
 _CACHE_FILE = Path("storage") / "semantic_cache.json"
 
@@ -43,11 +46,7 @@ CACHE: list[dict] = []
 
 
 def _load_cache() -> None:
-    """Carga el caché desde disco al inicializar el módulo.
-
-    Lee storage/semantic_cache.json si existe y tiene formato válido.
-    Silencia errores de lectura/parseo para no bloquear el arranque.
-    """
+    """Carga el caché desde disco al inicializar el módulo."""
     global CACHE
     if not _CACHE_FILE.exists():
         return
@@ -61,11 +60,7 @@ def _load_cache() -> None:
 
 
 def _save_cache() -> None:
-    """Persiste el caché en disco después de cada escritura.
-
-    Escribe storage/semantic_cache.json con indent=2.
-    Silencia errores de escritura — el caché en memoria sigue funcionando.
-    """
+    """Persiste el caché en disco después de cada escritura."""
     try:
         _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _CACHE_FILE.write_text(
@@ -77,10 +72,7 @@ def _save_cache() -> None:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """Similitud coseno entre dos vectores de igual longitud.
-
-    Returns 0.0 si alguno de los vectores tiene norma cero.
-    """
+    """Similitud coseno entre dos vectores de igual longitud."""
     dot    = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -90,50 +82,46 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def get_embedding(text: str) -> list[float] | None:
-    """Obtiene el embedding de un texto desde Ollama.
+    """Obtiene el embedding de un texto desde Ollama, con reintentos.
 
-    Llama a POST /api/embeddings con el modelo configurado en MODEL_NAME.
-    Usada tanto por cache_lookup/cache_save como por fidelity_check.py.
+    Bajo carga CPU (el LLM genera en paralelo), Ollama puede tardar más de
+    los 10s originales. Por eso el timeout sube a 90s y se hacen hasta
+    _EMBED_RETRIES reintentos con _EMBED_RETRY_WAIT segundos de espera.
+
+    Peor caso: 3 × 90s + 2 × 10s = 290s antes de devolver None.
 
     Args:
         text: Texto a embeber. No se trunca — el llamador es responsable de
               limitar la longitud si es necesario (ver _MAX_CONTEXT_CHARS en fidelity_check).
 
     Returns:
-        Lista de floats con el vector de embedding, o None si Ollama no
-        está disponible o la llamada falla.
-
-    Timeout: _EMBED_TIMEOUT (10s). Nunca lanza excepciones.
+        Lista de floats con el vector de embedding, o None si todos los
+        intentos fallaron. Nunca lanza excepciones.
     """
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": MODEL_NAME, "prompt": text},
-            timeout=_EMBED_TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json().get("embedding")
-    except Exception as exc:
-        log.debug("get_embedding falló: %s", exc)
-        return None
+    last_exc: Exception | None = None
+    for attempt in range(1 + _EMBED_RETRIES):
+        try:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={"model": MODEL_NAME, "prompt": text},
+                timeout=_EMBED_TIMEOUT,
+            )
+            resp.raise_for_status()
+            return resp.json().get("embedding")
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _EMBED_RETRIES:
+                log.debug(
+                    "get_embedding intento %d falló, reintentando en %ds: %s",
+                    attempt + 1, _EMBED_RETRY_WAIT, exc,
+                )
+                time.sleep(_EMBED_RETRY_WAIT)
+    log.debug("get_embedding falló tras %d intentos: %s", 1 + _EMBED_RETRIES, last_exc)
+    return None
 
 
 def cache_lookup(query: str) -> str | None:
-    """Busca en el caché semántico una respuesta para la consulta dada.
-
-    Obtiene el embedding de la consulta y lo compara con todos los embeddings
-    almacenados. Si la similitud máxima supera CACHE_THRESHOLD, devuelve la
-    respuesta asociada (hit). En caso contrario devuelve None (miss).
-
-    Args:
-        query: Texto de la pregunta del usuario.
-
-    Returns:
-        Respuesta cacheada como string si hay hit semántico, None si miss
-        o si Ollama no está disponible para obtener el embedding.
-
-    Complejidad: O(n) sobre el tamaño del caché. Aceptable hasta CACHE_MAX_SIZE=200.
-    """
+    """Busca en el caché semántico una respuesta para la consulta dada."""
     if not CACHE:
         return None
     q_emb = get_embedding(query)
@@ -160,19 +148,7 @@ def cache_lookup(query: str) -> str | None:
 
 
 def cache_save(query: str, answer: str) -> None:
-    """Guarda una nueva entrada en el caché semántico.
-
-    Obtiene el embedding de la consulta y añade la entrada al caché en memoria
-    y en disco. Si el caché supera CACHE_MAX_SIZE, elimina la entrada más antigua
-    (política FIFO).
-
-    Args:
-        query:  Texto de la pregunta (usada para generar el embedding de búsqueda).
-        answer: Respuesta generada por el LLM que se quiere cachear.
-
-    No guarda si Ollama no está disponible (embedding = None).
-    No lanza excepciones.
-    """
+    """Guarda una nueva entrada en el caché semántico."""
     q_emb = get_embedding(query)
     if q_emb is None:
         log.debug("[cache:skip] no se pudo obtener embedding para guardar")
@@ -188,19 +164,7 @@ def cache_save(query: str, answer: str) -> None:
 
 
 def cache_stats() -> dict:
-    """Devuelve estadísticas del estado actual del caché.
-
-    Returns:
-        dict con:
-          total_entries: Número de entradas en memoria.
-          cache_file:    Ruta del archivo de persistencia.
-          file_exists:   True si el archivo JSON existe en disco.
-
-    Útil para el comando !estado y scripts de diagnóstico.
-    Ejemplo:
-        from app.semantic_cache import cache_stats
-        print(cache_stats())
-    """
+    """Devuelve estadísticas del estado actual del caché."""
     return {
         "total_entries": len(CACHE),
         "cache_file":    str(_CACHE_FILE),
