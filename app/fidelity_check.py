@@ -41,6 +41,10 @@ Limitaciones conocidas:
   - Si Ollama está caído: retorna (True, 1.0) para no bloquear al usuario
     pero se loguea en fidelity_uncertain.jsonl como bypass de emergencia.
 
+Fix retry embed: cuando get_embedding() devuelve None post-LLM (CPU ocupada
+durante inferencia), se espera 3s y reintenta una vez antes de hacer skip.
+Esto resuelve el [fidelity:skip] sistemático en CPU sin GPU dedicada.
+
 Contrato de retorno:
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones.
@@ -56,6 +60,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -94,6 +99,9 @@ _RE_TASK_ID      = re.compile(r'^\d{9,12}$')   # timestamps de 10 dígitos: 0612
 #   Ejemplos: 10456  10.456  10,456  98.3  0.86  55%
 _RE_NUMBERS = re.compile(r'\b\d[\d.,]*\b')
 
+# Segundos de espera antes de reintentar embed post-LLM
+_EMBED_RETRY_SLEEP = 3
+
 
 # ─────────────────────────────────────────────
 # Helpers internos
@@ -120,34 +128,23 @@ def _dynamic_threshold(question: str) -> float:
 
 
 def _extract_numbers(text: str) -> set[str]:
-    """Extrae números significativos del texto, descartando ruido.
-
-    Excluye:
-      - Dígitos solos (0-9): demasiado comunes y ambiguos.
-      - Años (1900-2099): el LLM los deduce legítimamente del contexto.
-      - IDs de tarea (9-12 dígitos): son timestamps de sistema generados
-        por el proyecto (ej. 0612230517). Existen en memoria JSON pero NO
-        en chunks RAG, por lo que causarían falsos positivos numéricos.
-    """
+    """Extrae números significativos del texto, descartando ruido."""
     raw = _RE_NUMBERS.findall(text)
     result: set[str] = set()
     for num in raw:
-        clean = num.rstrip('.,')  # quitar puntuación final
+        clean = num.rstrip('.,')
         if _RE_SINGLE_DIGIT.match(clean):
             continue
         if _RE_YEAR.match(clean):
             continue
-        if _RE_TASK_ID.match(clean):         # ← Fix 1: excluir IDs de tarea
+        if _RE_TASK_ID.match(clean):
             continue
         result.add(clean)
     return result
 
 
 def _normalize_number_token(token: str) -> str | None:
-    """Normaliza un token numérico para comparación numérica.
-
-    Convierte variantes de miles/decimales, porcentajes y sufijos K/k a un valor canónico.
-    """
+    """Normaliza un token numérico para comparación numérica."""
     token = token.strip()
     if not token:
         return None
@@ -210,20 +207,11 @@ def _check_numeric_claims(
     chunks_texts: list[str],
     question: str = "",
 ) -> tuple[bool, str]:
-    """Verifica que los números de la respuesta aparezcan en los chunks.
-
-    Fix contaminación: extrae TODOS los números del enunciado completo
-    (no solo palabras exactas) y los excluye de la verificación. Esto evita
-    que un número de una pregunta anterior que viajó en el string `question`
-    (por ejemplo '847' en '6. ¿Cuánto es 847 dividido 13?') bloquee la
-    respuesta de la siguiente pregunta que no tiene relación.
-    """
+    """Verifica que los números de la respuesta aparezcan en los chunks."""
     answer_nums = _extract_numbers(answer)
     if not answer_nums:
         return True, ""
 
-    # Excluir TODOS los números presentes en el enunciado (incluyendo
-    # los que viajan en el historial concatenado como prefijo)
     if question:
         question_nums = _extract_numbers(question)
         answer_nums -= question_nums
@@ -240,9 +228,6 @@ def _check_numeric_claims(
     }
 
     for num in answer_nums:
-        # Excluir números de 2 dígitos que aparecen literalmente en la pregunta
-        # (ej. '13' en '847 dividido 13') por si _extract_numbers los perdió
-        # por el filtro de dígito único ampliado. Comparación directa de texto.
         if question and num in question:
             continue
         normalized = _normalize_number_token(num)
@@ -337,16 +322,7 @@ def fidelity_stats() -> dict:
 
 
 def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple[bool, float]:
-    """Verifica si la respuesta está soportada por los chunks recuperados.
-
-    Pipeline de verificación (en orden):
-      1. Sin chunks → bloquear.
-      2. Verificación numérica literal (0 llamadas HTTP).
-         IDs de tarea (9-12 dígitos), años y dígitos solos se ignoran.
-         Números del enunciado completo se excluyen (fix contaminación).
-      3. Bypass de similitud para respuestas muy cortas (<7 palabras) CON chunks.
-      4. Similitud semántica (2 llamadas HTTP).
-    """
+    """Verifica si la respuesta está soportada por los chunks recuperados."""
     return _validate_fidelity(answer, source_docs, question, numeric_strict=True)
 
 
@@ -397,10 +373,20 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
+    # Retry único: si Ollama devuelve None post-LLM (CPU ocupada),
+    # esperar _EMBED_RETRY_SLEEP segundos y reintentar antes de hacer skip.
     if ans_embedding is None:
-        reason = "embed respuesta devolvió None (Ollama ocupado post-LLM)"
+        print(f"[fidelity:retry] embed devolvió None — reintentando en {_EMBED_RETRY_SLEEP}s")
+        time.sleep(_EMBED_RETRY_SLEEP)
+        try:
+            ans_embedding = get_embedding(answer)
+        except Exception:
+            ans_embedding = None
+
+    if ans_embedding is None:
+        reason = "embed respuesta devolvió None tras retry (Ollama ocupado post-LLM)"
         print(f"[fidelity:skip] {reason}")
-        log_fidelity_uncertain(question or answer, reason)  # ← antes era silencioso
+        log_fidelity_uncertain(question or answer, reason)
         return True, 1.0
 
     chunk_embeddings = []
