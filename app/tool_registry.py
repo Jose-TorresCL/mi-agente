@@ -32,6 +32,8 @@ Regla de seguridad (R6-A):
 """
 from __future__ import annotations
 
+import re
+
 from app.tools import (
     list_project_files,
     read_project_file,
@@ -81,15 +83,32 @@ def _handle_create_task(user_input: str) -> str:
         "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
         "áñade una tarea:", "áñade una tarea", "anota una tarea:", "anota una tarea",
         "registra una tarea:", "registra una tarea",
+        "agregar tarea:", "agregar tarea",
     ]:
         if text.startswith(prefix):
             raw = user_input[len(prefix):].strip()
             priority = "medium"
-            for p in ["alta", "high", "baja", "low", "media", "medium"]:
-                if raw.lower().endswith(p):
-                    raw = raw[:-len(p)].strip().rstrip(",;")
-                    priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
-                    break
+
+            # Buscar patrón "prioridad <valor>" en cualquier posición
+            match = re.search(
+                r",?\s*prioridad\s+(alta|high|baja|low|media|medium)\b",
+                raw,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                p = match.group(1).lower()
+                priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
+                raw = re.sub(
+                    r",?\s*prioridad\s+\S+", "", raw, flags=re.IGNORECASE
+                ).strip().rstrip(",;— ").strip()
+            else:
+                # Fallback: detectar si termina directamente en la palabra de prioridad
+                for p in ["alta", "high", "baja", "low", "media", "medium"]:
+                    if raw.lower().endswith(p):
+                        raw = raw[:-len(p)].strip().rstrip(",;")
+                        priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
+                        break
+
             return tool_result_to_str(tool_create_task(title=raw, priority=priority))
     return tool_result_to_str(tool_create_task(title=user_input, priority="medium"))
 
@@ -107,10 +126,27 @@ def _handle_update_work_state(user_input: str) -> str:
     return tool_result_to_str(result) + suggestion
 
 
-def _handle_list_files(user_input: str) -> str:  # noqa: ARG001
+def _handle_list_files(user_input: str) -> str:
     files = list_project_files()
     if not files:
         return "No encontré archivos en las carpetas permitidas."
+
+    # Detectar si el usuario pidió solo una extensión específica
+    ext_filter = None
+    u = user_input.lower()
+    if ".md" in u or "markdown" in u:
+        ext_filter = ".md"
+    elif ".py" in u or "python" in u:
+        ext_filter = ".py"
+    elif ".json" in u:
+        ext_filter = ".json"
+
+    if ext_filter:
+        files = [f for f in files if f.lower().endswith(ext_filter)]
+        if not files:
+            return f"No encontré archivos {ext_filter} en las carpetas permitidas."
+        return f"Archivos {ext_filter} del proyecto:\n" + "\n".join(f"- {f}" for f in files)
+
     return "Archivos del proyecto:\n" + "\n".join(f"- {f}" for f in files)
 
 
