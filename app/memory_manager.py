@@ -85,6 +85,12 @@ Nivel 4 (este commit):
   ninguna rama episódica se activa y el estado cae a reglas de tareas
   (overloaded, stale, focused, drifting). Este comportamiento es intencional
   — se trata como "sin señal episódica disponible".
+
+Sugerencia contextual por carril dominante:
+  _get_smart_suggestion() cruza session_state + ep_carril del episodio
+  anterior para generar sugerencias más específicas que el texto genérico.
+  Tabla _SUGGESTION_BY_CARRIL cubre 10 combinaciones frecuentes.
+  Fallback al comportamiento anterior si ep_carril no está en la tabla.
 """
 from __future__ import annotations
 
@@ -374,6 +380,46 @@ def _classify_session_state(
     return "drifting"
 
 
+# ─────────────────────────────────────────────
+# Sugerencia contextual por carril dominante
+# ─────────────────────────────────────────────
+
+# Tabla: (session_state, ep_carril) → texto de sugerencia
+# Cubre las 10 combinaciones más frecuentes.
+# Si el par no está en la tabla, _get_smart_suggestion devuelve el fallback.
+_SUGGESTION_BY_CARRIL: dict[tuple[str, str], str] = {
+    # momentum + carril
+    ("momentum", "rag"):                   "Ayer en modo consulta (RAG). ¿Seguimos explorando la arquitectura o pasamos a acción?",
+    ("momentum", "tool_create_task"):      "Ayer creaste tareas. Tenés pendientes abiertas. ¿Las revisamos o cerramos una?",
+    ("momentum", "tool_complete_task"):    "Ayer completaste tareas. ¿Seguimos cerrando o abrimos algo nuevo?",
+    ("momentum", "memory:tasks"):          "Ayer consultaste tareas varias veces. ¿Qué está estancado hoy?",
+    ("momentum", "memory:work_state"):     "Ayer actualizaste el foco varias veces. ¿Sigue siendo el mismo hoy?",
+    ("momentum", "tool_update_work_state"): "Ayer reorientaste el trabajo. ¿Cuál es el foco de hoy?",
+    ("momentum", "episode"):               "Ayer revisaste el historial. ¿Qué aprendizaje querés aplicar hoy?",
+    # stale + carril
+    ("stale", "rag"):                      "Tenés tareas estancadas. ¿Revisamos una antes de seguir en modo consulta?",
+    ("stale", "tool_create_task"):         "Creaste tareas pero hay estancadas. ¿Limpiamos la lista primero?",
+    # recovering + carril
+    ("recovering", "rag"):                 "La sesión anterior no terminó bien. ¿Retomamos desde donde quedaste en el código?",
+}
+
+
+def _get_smart_suggestion(state: str, ep_carril: str, fallback: str) -> str:
+    """Devuelve sugerencia contextual cruzando session_state y carril dominante.
+
+    Args:
+        state:     session_state clasificado (ej. 'momentum', 'stale').
+        ep_carril: carril_dominante del último episodio (ej. 'rag', 'tool_create_task').
+        fallback:  texto a devolver si el par (state, ep_carril) no está en la tabla.
+
+    Returns:
+        Texto de sugerencia específico, o fallback si el par no está mapeado.
+
+    Never raises.
+    """
+    return _SUGGESTION_BY_CARRIL.get((state, ep_carril), fallback)
+
+
 def get_session_briefing() -> dict:
     """Paso D: construye el estado completo de arranque de sesión.
 
@@ -399,7 +445,11 @@ def get_session_briefing() -> dict:
 
     task_classes = _classify_tasks(tasks)
     state        = _classify_session_state(ws, task_classes, last_ep)
-    suggestion   = _build_suggestion(state, ws, task_classes)
+
+    # Sugerencia: primero intenta contextual por carril, luego fallback genérico
+    ep_carril  = last_ep.get("carril_dominante", "unknown") if last_ep else "unknown"
+    fallback   = _build_suggestion(state, ws, task_classes)
+    suggestion = _get_smart_suggestion(state, ep_carril, fallback)
 
     freshness = 0.0
     last_ep_date = last_ep.get("date") if last_ep else None
@@ -427,7 +477,11 @@ def get_session_briefing() -> dict:
 
 
 def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
-    """Construye la propuesta de acción concreta para el estado clasificado."""
+    """Construye la propuesta de acción concreta para el estado clasificado.
+
+    Es el fallback genérico usado cuando no hay carril dominante disponible
+    o el par (state, carril) no está en _SUGGESTION_BY_CARRIL.
+    """
     if state == "blocked":
         blocker = ws["current_blockers"][0]
         return f"¿Empezamos por desbloquear '{blocker}'?"
