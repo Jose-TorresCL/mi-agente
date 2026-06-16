@@ -54,15 +54,54 @@ _STATE_LABEL = {
 }
 
 
+def _mostrar_briefing_compacto(briefing: dict) -> None:
+    """Briefing resumido (<5 líneas) para reaperturas del mismo día.
+
+    Muestra solo lo esencial: estado, foco, conteo de tareas y sugerencia.
+    Se activa cuando briefing['es_retomada'] es True.
+    La lógica completa sigue intacta en mostrar_briefing() para
+    la primera apertura del día.
+    """
+    state      = briefing.get("session_state", "drifting")
+    icon       = _STATE_ICON.get(state, "💡")
+    foco       = briefing.get("foco", "sin foco")
+    n_open     = len(briefing["tasks"]["all_open"])
+    n_stale    = len(briefing["tasks"]["stale"])
+    suggestion = briefing.get("suggestion", "")
+
+    console.print()
+    console.print(Rule(style="dim"))
+
+    tareas_str = f"{n_open} tareas"
+    if n_stale:
+        tareas_str += f" ([yellow]{n_stale} estancadas[/yellow])"
+
+    console.print(
+        f"  {icon} [bold]Retomando[/bold] — Foco: [bold cyan]{foco}[/bold cyan]  "
+        f"·  {tareas_str}"
+    )
+    if suggestion:
+        console.print(f"  [cyan]→ {suggestion}[/cyan]")
+
+    console.print(Rule(style="dim"))
+    console.print()
+
+
 def mostrar_briefing(briefing: dict) -> None:
     """Muestra el resumen de arranque de sesión con Session Intelligence.
 
-    Diseño:
-      - Siempre muestra: foco, tareas abiertas, último episodio
-      - Si hay session_goal: lo muestra como objetivo del día
-      - Siempre muestra: patrón clasificado + sugerencia de acción
-      - Sin LLM, sin Chroma, solo datos JSON ya cargados
+    Ramifica entre dos modos según briefing['es_retomada']:
+      - False (primera apertura del día): briefing completo con todas las secciones.
+      - True  (segunda+ apertura del día): modo compacto de <5 líneas.
+
+    El modo compacto delega en _mostrar_briefing_compacto().
+    El modo completo ejecuta la lógica original intacta.
     """
+    if briefing.get("es_retomada", False):
+        _mostrar_briefing_compacto(briefing)
+        return
+
+    # ── Modo completo (primera apertura del día) ──────────────────
     state   = briefing.get("session_state", "drifting")
     icon    = _STATE_ICON.get(state, "💡")
     label   = _STATE_LABEL.get(state, state)
@@ -106,7 +145,7 @@ def mostrar_briefing(briefing: dict) -> None:
     if last_done:
         console.print(f"  [dim]✅ Último completado:[/dim] [dim]{last_done}[/dim]")
 
-    # ── Episodio anterior (Paso A) ────────────────────────────────
+    # ── Episodio anterior ─────────────────────────────────────────
     if ep:
         ep_date    = ep.get("date", "")
         ep_turns   = ep.get("turns", 0)
@@ -131,10 +170,13 @@ def mostrar_briefing(briefing: dict) -> None:
             else "📅"
         )
 
+        # Tag (retomada) si es_retomada pero estamos en modo completo
+        # (edge case: es_retomada=True pero se fuerza modo completo externamente)
+        retomada_tag = " [cyan](retomada)[/cyan]" if briefing.get("es_retomada") else ""
         carril_str = f" · carril dominante: {ep_carril}" if ep_carril else ""
         console.print(
             f"  [dim]{resultado_icon} Última sesión:[/dim] "
-            f"[dim]{cuando} · {ep_turns} turnos{carril_str}[/dim]"
+            f"[dim]{cuando}{retomada_tag} · {ep_turns} turnos{carril_str}[/dim]"
         )
         if ep_summary:
             resumen_corto = ep_summary[:120] + "…" if len(ep_summary) > 120 else ep_summary

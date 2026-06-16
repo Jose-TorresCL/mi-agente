@@ -91,6 +91,11 @@ Sugerencia contextual por carril dominante:
   anterior para generar sugerencias más específicas que el texto genérico.
   Tabla _SUGGESTION_BY_CARRIL cubre 10 combinaciones frecuentes.
   Fallback al comportamiento anterior si ep_carril no está en la tabla.
+
+Detección de sesión retomada:
+  _is_retomada(last_ep): devuelve True si el último episodio tiene fecha
+  de hoy. get_session_briefing() expone el campo 'es_retomada' para que
+  chat_ui.py active el modo compacto sin duplicar lógica de fechas.
 """
 from __future__ import annotations
 
@@ -313,6 +318,30 @@ def _days_since(iso_date: str) -> int | None:
         return None
 
 
+def _is_retomada(last_ep: dict | None) -> bool:
+    """True si ya existe un episodio guardado con fecha de hoy.
+
+    Indica que esta no es la primera apertura del día sino una retomada.
+    Usado por get_session_briefing() para activar el modo compacto en chat_ui.
+
+    Args:
+        last_ep: dict del último episodio o None si no hay episodios.
+
+    Returns:
+        True si last_ep tiene campo 'date' igual a la fecha de hoy.
+        False en cualquier otro caso (primer arranque, sin episodios, error de parseo).
+
+    Never raises.
+    """
+    if not last_ep:
+        return False
+    ep_date = last_ep.get("date", "")
+    try:
+        return datetime.fromisoformat(ep_date).date() == datetime.now().date()
+    except (ValueError, TypeError):
+        return False
+
+
 def _classify_tasks(tasks: list[dict]) -> dict:
     """Clasifica tareas abiertas en fresh / aging / stale según updated_at o created_at."""
     open_tasks = [t for t in tasks if t.get("status") not in ("done", "completed")]
@@ -346,14 +375,6 @@ def _classify_session_state(
       stale      → hay tareas sin tocar en >7 días
       focused    → foco definido y pocas tareas
       drifting   → estado ambiguo, sin foco claro
-
-    momentum y recovering se evalúan después de blocked para no interferir
-    con bloqueos activos, pero antes de overloaded/stale para que la señal
-    episódica tenga peso cuando la sesión está relativamente limpia.
-
-    Edge case exitoso: si last_ep["exitoso"] es None, ausente o "unmarked",
-    ninguna rama episódica se activa — se trata como "sin señal disponible"
-    y el estado cae a las reglas de tareas (overloaded, stale, etc.).
     """
     blockers   = ws.get("current_blockers", [])
     all_open   = task_classes["all_open"]
@@ -384,36 +405,25 @@ def _classify_session_state(
 # Sugerencia contextual por carril dominante
 # ─────────────────────────────────────────────
 
-# Tabla: (session_state, ep_carril) → texto de sugerencia
-# Cubre las 10 combinaciones más frecuentes.
-# Si el par no está en la tabla, _get_smart_suggestion devuelve el fallback.
 _SUGGESTION_BY_CARRIL: dict[tuple[str, str], str] = {
-    # momentum + carril
-    ("momentum", "rag"):                   "Ayer en modo consulta (RAG). ¿Seguimos explorando la arquitectura o pasamos a acción?",
-    ("momentum", "tool_create_task"):      "Ayer creaste tareas. Tenés pendientes abiertas. ¿Las revisamos o cerramos una?",
-    ("momentum", "tool_complete_task"):    "Ayer completaste tareas. ¿Seguimos cerrando o abrimos algo nuevo?",
-    ("momentum", "memory:tasks"):          "Ayer consultaste tareas varias veces. ¿Qué está estancado hoy?",
-    ("momentum", "memory:work_state"):     "Ayer actualizaste el foco varias veces. ¿Sigue siendo el mismo hoy?",
+    ("momentum", "rag"):                    "Ayer en modo consulta (RAG). ¿Seguimos explorando la arquitectura o pasamos a acción?",
+    ("momentum", "tool_create_task"):       "Ayer creaste tareas. Tenés pendientes abiertas. ¿Las revisamos o cerramos una?",
+    ("momentum", "tool_complete_task"):     "Ayer completaste tareas. ¿Seguimos cerrando o abrimos algo nuevo?",
+    ("momentum", "memory:tasks"):           "Ayer consultaste tareas varias veces. ¿Qué está estancado hoy?",
+    ("momentum", "memory:work_state"):      "Ayer actualizaste el foco varias veces. ¿Sigue siendo el mismo hoy?",
     ("momentum", "tool_update_work_state"): "Ayer reorientaste el trabajo. ¿Cuál es el foco de hoy?",
-    ("momentum", "episode"):               "Ayer revisaste el historial. ¿Qué aprendizaje querés aplicar hoy?",
-    # stale + carril
-    ("stale", "rag"):                      "Tenés tareas estancadas. ¿Revisamos una antes de seguir en modo consulta?",
-    ("stale", "tool_create_task"):         "Creaste tareas pero hay estancadas. ¿Limpiamos la lista primero?",
-    # recovering + carril
-    ("recovering", "rag"):                 "La sesión anterior no terminó bien. ¿Retomamos desde donde quedaste en el código?",
+    ("momentum", "episode"):                "Ayer revisaste el historial. ¿Qué aprendizaje querés aplicar hoy?",
+    ("stale",    "rag"):                    "Tenés tareas estancadas. ¿Revisamos una antes de seguir en modo consulta?",
+    ("stale",    "tool_create_task"):       "Creaste tareas pero hay estancadas. ¿Limpiamos la lista primero?",
+    ("recovering", "rag"):                  "La sesión anterior no terminó bien. ¿Retomamos desde donde quedaste en el código?",
 }
 
 
 def _get_smart_suggestion(state: str, ep_carril: str, fallback: str) -> str:
     """Devuelve sugerencia contextual cruzando session_state y carril dominante.
 
-    Args:
-        state:     session_state clasificado (ej. 'momentum', 'stale').
-        ep_carril: carril_dominante del último episodio (ej. 'rag', 'tool_create_task').
-        fallback:  texto a devolver si el par (state, ep_carril) no está en la tabla.
-
-    Returns:
-        Texto de sugerencia específico, o fallback si el par no está mapeado.
+    Busca el par (state, ep_carril) en _SUGGESTION_BY_CARRIL.
+    Si no está mapeado, devuelve fallback (comportamiento anterior intacto).
 
     Never raises.
     """
@@ -427,16 +437,17 @@ def get_session_briefing() -> dict:
     Diseñado para ejecutarse en < 200ms (solo lectura de JSON).
 
     Returns dict con:
-      foco           → str: foco actual de work_state
-      session_goal   → str: objetivo específico de esta sesión
-      next_step      → str: siguiente paso registrado
-      last_completed → str: último completado
-      blockers       → list[str]: bloqueos activos
-      tasks          → dict: clasificación fresh/aging/stale/all_open
-      last_episode   → dict | None: episodio anterior
-      session_state  → str: patrón clasificado
-      suggestion     → str: acción concreta sugerida
-      freshness_score→ float: 0.0–1.0 basado en días desde último episodio
+      foco           → str
+      session_goal   → str
+      next_step      → str
+      last_completed → str
+      blockers       → list[str]
+      tasks          → dict: fresh/aging/stale/all_open
+      last_episode   → dict | None
+      session_state  → str
+      suggestion     → str
+      freshness_score→ float 0.0-1.0
+      es_retomada    → bool: True si ya hay episodio de hoy (segunda+ apertura)
     """
     ws         = load_work_state()
     tasks_data = load_tasks()
@@ -445,8 +456,8 @@ def get_session_briefing() -> dict:
 
     task_classes = _classify_tasks(tasks)
     state        = _classify_session_state(ws, task_classes, last_ep)
+    es_retomada  = _is_retomada(last_ep)
 
-    # Sugerencia: primero intenta contextual por carril, luego fallback genérico
     ep_carril  = last_ep.get("carril_dominante", "unknown") if last_ep else "unknown"
     fallback   = _build_suggestion(state, ws, task_classes)
     suggestion = _get_smart_suggestion(state, ep_carril, fallback)
@@ -473,13 +484,14 @@ def get_session_briefing() -> dict:
         "session_state":   state,
         "suggestion":      suggestion,
         "freshness_score": round(freshness, 3),
+        "es_retomada":     es_retomada,
     }
 
 
 def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
     """Construye la propuesta de acción concreta para el estado clasificado.
 
-    Es el fallback genérico usado cuando no hay carril dominante disponible
+    Fallback genérico usado cuando no hay carril dominante disponible
     o el par (state, carril) no está en _SUGGESTION_BY_CARRIL.
     """
     if state == "blocked":
@@ -575,12 +587,6 @@ def update_state(field: str, value: str) -> None:
 
 
 def set_session_goal(goal: str) -> None:
-    """Paso B: guarda el objetivo específico de esta sesión.
-
-    Wrapper de memory_manager → memory_store para mantener
-    la arquitectura de capas. Nunca llama a memory_store directamente
-    desde fuera de este módulo.
-    """
     goal = goal.strip()
     if not goal:
         log.warning("set_session_goal ignorado: goal vacío")
@@ -661,30 +667,6 @@ def create_task_from_episode(episode: dict) -> dict:
 
 
 def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
-    """Genera sugerencias de tareas a partir de una lista de episodios.
-
-    Recorre los episodios buscando señales de acción en el resumen
-    (palabras clave: 'decision', 'tarea', 'accion' — sin tildes).
-    Por cada episodio que contenga alguna señal, delega en
-    create_task_from_episode() para construir el dict de tarea sugerida.
-
-    Fix suggest_new_tasks: usa _normalize(summary) antes de buscar señales.
-    Esto garantiza que resúmenes generados sin tildes (frecuente en modelos
-    locales cuantizados) también activen el flujo episódico.
-
-    Args:
-        episodes: Lista de dicts de episodio tal como los devuelve
-                  load_episodes(). Cada dict debe tener al menos 'summary'.
-
-    Returns:
-        Lista de dicts con campos 'title', 'priority' y 'notes',
-        listos para pasarse a add_task_to_memory(). Puede ser vacía
-        si ningún episodio contiene señales de acción.
-
-    Nota:
-        No escribe en disco. Solo construye la lista de sugerencias.
-        La escritura real ocurre en main_memory_flow() → add_task_to_memory().
-    """
     new_tasks: list[dict] = []
     for episode in episodes:
         summary = _normalize(str(episode.get("summary", "")))
@@ -698,33 +680,6 @@ def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
 
 
 def add_task_to_memory(task: dict | str) -> str:
-    """Crea una tarea en memoria a partir de un dict o un string de título.
-
-    Wrapper sobre create_task() que acepta dos formas de entrada:
-
-    Forma dict (desde suggest_new_tasks):
-        task = {"title": "...", "priority": "medium", "notes": "..."}
-        task_id = add_task_to_memory(task)
-
-    Forma string (uso directo):
-        task_id = add_task_to_memory("Revisar fidelity_check")
-
-    Args:
-        task: Dict con campos 'title', 'priority' (opcional) y 'notes'
-              (opcional), o string con el título de la tarea.
-
-    Returns:
-        ID de la tarea creada (ej. 'T-007'), o ID existente si ya había
-        una tarea pendiente con el mismo título. Devuelve '' si el título
-        está vacío o la entrada no es válida.
-
-    Advertencia:
-        create_task() evita duplicados por título normalizado, pero si
-        el mismo episodio se procesa dos veces (ej. main_memory_flow()
-        llamado sin control), pueden generarse títulos ligeramente
-        distintos que sí se registren como tareas separadas. Verificar
-        con get_tasks() antes de llamar en bucle.
-    """
     if isinstance(task, str):
         return create_task(task)
     if not isinstance(task, dict):
@@ -737,28 +692,6 @@ def add_task_to_memory(task: dict | str) -> str:
 
 
 def main_memory_flow() -> int:
-    """Flujo principal de mantenimiento automático de memoria episódica.
-
-    Ejecuta el ciclo completo: leer episodios → detectar acciones →
-    crear tareas sugeridas en memoria. Diseñado para llamarse al arranque
-    de sesión o desde un script de mantenimiento, no en cada turno.
-
-    Flujo interno:
-        1. load_episodes()       → carga todos los episodios del historial
-        2. suggest_new_tasks()   → filtra episodios con señales de acción
-        3. add_task_to_memory()  → registra cada sugerencia (evita duplicados)
-
-    Returns:
-        Número de tareas nuevas efectivamente registradas en esta ejecución.
-        Devuelve 0 si no hay episodios, si ninguno tiene señales de acción,
-        o si todas las tareas sugeridas ya existían como pendientes.
-
-    Advertencia:
-        Produce escritura en disco (storage/tasks.json). No llamar en bucle
-        sin control — cada llamada releerá todos los episodios y podría
-        crear tareas duplicadas si los resúmenes cambian entre ejecuciones.
-        Para uso seguro en arranque: llamar una vez por sesión desde chat_core.
-    """
     episodes = load_episodes()
     suggested_tasks = suggest_new_tasks(episodes)
     added = 0
