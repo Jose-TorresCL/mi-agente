@@ -90,6 +90,10 @@ def get_embedding(text: str) -> list[float] | None:
     los 10s originales. Por eso el timeout sube a 90s y se hacen hasta
     _EMBED_RETRIES reintentos con _EMBED_RETRY_WAIT segundos de espera.
 
+    El campo 'embedding' ausente en la respuesta (HTTP 200 sin contenido útil,
+    típico de Ollama post-LLM liberando recursos) se trata como fallo
+    recuperable y dispara el mismo mecanismo de retry+wait.
+
     Peor caso: 3 × 90s + 2 × 40s = 350s antes de devolver None.
 
     Args:
@@ -109,7 +113,10 @@ def get_embedding(text: str) -> list[float] | None:
                 timeout=_EMBED_TIMEOUT,
             )
             resp.raise_for_status()
-            return resp.json().get("embedding")
+            embedding = resp.json().get("embedding")
+            if embedding is None:
+                raise ValueError("Ollama respondió sin campo 'embedding' (ocupado post-LLM)")
+            return embedding
         except Exception as exc:
             last_exc = exc
             if attempt < _EMBED_RETRIES:
