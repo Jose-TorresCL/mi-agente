@@ -25,6 +25,12 @@ Historial:
                     si algún módulo llama get_llm().invoke() directamente,
                     el thinking mode quedaba activo. Ahora el singleton ya
                     nace con think=False y es imposible olvidarlo.
+    fix-keep-alive — keep_alive=-1 para mantener el modelo en RAM durante
+                    toda la sesión. Evita que fidelity_check falle por
+                    contención de recursos entre LLM y embedder post-respuesta.
+                    Con 16 GB RAM ambos modelos coexisten sin problema.
+                    El modelo se descarga explícitamente al cerrar Lautaro
+                    via 'ollama stop' en chat.py._session_close().
 """
 from __future__ import annotations
 
@@ -42,6 +48,10 @@ _llm_instance: ChatOllama | None = None
 def get_llm() -> ChatOllama:
     """Devuelve el LLM singleton. Se crea solo la primera vez.
 
+    keep_alive=-1: mantiene qwen3:8b cargado en RAM toda la sesión.
+    Evita contención con nomic-embed-text en fidelity_check post-respuesta.
+    El modelo se libera explícitamente al cerrar Lautaro (chat.py).
+
     think=False desactiva el reasoning mode de qwen3:8b desde el singleton
     base, garantizando que cualquier caller que use get_llm().invoke()
     directamente tampoco active el thinking mode.
@@ -54,6 +64,7 @@ def get_llm() -> ChatOllama:
             temperature=0.1,
             num_ctx=4096,
             think=False,
+            keep_alive=-1,
         )
         log.debug("LLM singleton inicializado: %s", MODEL_NAME)
     return _llm_instance

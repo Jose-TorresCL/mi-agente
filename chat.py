@@ -13,15 +13,23 @@ y re-indexa automáticamente antes de abrir el chat.
 Session Intelligence (Pasos A-D):
     Tras el banner y antes del primer input, construye y muestra
     el session briefing con estado clasificado, tareas y episodio anterior.
-    Sin LLM — solo lectura de JSON. Objetivo: < 200ms adicionales.
+    Sin LLM — solo JSON. Si falla, no bloquea el arranque.
+    Objetivo: < 200ms adicionales.
+
+Cierre limpio:
+    _session_close() guarda el episodio y libera el modelo LLM de RAM
+    via 'ollama stop'. Esto complementa keep_alive=-1 en llm_client.py:
+    el modelo vive en RAM durante la sesión y se descarga al salir.
 """
 from __future__ import annotations
+
+import subprocess
 
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import BaseMessage
 
-from app.config import CHROMA_DIR, OLLAMA_URL
+from app.config import CHROMA_DIR, OLLAMA_URL, MODEL_NAME
 from app.indexing_core import needs_reindex, run_full_index
 from app.chat_core import handle_turn
 from app.chat_ui import print_welcome, format_answer, mostrar_briefing
@@ -58,6 +66,26 @@ def _boot_vectorstore() -> Chroma:
     return db
 
 
+def _stop_llm_model() -> None:
+    """Descarga el modelo LLM de RAM al cerrar la sesión.
+
+    Complementa keep_alive=-1: el modelo vive en RAM durante la sesión
+    y se libera explícitamente aquí para no ocupar ~5.5 GB en segundo
+    plano cuando Lautaro no está en uso.
+
+    Falla silenciosamente — nunca bloquea el cierre del programa.
+    """
+    try:
+        subprocess.run(
+            ["ollama", "stop", MODEL_NAME],
+            capture_output=True,
+            timeout=5,
+        )
+        log.info("[chat] modelo %s descargado de RAM", MODEL_NAME)
+    except Exception as exc:
+        log.debug("[chat] ollama stop falló (no crítico): %s", exc)
+
+
 def _session_close() -> None:
     """Hook de cierre de sesión (8C)."""
     try:
@@ -65,6 +93,8 @@ def _session_close() -> None:
         close_session_episode()
     except Exception as exc:
         log.debug("[chat] _session_close: %s", exc)
+
+    _stop_llm_model()
 
 
 def main() -> None:
