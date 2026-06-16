@@ -16,5 +16,6 @@
   "hecho_20260524_200522": "la fase 9 tiene tres ejes",
   "hecho_20260524_205636": "el briefing de arranque ya funciona",
   "hecho_20260525_140947": "test de verificación automática",
-  "hecho_20260612_220306": "el proyecto mi-agente usa Python 3.11 y Ollama con llama3.2."
+  "hecho_20260612_220306": "el proyecto mi-agente usa Python 3.11 y Ollama con llama3.2.",
+  "hecho_20260614_174614": "9. Guardá esta nota: \"revisar umbral EXPERIENCE_INJECT_THRESHOLD después de las pruebas\""
 }

@@ -113,7 +113,7 @@ def build_chain(system_prompt: str):
         base_url=OLLAMA_URL,
         timeout=_LLM_TIMEOUT,
         num_ctx=4096,
-        think=False,
+        reasoning=False,
     )
     return prompt | llm | StrOutputParser()
 
@@ -157,7 +157,7 @@ def generate_raw(
                     "num_predict": num_predict,
                     "num_ctx": 4096,
                 },
-                "think": False,
+                "reasoning": False,
             },
             timeout=timeout,
         )

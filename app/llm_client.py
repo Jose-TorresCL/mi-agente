@@ -63,7 +63,7 @@ def get_llm() -> ChatOllama:
             base_url=OLLAMA_URL,
             temperature=0.1,
             num_ctx=4096,
-            think=False,
+            reasoning=False,
             keep_alive=-1,
         )
         log.debug("LLM singleton inicializado: %s", MODEL_NAME)
@@ -102,7 +102,7 @@ def generate_raw(
             options={
                 "temperature": temperature,
                 "num_predict": num_predict,
-                "think": False,
+                "reasoning": False,
             },
         )
         result = llm.invoke([HumanMessage(content=prompt)])
