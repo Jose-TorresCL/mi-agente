@@ -138,7 +138,7 @@ def generate_raw(
         None si la llamada HTTP falla o Ollama no está disponible.
 
     Nunca lanza excepciones — los errores se loguean como WARNING.
-    think=False desactiva el reasoning mode de qwen3 para reducir latencia.
+    reasoning=False desactiva el reasoning mode de qwen3 para reducir latencia.
     """
     try:
         resp = requests.post(
@@ -151,7 +151,7 @@ def generate_raw(
                     "temperature": temperature,
                     "num_predict": num_predict,
                     "num_ctx": 4096,
-                    "think": False,
+                    "reasoning": False,
                 },
             },
             timeout=timeout,
