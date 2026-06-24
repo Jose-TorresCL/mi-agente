@@ -13,38 +13,11 @@ Contrato público
     process_turn(ctx: TurnContext) -> DecisionResult
     process_turn(route, user_input, vectordb, chat_history) -> DecisionResult  # legacy
 
-    Ambas formas son equivalentes. chat_core usa TurnContext (forma nueva).
-    Los tests que llaman a process_turn directamente con 4 args siguen funcionando.
-
-R1  — contratos internos (CERRADO)
-R2-connect — intent_type y num_docs en record_turn() (CERRADO)
-R4-B — composición multi-capa de memoria (CERRADO)
-Fix B3 — timeout síntesis subido de 10s a 30s (CERRADO)
-Fix B4 — _format_tasks_answer distingue tareas hechas vs pendientes (CERRADO)
-Fix C1 — chat_history en _synthesize_memory_answer (CERRADO)
-Fix C2 — cliente LLM unificado con generate_raw() (CERRADO)
-D2  — prompt de síntesis movido a prompts.py (CERRADO)
-D3  — umbral episódico propio en intelligence.py (CERRADO)
-D4-B — prompt de resumen episódico reducido (CERRADO)
-D5  — detect_memory_intents se llama UNA sola vez en process_turn (CERRADO).
-R5-MoA — separación recuperador/sintetizador en _decide_memory (CERRADO).
-R6-RAG — separación de responsabilidades en _decide_rag (CERRADO).
-TurnContext — process_turn acepta TurnContext o 4 args sueltos (CERRADO).
-feat: carril 'identity' — respuesta hardcodeada para preguntas de identidad.
-E3  — process_turn devuelve DecisionResult en vez de tuple (CERRADO).
-Fix P5-Paso4 — el bloque memory lee el subtipo desde el carril (CERRADO).
-R-F1 — refactor de funciones puras y constantes (CERRADO).
-H-B1 — hardening Opción B: tabla _DIRECT_ROUTES + _make_direct_result (CERRADO).
-Fix memory_context — build_chain ya no inyecta memory_context (CERRADO).
-Fix 3 — síntesis LLM forzada cuando la pregunta pide razonamiento (CERRADO).
-Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO).
-feat: carril 'math' — eval restringido para aritmética básica (CERRADO).
-perf: _EPISODE_TIMEOUT subido de 40s a 90s y _MEMORY_SYNTHESIS_TIMEOUT
-  de 30s a 120s para alinear con tiempos reales de qwen3:8b en CPU.
 feat(etapa1-opción1): interpretación natural de mercado vía LLM (CERRADO).
-  _decide_trading() extrae el snapshot del ToolResult, construye un
-  prompt especializado y genera una interpretación en lenguaje natural.
+  _decide_trading() llama directamente a _llamar_bot_trading() para obtener
+  el ToolResult con .data completo, lo pasa al LLM con prompt especializado.
   Fallback: si el LLM tarda o falla, devuelve el formato estructurado.
+feat(etapa1-opción4): alertas extremas en tools_trading._formatear_respuesta.
 """
 from __future__ import annotations
 
@@ -94,7 +67,7 @@ log = get_logger(__name__)
 
 _EPISODE_TIMEOUT           = 90
 _MEMORY_SYNTHESIS_TIMEOUT  = 120
-_TRADING_INTERP_TIMEOUT    = 60   # timeout para interpretación de mercado
+_TRADING_INTERP_TIMEOUT    = 60
 _HISTORY_LINE_MAX          = 80
 _CACHE_MIN_SCORE           = 0.55
 _COUNT_KEYWORDS            = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
@@ -141,9 +114,6 @@ _SAFE_MATH_OPS: dict = {
 
 
 # ──────────────────────────────────────────────
-# TypedDicts
-# ──────────────────────────────────────────────
-
 class MemoryContext(TypedDict):
     context_text: str
     fallback: str
@@ -160,9 +130,6 @@ class RagContext(TypedDict):
 
 
 # ──────────────────────────────────────────────
-# H-B1
-# ──────────────────────────────────────────────
-
 def _make_direct_result(route: str, response_fn: Callable[[], str]) -> DecisionResult:
     return DecisionResult(
         route=route,
@@ -186,9 +153,6 @@ def _get_direct_routes() -> dict[str, Callable[[], str]]:
 
 
 # ──────────────────────────────────────────────
-# Math
-# ──────────────────────────────────────────────
-
 def _safe_eval(node: ast.AST) -> float | int:
     if isinstance(node, ast.Expression):
         return _safe_eval(node.body)
@@ -240,7 +204,7 @@ def _decide_math(question: str) -> str:
 
 
 # ──────────────────────────────────────────────
-# Trading — interpretación natural (opción 1)
+# Trading — Etapa 1, opción 1+4
 # ──────────────────────────────────────────────
 
 _TRADING_INTERP_PROMPT = """\
@@ -262,26 +226,46 @@ Pregunta del usuario: {pregunta}
 Interpretación:"""
 
 
-def _decide_trading(user_input: str, tool_result_message: str, tool_data: dict) -> str:
-    """Paso B (opción 1): pasa el snapshot al LLM para interpretación natural.
+def _extraer_simbolo(user_input: str) -> str:
+    """Extrae el símbolo de la pregunta del usuario. Fallback: BTCUSDT."""
+    u = user_input.lower()
+    for term, ticker in [
+        ("btcusdt", "BTCUSDT"), ("ethusdt", "ETHUSDT"), ("bnbusdt", "BNBUSDT"),
+        ("bitcoin", "BTCUSDT"), ("ethereum", "ETHUSDT"),
+        ("btc",    "BTCUSDT"), ("eth",     "ETHUSDT"), ("bnb", "BNBUSDT"),
+        ("sol",    "SOLUSDT"), ("solana",  "SOLUSDT"),
+        ("xrp",   "XRPUSDT"), ("ada",    "ADAUSDT"), ("doge", "DOGEUSDT"),
+    ]:
+        if term in u:
+            return ticker
+    return "BTCUSDT"
 
-    Recibe:
-        user_input:          pregunta original del usuario.
-        tool_result_message: string ya formateado por _formatear_respuesta().
-        tool_data:           dict JSON crudo del bot (price, signal, indicators, etc.).
 
-    Retorna:
-        Respuesta final para el usuario: bloque estructurado + interpretación LLM.
-        Fallback al bloque estructurado si el LLM falla o excede el timeout.
+def _decide_trading(user_input: str) -> str:
+    """Llama directamente a _llamar_bot_trading y aplica interpretación LLM.
+
+    Usa _llamar_bot_trading() en vez de dispatch_tool() para obtener
+    el ToolResult con .data (dict JSON completo del bot), necesario
+    para verificar .ok y pasar el snapshot al LLM.
+
+    Fallback: si el LLM falla o timeout, retorna el bloque estructurado.
     """
-    if not tool_data.get("ok"):
-        return tool_result_message
+    from app.tools_trading import _llamar_bot_trading
 
+    symbol     = _extraer_simbolo(user_input)
+    tool_result = _llamar_bot_trading(symbol=symbol)
+
+    if not tool_result.ok:
+        return tool_result.message
+
+    # Paso A (opción 4): alertas ya incluidas en tool_result.message por _formatear_respuesta
+    snapshot_texto = tool_result.message
+
+    # Paso B (opción 1): interpretación LLM
     prompt = _TRADING_INTERP_PROMPT.format(
-        snapshot=tool_result_message,
+        snapshot=snapshot_texto,
         pregunta=user_input,
     )
-
     interpretacion = generate_raw(
         prompt,
         temperature=0.4,
@@ -291,10 +275,10 @@ def _decide_trading(user_input: str, tool_result_message: str, tool_data: dict) 
 
     if not interpretacion or not interpretacion.strip():
         log.warning("[trading] LLM no generó interpretación — usando formato estructurado")
-        return tool_result_message
+        return snapshot_texto
 
     return (
-        tool_result_message
+        snapshot_texto
         + "\n\n"
         + "─" * 36
         + "\n🤖 **Interpretación:**\n"
@@ -579,9 +563,6 @@ def _decide_rag(
 
 
 # ──────────────────────────────────────────────
-# Exit
-# ──────────────────────────────────────────────
-
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
     lines: list[str] = []
     for m in chat_history[-(MAX_TURNS * 2):]:
@@ -665,65 +646,35 @@ def process_turn(
         answer = handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files", channel=channel)
         return DecisionResult(
-            route=route,
-            response=answer,
-            cached=False,
-            source="tool",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=0,
-            tokens_est=0,
+            route=route, response=answer, cached=False, source="tool",
+            source_docs=[], retrieval_ms=0, llm_ms=0, tokens_est=0,
         )
 
-    # ── tool_analizar_mercado — interpretación natural (opción 1) ────────────
+    # ── tool_analizar_mercado: llama directo a _llamar_bot_trading ────────────
+    # Razón: dispatch_tool() envuelve el resultado en ToolResult sin .data.
+    # _llamar_bot_trading() retorna ToolResult con .data = dict JSON completo.
     if route == "tool_analizar_mercado":
-        from app.tool_registry import dispatch_tool
         t0 = time.perf_counter()
-        tool_result = dispatch_tool(route, user_input)
-        llm_ms_tool = int((time.perf_counter() - t0) * 1000)
-
-        if tool_result is None or not tool_result.ok:
-            msg = tool_result.message if tool_result else "Error desconocido en la tool."
-            _record_metric(route=route, intent_type=route, llm_ms=llm_ms_tool, channel=channel)
-            return DecisionResult(
-                route=route, response=msg, cached=False, source="tool",
-                source_docs=[], retrieval_ms=0, llm_ms=llm_ms_tool, tokens_est=0,
-            )
-
-        # Paso B: interpretación LLM sobre el snapshot ya formateado
-        t1 = time.perf_counter()
-        final_response = _decide_trading(
-            user_input=user_input,
-            tool_result_message=tool_result.message,
-            tool_data=tool_result.data or {},
-        )
-        llm_ms_total = int((time.perf_counter() - t0) * 1000)
-        _record_metric(route=route, intent_type=route, llm_ms=llm_ms_total, channel=channel)
+        final_response = _decide_trading(user_input)
+        llm_ms = int((time.perf_counter() - t0) * 1000)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms, channel=channel)
         return DecisionResult(
             route=route, response=final_response, cached=False, source="tool",
-            source_docs=[], retrieval_ms=0, llm_ms=llm_ms_total, tokens_est=0,
+            source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
-    # ── tools registradas (resto) ─────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool_str(route, user_input)
         llm_ms = int((time.perf_counter() - t0) * 1000)
         _record_metric(route=route, intent_type=route, llm_ms=llm_ms, channel=channel)
         return DecisionResult(
-            route=route,
-            response=answer,
-            cached=False,
-            source="tool",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=llm_ms,
-            tokens_est=0,
+            route=route, response=answer, cached=False, source="tool",
+            source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
     if route == "memory" or route.startswith("memory:"):
         t0 = time.perf_counter()
-
         if ":" in route:
             subtype = route.split(":", 1)[1]
             intents = [subtype]
@@ -731,33 +682,20 @@ def process_turn(
         else:
             intents = detect_memory_intents(user_input)
             log.debug("[memory] intents detectados: %s", intents)
-
         answer = _decide_memory(user_input, intents, chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
         _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
         return DecisionResult(
-            route="memory",
-            response=answer,
-            cached=False,
-            source="memory",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=llm_ms,
-            tokens_est=0,
+            route="memory", response=answer, cached=False, source="memory",
+            source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
     if route == "math":
         answer = _decide_math(user_input)
         _record_metric(route="math", intent_type="math", channel=channel)
         return DecisionResult(
-            route="math",
-            response=answer,
-            cached=False,
-            source="direct",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=0,
-            tokens_est=0,
+            route="math", response=answer, cached=False, source="direct",
+            source_docs=[], retrieval_ms=0, llm_ms=0, tokens_est=0,
         )
 
     if route == "rag" and _is_personal_reasoning(user_input):
@@ -767,34 +705,20 @@ def process_turn(
         llm_ms = int((time.perf_counter() - t0) * 1000)
         _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
         return DecisionResult(
-            route="memory",
-            response=answer,
-            cached=False,
-            source="memory",
-            source_docs=[],
-            retrieval_ms=0,
-            llm_ms=llm_ms,
-            tokens_est=0,
+            route="memory", response=answer, cached=False, source="memory",
+            source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route
     )
     _record_metric(
-        route="rag",
-        intent_type="rag",
-        num_docs=len(source_docs),
-        retrieval_ms=retrieval_ms,
-        llm_ms=llm_ms,
-        channel=channel,
+        route="rag", intent_type="rag",
+        num_docs=len(source_docs), retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms, channel=channel,
     )
     return DecisionResult(
-        route="rag",
-        response=answer,
-        cached=cached,
-        source="rag",
-        source_docs=source_docs,
-        retrieval_ms=retrieval_ms,
-        llm_ms=llm_ms,
-        tokens_est=0,
+        route="rag", response=answer, cached=cached, source="rag",
+        source_docs=source_docs, retrieval_ms=retrieval_ms,
+        llm_ms=llm_ms, tokens_est=0,
     )
