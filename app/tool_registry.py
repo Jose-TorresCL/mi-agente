@@ -28,13 +28,6 @@ Convención:
 Regla de seguridad (R6-A):
   dispatch_tool() rechaza tools con risk=SYSTEM a menos que se agregue
   soporte explícito de confirmación humana (no implementado aún).
-
-  EXCEPCIÓN: tool_analizar_mercado tiene risk=SYSTEM pero es de solo lectura
-  (solo llama a consulta_mercado.py, nunca ejecuta órdenes).
-  Para habilitarla: cambiar su entry a risk=RiskLevel.READ una vez que el
-  subprocess esté probado manualmente con:
-    C:\\Users\\lenovo\\Proyectos\\bot_trading\\.venv\\Scripts\\python.exe consulta_mercado.py --symbol BTCUSDT
-  y confirmes que devuelve JSON válido.
 """
 from __future__ import annotations
 
@@ -102,7 +95,7 @@ def _handle_create_task(user_input: str) -> str:
                 priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
                 raw = re.sub(
                     r",?\s*prioridad\s+\S+", "", raw, flags=re.IGNORECASE
-                ).strip().rstrip(",;\u2014 ").strip()
+                ).strip().rstrip(",;— ").strip()
             else:
                 for p in ["alta", "high", "baja", "low", "media", "medium"]:
                     if raw.lower().endswith(p):
@@ -286,7 +279,7 @@ TOOLS: dict[str, dict] = {
         "fn":          tool_analizar_mercado,
         "carril":      "tool_analizar_mercado",
         "descripcion": "Consulta precio, indicadores y señal del mercado vía bot_trading",
-        "risk":        RiskLevel.SYSTEM,   # ← cambiar a READ después de probar el subprocess
+        "risk":        RiskLevel.READ,   # ✅ habilitada — subprocess probado manualmente
         "handler":     _handle_analizar_mercado,
         "keywords":    ["mercado", "precio", "btc", "bitcoin", "eth", "ethereum",
                         "señal", "indicadores", "trading", "binance", "cripto"],
@@ -299,9 +292,7 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
 
     R6-A: retorna ToolResult estructurado en vez de str.
 
-    Seguridad: rechaza tools con risk=SYSTEM (ninguna en producción actualmente).
-    La tool_analizar_mercado está en SYSTEM hasta que el subprocess
-    sea probado manualmente y se cambie a READ.
+    Seguridad: rechaza tools con risk=SYSTEM.
 
     Args:
         carril:     Nombre del carril (ej. 'tool_save_fact').
