@@ -36,22 +36,15 @@ Fix P5-Paso4 — el bloque memory lee el subtipo desde el carril (CERRADO).
 R-F1 — refactor de funciones puras y constantes (CERRADO).
 H-B1 — hardening Opción B: tabla _DIRECT_ROUTES + _make_direct_result (CERRADO).
 Fix memory_context — build_chain ya no inyecta memory_context (CERRADO).
-Fix 3 — síntesis LLM forzada cuando la pregunta pide razonamiento (CERRADO):
-  _decide_memory() detecta señales de razonamiento en la pregunta
-  (recomendar, mejor, prioridad, atacar, empezar, debería, conviene,
-  importante, comparar, contradicción) y fuerza síntesis LLM incluso
-  cuando needs_llm=False (ej. lista plana de tareas). Si el LLM falla,
-  devuelve el fallback original sin romper nada.
-Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO):
-  [C] _is_personal_reasoning() detecta preguntas con señal de razonamiento
-  Y pronombre personal. Si el router mandó 'rag' pero la pregunta es
-  razonamiento personal, se fuerza 'memory:work_state' antes del bloque RAG.
-  Segunda línea de defensa después de keywords (A) y embeddings (B).
+Fix 3 — síntesis LLM forzada cuando la pregunta pide razonamiento (CERRADO).
+Fix A+B+C — pre-filtro de razonamiento personal en process_turn (CERRADO).
 feat: carril 'math' — eval restringido para aritmética básica (CERRADO).
-  _decide_math() evalua la expresión con ast + eval restringido.
-  No toca RAG ni fidelity_check. Devuelve resultado o mensaje amigable.
 perf: _EPISODE_TIMEOUT subido de 40s a 90s y _MEMORY_SYNTHESIS_TIMEOUT
   de 30s a 120s para alinear con tiempos reales de qwen3:8b en CPU.
+feat(etapa1-opción1): interpretación natural de mercado vía LLM (CERRADO).
+  _decide_trading() extrae el snapshot del ToolResult, construye un
+  prompt especializado y genera una interpretación en lenguaje natural.
+  Fallback: si el LLM tarda o falla, devuelve el formato estructurado.
 """
 from __future__ import annotations
 
@@ -99,19 +92,17 @@ from app.schemas import TurnContext, DecisionResult
 
 log = get_logger(__name__)
 
-_EPISODE_TIMEOUT           = 90   # subido de 40s: qwen3:8b puede tardar más bajo carga CPU
-_MEMORY_SYNTHESIS_TIMEOUT  = 120  # subido de 30s: evita timeout en síntesis de memoria
+_EPISODE_TIMEOUT           = 90
+_MEMORY_SYNTHESIS_TIMEOUT  = 120
+_TRADING_INTERP_TIMEOUT    = 60   # timeout para interpretación de mercado
 _HISTORY_LINE_MAX          = 80
 _CACHE_MIN_SCORE           = 0.55
 _COUNT_KEYWORDS            = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 _IDENTITY_KEYWORDS         = {"quién eres", "quien eres", "cómo te llamas", "como te llamas",
                                "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 _MEMORY_HISTORY_TURNS      = 3
-
-# D3: umbral propio de intelligence.py para inyección episódica.
 _MIN_EXPERIENCE_SCORE      = 0.70
 
-# Fix 3: señales de razonamiento.
 _REASONING_SIGNALS = {
     "recomendar", "recomendas", "recomiendas", "recomendarías",
     "mejor", "primero", "atacar", "prioridad", "priorizar",
@@ -125,7 +116,6 @@ _REASONING_SIGNALS = {
     "qué conviene", "que conviene",
 }
 
-# [C] Pronombres personales.
 _PERSONAL_PRONOUNS = {
     "me ", " me ", "mi ", " mi ", " yo ", "yo ",
     "nos ", " nos ", "nuestro", "nuestra",
@@ -137,7 +127,6 @@ _PERSONAL_PRONOUNS = {
     "mis tareas", "mi prioridad", "mis prioridades",
 }
 
-# Operadores permitidos para eval restringido de matemáticas.
 _SAFE_MATH_OPS: dict = {
     ast.Add:  operator.add,
     ast.Sub:  operator.sub,
@@ -152,7 +141,7 @@ _SAFE_MATH_OPS: dict = {
 
 
 # ──────────────────────────────────────────────
-# TypedDicts — contratos entre sub-funciones
+# TypedDicts
 # ──────────────────────────────────────────────
 
 class MemoryContext(TypedDict):
@@ -163,7 +152,6 @@ class MemoryContext(TypedDict):
 
 
 class RagContext(TypedDict):
-    """Contrato de salida del AGENTE RECUPERADOR RAG (R6-RAG)."""
     context_text: str
     source_docs: list
     memory_context: str
@@ -172,7 +160,7 @@ class RagContext(TypedDict):
 
 
 # ──────────────────────────────────────────────
-# H-B1: helper + tabla de carriles directos
+# H-B1
 # ──────────────────────────────────────────────
 
 def _make_direct_result(route: str, response_fn: Callable[[], str]) -> DecisionResult:
@@ -198,11 +186,10 @@ def _get_direct_routes() -> dict[str, Callable[[], str]]:
 
 
 # ──────────────────────────────────────────────
-# Math — eval restringido para aritmética básica
+# Math
 # ──────────────────────────────────────────────
 
 def _safe_eval(node: ast.AST) -> float | int:
-    """Recorre el AST de una expresión y la evalúa sin exec() ni eval()."""
     if isinstance(node, ast.Expression):
         return _safe_eval(node.body)
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -217,7 +204,6 @@ def _safe_eval(node: ast.AST) -> float | int:
 
 
 def _extract_math_expr(question: str) -> str:
-    """Extrae la expresión matemática de la pregunta del usuario."""
     import re
     prefixes = [
         r"^(cu[aá]nto\s+es\s+)?",
@@ -236,7 +222,6 @@ def _extract_math_expr(question: str) -> str:
 
 
 def _decide_math(question: str) -> str:
-    """Evalúa una expresión aritmética de forma segura."""
     expr = _extract_math_expr(question)
     try:
         tree = ast.parse(expr, mode="eval")
@@ -255,7 +240,70 @@ def _decide_math(question: str) -> str:
 
 
 # ──────────────────────────────────────────────
-# R5-MoA — AGENTE RECUPERADOR de memoria
+# Trading — interpretación natural (opción 1)
+# ──────────────────────────────────────────────
+
+_TRADING_INTERP_PROMPT = """\
+Eres un asistente de trading técnico. Recibirás un snapshot de mercado y
+debes interpretarlo en lenguaje natural, claro y directo en español.
+
+Reglas estrictas:
+- Máximo 4 líneas de interpretación.
+- Explica qué significan los indicadores en contexto (no solo repitas números).
+- Incluye una recomendación de acción (observar, esperar rebote, cautela, etc.).
+- NO recomiendes comprar ni vender — eres informativo, no ejecutas órdenes.
+- Si la fuente es 'cache', aclara que el dato puede no ser en tiempo real.
+
+Snapshot:
+{snapshot}
+
+Pregunta del usuario: {pregunta}
+
+Interpretación:"""
+
+
+def _decide_trading(user_input: str, tool_result_message: str, tool_data: dict) -> str:
+    """Paso B (opción 1): pasa el snapshot al LLM para interpretación natural.
+
+    Recibe:
+        user_input:          pregunta original del usuario.
+        tool_result_message: string ya formateado por _formatear_respuesta().
+        tool_data:           dict JSON crudo del bot (price, signal, indicators, etc.).
+
+    Retorna:
+        Respuesta final para el usuario: bloque estructurado + interpretación LLM.
+        Fallback al bloque estructurado si el LLM falla o excede el timeout.
+    """
+    if not tool_data.get("ok"):
+        return tool_result_message
+
+    prompt = _TRADING_INTERP_PROMPT.format(
+        snapshot=tool_result_message,
+        pregunta=user_input,
+    )
+
+    interpretacion = generate_raw(
+        prompt,
+        temperature=0.4,
+        num_predict=120,
+        timeout=_TRADING_INTERP_TIMEOUT,
+    )
+
+    if not interpretacion or not interpretacion.strip():
+        log.warning("[trading] LLM no generó interpretación — usando formato estructurado")
+        return tool_result_message
+
+    return (
+        tool_result_message
+        + "\n\n"
+        + "─" * 36
+        + "\n🤖 **Interpretación:**\n"
+        + interpretacion.strip()
+    )
+
+
+# ──────────────────────────────────────────────
+# R5-MoA — Memoria
 # ──────────────────────────────────────────────
 
 def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext:
@@ -352,10 +400,6 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
                          sources=[kind], needs_llm=False)
 
 
-# ──────────────────────────────────────────────
-# R5-MoA — AGENTE SINTETIZADOR de memoria
-# ──────────────────────────────────────────────
-
 def _synthesize_memory_answer(
     question: str,
     context_text: str,
@@ -375,10 +419,6 @@ def _synthesize_memory_answer(
     log.warning("_synthesize_memory_answer: generate_raw devolvió None, usando fallback")
     return fallback
 
-
-# ──────────────────────────────────────────────
-# R5-MoA — ORQUESTADOR de memoria
-# ──────────────────────────────────────────────
 
 def _has_reasoning_signal(question: str) -> bool:
     q_lower = question.lower()
@@ -425,7 +465,7 @@ def _decide_memory(
 
 
 # ──────────────────────────────────────────────
-# R6-RAG — CACHÉ
+# R6-RAG
 # ──────────────────────────────────────────────
 
 def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
@@ -433,10 +473,6 @@ def _lookup_rag_cache(user_input: str, is_identity: bool) -> str | None:
         return None
     return cache_lookup(user_input)
 
-
-# ──────────────────────────────────────────────
-# R6-RAG — AGENTE RECUPERADOR RAG
-# ──────────────────────────────────────────────
 
 def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagContext:
     t_start = time.perf_counter()
@@ -475,10 +511,6 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
     )
 
 
-# ──────────────────────────────────────────────
-# R6-RAG — AGENTE GENERADOR RAG
-# ──────────────────────────────────────────────
-
 def _generate_rag_answer(
     user_input: str,
     rag_ctx: RagContext,
@@ -507,10 +539,6 @@ def _generate_rag_answer(
 
     return answer, rag_ctx["source_docs"], llm_ms, True, score
 
-
-# ──────────────────────────────────────────────
-# R6-RAG — ORQUESTADOR RAG
-# ──────────────────────────────────────────────
 
 def _decide_rag(
     user_input: str,
@@ -551,7 +579,7 @@ def _decide_rag(
 
 
 # ──────────────────────────────────────────────
-# Decisores — otros carriles (exit)
+# Exit
 # ──────────────────────────────────────────────
 
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
@@ -600,7 +628,7 @@ def _decide_exit(chat_history: list) -> DecisionResult:
 
 
 # ──────────────────────────────────────────────
-# Contrato público de la capa de inteligencia
+# Contrato público
 # ──────────────────────────────────────────────
 
 def process_turn(
@@ -609,7 +637,6 @@ def process_turn(
     vectordb: Any = None,
     chat_history: list | None = None,
 ) -> DecisionResult:
-    """Punto de entrada único de la capa de inteligencia."""
     if isinstance(route_or_ctx, dict):
         ctx: TurnContext = route_or_ctx
         route        = ctx["route"]
@@ -624,19 +651,16 @@ def process_turn(
     if chat_history is None:
         chat_history = []
 
-    # ── exit ───────────────────────────────────────────────────
     if route == "exit":
         result = _decide_exit(chat_history)
         _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 
-    # ── H-B1: carriles directos (identity, unsupported, !estado) ─────────────
     direct_routes = _get_direct_routes()
     if route in direct_routes:
         _record_metric(route=route, intent_type=route, channel=channel)
         return _make_direct_result(route, direct_routes[route])
 
-    # ── tool_list_files ──────────────────────────────────────────────
     if route == "tool_list_files":
         answer = handle_list_files(user_input)
         _record_metric(route=route, intent_type="tool_list_files", channel=channel)
@@ -651,7 +675,36 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── tools registradas ─────────────────────────────────────────────
+    # ── tool_analizar_mercado — interpretación natural (opción 1) ────────────
+    if route == "tool_analizar_mercado":
+        from app.tool_registry import dispatch_tool
+        t0 = time.perf_counter()
+        tool_result = dispatch_tool(route, user_input)
+        llm_ms_tool = int((time.perf_counter() - t0) * 1000)
+
+        if tool_result is None or not tool_result.ok:
+            msg = tool_result.message if tool_result else "Error desconocido en la tool."
+            _record_metric(route=route, intent_type=route, llm_ms=llm_ms_tool, channel=channel)
+            return DecisionResult(
+                route=route, response=msg, cached=False, source="tool",
+                source_docs=[], retrieval_ms=0, llm_ms=llm_ms_tool, tokens_est=0,
+            )
+
+        # Paso B: interpretación LLM sobre el snapshot ya formateado
+        t1 = time.perf_counter()
+        final_response = _decide_trading(
+            user_input=user_input,
+            tool_result_message=tool_result.message,
+            tool_data=tool_result.data or {},
+        )
+        llm_ms_total = int((time.perf_counter() - t0) * 1000)
+        _record_metric(route=route, intent_type=route, llm_ms=llm_ms_total, channel=channel)
+        return DecisionResult(
+            route=route, response=final_response, cached=False, source="tool",
+            source_docs=[], retrieval_ms=0, llm_ms=llm_ms_total, tokens_est=0,
+        )
+
+    # ── tools registradas (resto) ─────────────────────────────────────────
     if route in TOOLS:
         t0 = time.perf_counter()
         answer = dispatch_tool_str(route, user_input)
@@ -668,7 +721,6 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── memory ───────────────────────────────────────────────────
     if route == "memory" or route.startswith("memory:"):
         t0 = time.perf_counter()
 
@@ -694,7 +746,6 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── math ───────────────────────────────────────────────────
     if route == "math":
         answer = _decide_math(user_input)
         _record_metric(route="math", intent_type="math", channel=channel)
@@ -709,7 +760,6 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── [C] Pre-filtro: razonamiento personal que el router mandó a RAG ─────
     if route == "rag" and _is_personal_reasoning(user_input):
         log.debug("[pre-filtro C] razonamiento personal detectado → forzando memory:work_state")
         t0 = time.perf_counter()
@@ -727,7 +777,6 @@ def process_turn(
             tokens_est=0,
         )
 
-    # ── rag ───────────────────────────────────────────────────
     answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
         user_input, vectordb, chat_history, route
     )

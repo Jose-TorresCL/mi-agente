@@ -43,7 +43,6 @@ SCRIPT     = BOT_DIR / "consulta_mercado.py"
 TIMEOUT    = 15   # segundos
 # ─────────────────────────────────────────────
 
-# Normalización de símbolos: el usuario pasa texto libre, el bot necesita ticker exacto
 _SYMBOL_MAP: dict[str, str] = {
     "btc":     "BTCUSDT",
     "bitcoin": "BTCUSDT",
@@ -59,44 +58,48 @@ _SYMBOL_MAP: dict[str, str] = {
 
 
 def _normalizar_simbolo(texto: str) -> str:
-    """Convierte texto libre a ticker Binance estándar.
-
-    Ejemplos:
-        'btc'     → 'BTCUSDT'
-        'bitcoin' → 'BTCUSDT'
-        'BTCUSDT' → 'BTCUSDT' (ya normalizado)
-        'eth'     → 'ETHUSDT'
-
-    Si no hay match, devuelve el input en mayúsculas.
-    La herramienta consulta_mercado.py validará si el ticker es válido.
-    """
     lower = texto.strip().lower()
     if lower in _SYMBOL_MAP:
         return _SYMBOL_MAP[lower]
-    # Si ya tiene formato TICKER (maúsyúsculas, sin espacios), lo deja pasar
     upper = texto.strip().upper()
     if upper.isalpha() and len(upper) <= 10:
-        # Agregar USDT si no lo tiene
         if not upper.endswith("USDT") and not upper.endswith("BTC"):
             return upper + "USDT"
         return upper
-    return "BTCUSDT"  # fallback seguro
+    return "BTCUSDT"
+
+
+def _detectar_alertas(ind: dict) -> list[str]:
+    """Detecta condiciones extremas en los indicadores y retorna lista de alertas.
+
+    Retorna strings listos para mostrar. Lista vacía = sin alertas.
+    """
+    alertas = []
+    rsi      = ind.get("rsi", 0)
+    ema_fast = ind.get("ema_fast", 0)
+    ema_slow = ind.get("ema_slow", 0)
+
+    # RSI extremo
+    if rsi and rsi < 20:
+        alertas.append(f"⚠️  RSI {rsi:.1f} — SOBREVENTA EXTREMA (posible rebote)")  
+    elif rsi and rsi > 80:
+        alertas.append(f"⚠️  RSI {rsi:.1f} — SOBRECOMPRA EXTREMA (posible corrección)")
+
+    # Cruce de EMAs
+    if ema_fast and ema_slow and ema_fast > 0 and ema_slow > 0:
+        diff_pct = abs(ema_fast - ema_slow) / ema_slow * 100
+        if ema_fast < ema_slow:
+            alertas.append("📉 EMA rápida < EMA lenta — contexto bajista")
+        else:
+            alertas.append("📈 EMA rápida > EMA lenta — contexto alcista")
+        if diff_pct > 0.3:
+            alertas.append(f"   Divergencia EMAs: {diff_pct:.2f}% — tendencia acentuada")
+
+    return alertas
 
 
 def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResult:
-    """Llama a consulta_mercado.py vía subprocess y devuelve ToolResult.
-
-    Args:
-        symbol: Ticker normalizado (ej. 'BTCUSDT').
-        modo:   Nivel de detalle: 'precio' | 'indicadores' | 'full'.
-
-    Returns:
-        ToolResult(ok=True, data=dict_json)  si el script terminó con JSON válido.
-        ToolResult(ok=False, error_code=...) en cualquier falla (timeout, error, no encontrado).
-
-    Never raises.
-    """
-    # Verificar que el bot existe antes de correr el subprocess
+    """Llama a consulta_mercado.py vía subprocess y devuelve ToolResult."""
     if not PYTHON_BOT.exists():
         log.warning("[tools_trading] Python del bot no encontrado: %s", PYTHON_BOT)
         return ToolResult(
@@ -109,7 +112,7 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
         log.warning("[tools_trading] Script de consulta no encontrado: %s", SCRIPT)
         return ToolResult(
             ok=False,
-            message="⚠️  El script de consulta del bot no existe todavía. Necesitás crear consulta_mercado.py en bot_trading/.",
+            message="⚠️  El script de consulta del bot no existe todavía.",
             error_code="SCRIPT_NOT_FOUND",
             tool_name="tool_analizar_mercado",
         )
@@ -121,13 +124,13 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             text=True,
             timeout=TIMEOUT,
             cwd=str(BOT_DIR),
-            env={"PYTHONUTF8": "1"},  # evita UnicodeError en Windows cp1252
+            env={"PYTHONUTF8": "1"},
         )
     except subprocess.TimeoutExpired:
         log.warning("[tools_trading] Timeout (%ds) consultando %s", TIMEOUT, symbol)
         return ToolResult(
             ok=False,
-            message=f"⚠️  El bot no respondió en {TIMEOUT}s. Binance puede estar lento o sin conexión.",
+            message=f"⚠️  El bot no respondió en {TIMEOUT}s.",
             error_code="TIMEOUT",
             tool_name="tool_analizar_mercado",
         )
@@ -140,7 +143,6 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             tool_name="tool_analizar_mercado",
         )
 
-    # El proceso terminó pero pudo haber fallado
     if result.returncode != 0:
         stderr = result.stderr.strip()[:300] if result.stderr else "(sin detalle)"
         log.warning("[tools_trading] Script terminó con código %d: %s", result.returncode, stderr)
@@ -152,7 +154,6 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             tool_name="tool_analizar_mercado",
         )
 
-    # Parsear JSON del stdout
     stdout = result.stdout.strip()
     if not stdout:
         return ToolResult(
@@ -163,7 +164,6 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
         )
 
     try:
-        # El script puede emitir logs antes del JSON. Buscar la última línea válida con JSON.
         json_line = ""
         for line in reversed(stdout.splitlines()):
             line = line.strip()
@@ -195,7 +195,14 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
 
 
 def _formatear_respuesta(data: dict) -> str:
-    """Convierte el dict JSON del bot en texto legible para el usuario."""
+    """Convierte el dict JSON del bot en texto estructurado para Lautaro.
+
+    Incluye:
+    - Snapshot de precio, señal e indicadores.
+    - Bloque de alertas si hay condiciones extremas (opción 4).
+    El campo data['_alertas'] se adjunta para que intelligence.py lo use
+    en el prompt de interpretación LLM (opción 1).
+    """
     if not data.get("ok"):
         return f"⚠️  {data.get('error', 'Error desconocido en el bot')}"
 
@@ -207,7 +214,7 @@ def _formatear_respuesta(data: dict) -> str:
     ind     = data.get("indicators", {})
 
     signal_icon = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(signal, "ℹ️ ")
-    source_tag = " [caché]" if source == "cache" else ""
+    source_tag  = " [caché]" if source == "cache" else ""
 
     lines = [
         f"📊 **{symbol}** — {tf}{source_tag}",
@@ -215,9 +222,17 @@ def _formatear_respuesta(data: dict) -> str:
         f"  Señal:  {signal_icon} {signal}",
     ]
     if ind:
-        if "rsi" in ind:     lines.append(f"  RSI:    {ind['rsi']:.1f}")
-        if "atr" in ind:     lines.append(f"  ATR:    {ind['atr']:.2f}")
+        if "rsi" in ind:      lines.append(f"  RSI:    {ind['rsi']:.1f}")
+        if "atr" in ind:      lines.append(f"  ATR:    {ind['atr']:.2f}")
         if "ema_fast" in ind: lines.append(f"  EMA rápida: {ind['ema_fast']:,.2f}")
         if "ema_slow" in ind: lines.append(f"  EMA lenta:  {ind['ema_slow']:,.2f}")
+
+    # ── Paso A (opción 4): alertas de condiciones extremas ──────────────────
+    alertas = _detectar_alertas(ind)
+    if alertas:
+        lines.append("")
+        lines.append("─" * 36)
+        for alerta in alertas:
+            lines.append(alerta)
 
     return "\n".join(lines)
