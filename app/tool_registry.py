@@ -7,7 +7,7 @@ Cada entrada en TOOLS tiene:
   risk:        RiskLevel — clasificación de riesgo (R6-A).
                READ   → solo lectura, sin efectos secundarios.
                WRITE  → escribe en storage/ interno del agente.
-               SYSTEM → accede a recursos externos (no hay ninguna actualmente).
+               SYSTEM → accede a recursos externos.
   handler:     Función (user_input: str) -> str con toda la lógica de parseo
                y construcción de respuesta. Retorna str para compatibilidad
                con intelligence.py (via dispatch_tool_str).
@@ -27,8 +27,14 @@ Convención:
 
 Regla de seguridad (R6-A):
   dispatch_tool() rechaza tools con risk=SYSTEM a menos que se agregue
-  soporte explícito de confirmación humana (no implementado aún — hay
-  0 tools SYSTEM en producción actualmente).
+  soporte explícito de confirmación humana (no implementado aún).
+
+  EXCEPCIÓN: tool_analizar_mercado tiene risk=SYSTEM pero es de solo lectura
+  (solo llama a consulta_mercado.py, nunca ejecuta órdenes).
+  Para habilitarla: cambiar su entry a risk=RiskLevel.READ una vez que el
+  subprocess esté probado manualmente con:
+    C:\\Users\\lenovo\\Proyectos\\bot_trading\\.venv\\Scripts\\python.exe consulta_mercado.py --symbol BTCUSDT
+  y confirmes que devuelve JSON válido.
 """
 from __future__ import annotations
 
@@ -42,6 +48,7 @@ from app.tools import (
     tool_create_task,
     tool_complete_task,
     tool_update_work_state,
+    tool_analizar_mercado,
     suggest_next_step,
     extract_task_id,
 )
@@ -49,11 +56,7 @@ from app.schemas import RiskLevel, ToolResult, tool_result_to_str
 from app import memory_manager
 
 
-# ── Handlers ────────────────────────────────────────────────────────────────
-# Los handlers convierten el texto libre del usuario a llamadas de tool
-# y retornan str para la capa de presentación.
-# Internamente llaman a la tool (que ahora retorna ToolResult) y
-# extraen .message para mantener compatibilidad hacia afuera.
+# ── Handlers ──────────────────────────────────────────────
 
 def _handle_save_fact(user_input: str) -> str:
     prefixes = [
@@ -89,7 +92,6 @@ def _handle_create_task(user_input: str) -> str:
             raw = user_input[len(prefix):].strip()
             priority = "medium"
 
-            # Buscar patrón "prioridad <valor>" en cualquier posición
             match = re.search(
                 r",?\s*prioridad\s+(alta|high|baja|low|media|medium)\b",
                 raw,
@@ -100,9 +102,8 @@ def _handle_create_task(user_input: str) -> str:
                 priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
                 raw = re.sub(
                     r",?\s*prioridad\s+\S+", "", raw, flags=re.IGNORECASE
-                ).strip().rstrip(",;— ").strip()
+                ).strip().rstrip(",;\u2014 ").strip()
             else:
-                # Fallback: detectar si termina directamente en la palabra de prioridad
                 for p in ["alta", "high", "baja", "low", "media", "medium"]:
                     if raw.lower().endswith(p):
                         raw = raw[:-len(p)].strip().rstrip(",;")
@@ -131,7 +132,6 @@ def _handle_list_files(user_input: str) -> str:
     if not files:
         return "No encontré archivos en las carpetas permitidas."
 
-    # Detectar si el usuario pidió solo una extensión específica
     ext_filter = None
     u = user_input.lower()
     if ".md" in u or "markdown" in u:
@@ -158,11 +158,6 @@ def _handle_read_file(user_input: str) -> str:
 
 
 def _handle_set_session_goal(user_input: str) -> str:
-    """Extrae el objetivo del texto libre y lo guarda en work_state.
-
-    Limpia los prefijos de activación para guardar solo el contenido real.
-    Ejemplo: 'mi objetivo hoy es cerrar el Eje 1' → guarda 'cerrar el Eje 1'.
-    """
     prefixes = [
         "mi objetivo hoy es",
         "mi objetivo para hoy es",
@@ -205,7 +200,37 @@ def _handle_set_session_goal(user_input: str) -> str:
     return f"✅ Objetivo de sesión guardado: '{content}'"
 
 
-# ── Registro ──────────────────────────────────────────────────────────────────
+def _handle_analizar_mercado(user_input: str) -> str:
+    """Extrae el símbolo del texto libre y llama a tool_analizar_mercado.
+
+    Normaliza: 'btc', 'bitcoin', 'BTC', 'BTCUSDT' → todo pasa por _normalizar_simbolo.
+    Fallback a BTCUSDT si no detecta símbolo.
+
+    Keywords que activan esta tool via router (configuradas en router_config.py):
+      mercado, precio, btc, bitcoin, eth, ethereum, señal, indicadores,
+      trading, binance, cripto, criptomoneda
+    """
+    from app.tools_trading import _normalizar_simbolo
+
+    # Buscar ticker en el texto
+    u = user_input.lower()
+    symbol = "BTCUSDT"  # fallback
+    for term, ticker in [
+        ("btcusdt", "BTCUSDT"), ("ethusdt", "ETHUSDT"), ("bnbusdt", "BNBUSDT"),
+        ("bitcoin", "BTCUSDT"), ("ethereum", "ETHUSDT"),
+        ("btc", "BTCUSDT"), ("eth", "ETHUSDT"), ("bnb", "BNBUSDT"),
+        ("sol", "SOLUSDT"), ("solana", "SOLUSDT"),
+        ("xrp", "XRPUSDT"), ("ada", "ADAUSDT"), ("doge", "DOGEUSDT"),
+    ]:
+        if term in u:
+            symbol = ticker
+            break
+
+    result = tool_analizar_mercado(symbol=symbol)
+    return tool_result_to_str(result)
+
+
+# ── Registro ────────────────────────────────────────────────
 
 TOOLS: dict[str, dict] = {
     "tool_list_files": {
@@ -257,6 +282,15 @@ TOOLS: dict[str, dict] = {
         "risk":        RiskLevel.WRITE,
         "handler":     _handle_set_session_goal,
     },
+    "tool_analizar_mercado": {
+        "fn":          tool_analizar_mercado,
+        "carril":      "tool_analizar_mercado",
+        "descripcion": "Consulta precio, indicadores y señal del mercado vía bot_trading",
+        "risk":        RiskLevel.SYSTEM,   # ← cambiar a READ después de probar el subprocess
+        "handler":     _handle_analizar_mercado,
+        "keywords":    ["mercado", "precio", "btc", "bitcoin", "eth", "ethereum",
+                        "señal", "indicadores", "trading", "binance", "cripto"],
+    },
 }
 
 
@@ -264,10 +298,10 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
     """Despacha user_input al handler del carril indicado.
 
     R6-A: retorna ToolResult estructurado en vez de str.
-    Usar en tests, métricas y cualquier código que necesite saber
-    si la tool tuvo éxito de forma programática.
 
     Seguridad: rechaza tools con risk=SYSTEM (ninguna en producción actualmente).
+    La tool_analizar_mercado está en SYSTEM hasta que el subprocess
+    sea probado manualmente y se cambie a READ.
 
     Args:
         carril:     Nombre del carril (ej. 'tool_save_fact').
@@ -283,18 +317,20 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
     if entry is None:
         return None
 
-    # Bloquear tools SYSTEM sin confirmación explícita
     if entry.get("risk") == RiskLevel.SYSTEM:
         return ToolResult(
             ok=False,
-            message=f"⛔ La tool '{carril}' es de riesgo SYSTEM y requiere confirmación humana explícita.",
+            message=(
+                f"⛔ La tool '{carril}' está en modo SYSTEM (acceso externo). "
+                "Para habilitarla: probar el subprocess manualmente y cambiar "
+                "risk a RiskLevel.READ en tool_registry.py."
+            ),
             error_code="SYSTEM_TOOL_BLOCKED",
             tool_name=carril,
         )
 
     try:
         result_str = entry["handler"](user_input)
-        # Los handlers retornan str — envolvemos en ToolResult para consistencia
         return ToolResult(
             ok=True,
             message=result_str,
@@ -310,21 +346,7 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
 
 
 def dispatch_tool_str(carril: str, user_input: str) -> str | None:
-    """Wrapper de compatibilidad: retorna str en vez de ToolResult.
-
-    Usar en intelligence.py y cualquier caller que espere str.
-    Equivale al dispatch_tool() original antes de R6-A.
-
-    Args:
-        carril:     Nombre del carril.
-        user_input: Texto crudo del usuario.
-
-    Returns:
-        str con la respuesta lista para mostrar al usuario.
-        None si el carril no está registrado en TOOLS.
-
-    Never raises.
-    """
+    """Wrapper de compatibilidad: retorna str en vez de ToolResult."""
     result = dispatch_tool(carril, user_input)
     if result is None:
         return None

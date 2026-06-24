@@ -14,6 +14,7 @@ Funciones públicas:
   tool_complete_task()      — marca tarea como completada
   tool_update_work_state()  — actualiza work_state.json
   tool_set_session_goal()   — guarda objetivo de la sesión actual
+  tool_analizar_mercado()   — consulta bot_trading vía subprocess (SYSTEM, solo lectura)
   suggest_next_step()       — sugerencia post-actualización (retorna str, helper interno)
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
@@ -24,6 +25,10 @@ Nota de arquitectura:
   Todas las operaciones de memoria pasan por memory_manager,
   no por memory_store directamente. memory_manager es el
   guardián de la capa de memoria.
+
+  tool_analizar_mercado usa import lazy de tools_trading para aislar
+  el subprocess. Si el módulo no está disponible, retorna ToolResult(ok=False)
+  sin crashear el módulo completo.
 """
 from __future__ import annotations
 
@@ -174,7 +179,7 @@ def tool_complete_task(task_id: str) -> ToolResult:
             if task.get("status") == "completed":
                 return ToolResult(
                     ok=True,
-                    message=f"ℹ️  La tarea {task_id} ya estaba marcada como completada.",
+                    message=f"ℹ️   La tarea {task_id} ya estaba marcada como completada.",
                     data={"task_id": task_id, "was_already_completed": True},
                     tool_name="tool_complete_task",
                 )
@@ -212,17 +217,9 @@ def tool_update_work_state(
     next_step: str | None = None,
     last_completed_step: str | None = None,
 ) -> ToolResult:
-    """Actualiza work_state.json desde conversación libre o desde kwargs directos.
-
-    Delega toda escritura en memory_manager.update_state(field, value)
-    respetando el contrato de arquitectura: nadie toca disco directamente
-    excepto memory_store.
-
-    R6-A: retorna ToolResult.
-    """
+    """Actualiza work_state.json desde conversación libre o desde kwargs directos."""
     cambios: list[str] = []
 
-    # — kwargs directos —
     if current_focus is not None:
         val = current_focus.strip()
         if val:
@@ -242,7 +239,6 @@ def tool_update_work_state(
             _mm_update_state("last_completed", f"{val} — {fecha}")
             cambios.append(f"last_completed → '{val}'")
 
-    # — texto libre —
     if texto:
         texto_lower = texto.lower()
 
@@ -292,7 +288,6 @@ def tool_update_work_state(
             tool_name="tool_update_work_state",
         )
 
-    # Actualizar timestamp via memory_manager
     _mm_update_state("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
@@ -310,14 +305,7 @@ def tool_update_work_state(
 # ───────────────────────────────────────────────
 
 def tool_set_session_goal(content: str) -> ToolResult:
-    """Guarda el objetivo específico para la sesión actual.
-
-    A diferencia de tool_update_work_state (que actualiza el foco permanente),
-    esta tool guarda un objetivo concreto para hoy que aparecerá en el
-    session briefing al arranque de la próxima sesión.
-
-    R6-A: retorna ToolResult.
-    """
+    """Guarda el objetivo específico para la sesión actual."""
     content = str(content).strip()
     if not content:
         return ToolResult(
@@ -364,15 +352,10 @@ def toolresult_to_str(result: ToolResult) -> str:
 
 # ───────────────────────────────────────────────
 # Sugerencia automática post-actualización
-# (retorna str — helper interno, no es tool pública)
 # ───────────────────────────────────────────────
 
 def suggest_next_step() -> str:
-    """Lee work_state y tasks vía memory_manager y devuelve una sugerencia.
-
-    Fix 3: ya no accede a disco directamente. Usa _mm_get_work_state()
-    y _mm_get_tasks() como el resto del sistema.
-    """
+    """Lee work_state y tasks vía memory_manager y devuelve una sugerencia."""
     state   = _mm_get_work_state()
     tasks_data = _mm_get_tasks()
 
@@ -405,3 +388,42 @@ def suggest_next_step() -> str:
         lines.append(f"  ✅  Último completado: {last_done}")
 
     return "\n".join(lines)
+
+
+# ───────────────────────────────────────────────
+# Tool: analizar mercado (bot_trading)
+# Risk: SYSTEM — bloqueada en dispatch hasta habilitar confirmación
+# Ver tool_registry.py para habilitación.
+# ───────────────────────────────────────────────
+
+def tool_analizar_mercado(symbol: str = "BTCUSDT") -> ToolResult:
+    """Consulta precio, indicadores y señal del bot_trading vía subprocess.
+
+    Usa import lazy de tools_trading para aislar el módulo de integración.
+    Si tools_trading no está disponible o el bot no responde, falla
+    silenciosamente retornando ToolResult(ok=False) sin crashear Lautaro.
+
+    Garantías:
+      - Never raises.
+      - Timeout duro de 15 segundos.
+      - Si el bot no está instalado, devuelve mensaje claro al usuario.
+
+    Args:
+        symbol: Ticker normalizado (ej. 'BTCUSDT'). Viene ya normalizado
+                desde _handle_analizar_mercado en tool_registry.
+
+    Returns:
+        ToolResult(ok=True, message=texto_formateado, data=dict_json)
+        ToolResult(ok=False, error_code=...) si el bot no está disponible.
+    """
+    try:
+        from app.tools_trading import _llamar_bot_trading
+    except ImportError as exc:
+        return ToolResult(
+            ok=False,
+            message=f"⚠️  Módulo tools_trading no disponible: {exc}",
+            error_code="MODULE_NOT_FOUND",
+            tool_name="tool_analizar_mercado",
+        )
+
+    return _llamar_bot_trading(symbol=symbol, modo="full")
