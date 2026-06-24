@@ -51,6 +51,7 @@ from app.router_config import (
     _COMPLETE_TASK_PATTERN,
     TOOL_UPDATE_WORK_STATE_KEYWORDS,
     TOOL_SET_SESSION_GOAL_KEYWORDS,
+    TOOL_ANALIZAR_MERCADO_KEYWORDS,
     TOOL_UNSUPPORTED_KEYWORDS,
     MATH_KEYWORDS,
     _RE_MATH_EXPR,
@@ -141,12 +142,13 @@ def _route_by_keywords(question: str) -> str | None:
         return f"memory:{memory_subtype}"
 
     # Fix: notas libres → tool_save_fact (antes caían a RAG)
-    # Se evalúa ANTES de math para no capturar frases con números dentro de una nota.
     if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):                return "tool_save_fact"
 
-    # Fix: preguntas matemáticas → math (antes caían a RAG y fidelity las bloqueaba)
-    # Se evalúa por keyword y por expresión directa (ej. '847 / 13').
+    # Fix: preguntas matemáticas → math
     if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q): return "math"
+
+    # Consultas de mercado / trading → tool_analizar_mercado
+    if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):         return "tool_analizar_mercado"
 
     if any(k in q for k in RAG_HINTS):                              return "rag"
 
