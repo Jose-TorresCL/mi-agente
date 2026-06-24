@@ -13,7 +13,6 @@ _EXIT_WORDS = {
     "nos vemos",
     "me voy", "cierro",
     "by",
-    # Fix exit-cerrar-sesion: variantes de cierre con frase compuesta
     "cerrar sesion", "cerrar la sesion",
     "terminar sesion", "terminar la sesion",
     "fin de sesion", "finalizar sesion",
@@ -62,7 +61,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "que hicimos", "en que estamos",
     "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
-    # Fix 2: preguntas de bloqueo/impedimento → work_state.current_blockers
     "que bloquea", "que esta bloqueando", "que esta frenando",
     "que me bloquea", "que nos bloquea", "que bloqueo hay",
     "hay algun bloqueo", "cuales son los bloqueos",
@@ -108,7 +106,6 @@ MEMORY_EPISODE_KEYWORDS = [
     "historial de sesiones", "episodios anteriores",
     "que avance", "que avanzamos",
     "ultima vez que",
-    # Fix Bug 3: frases de briefing y retoma que iban a tool_update_work_state
     "briefing", "dame un briefing",
     "retomar el trabajo", "retomar trabajo", "retomar la sesion",
     "desde el ultimo episodio", "desde el ultimo episodio sugiere",
@@ -140,8 +137,6 @@ TOOL_SAVE_FACT_KEYWORDS = [
     "guarda el hecho", "registra el hecho", "guarda esto como hecho",
 ]
 
-# Fix: keywords para guardar notas libres → tool_save_fact
-# Antes estas frases caían a RAG porque no había keywords de nota.
 TOOL_SAVE_NOTE_KEYWORDS = [
     "guarda esta nota", "guarda esta anotacion", "guarda esto",
     "anota esto", "anotá esto", "guardá esto",
@@ -154,10 +149,9 @@ TOOL_SAVE_NOTE_KEYWORDS = [
 TOOL_CREATE_TASK_KEYWORDS = [
     "crea una tarea", "crear tarea", "agrega una tarea", "agregar tarea",
     "nueva tarea", "anade una tarea", "anota una tarea", "registra una tarea",
-    # Fix Bug 2: variantes sin 'una' que el usuario usa naturalmente
     "crea tarea", "crea la tarea", "crea tarea:",
     "agrega tarea", "agrega la tarea",
-    "añade una tarea", "añade tarea",
+    "áñade una tarea", "áñade tarea",
     "nueva tarea:", "tarea nueva:",
 ]
 
@@ -180,7 +174,6 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "complete", "termine", "acabe", "ya hice", "listo:",
     "el siguiente paso es", "sigue:", "proximo paso",
     "nuevo bloqueo", "actualiza bloqueante", "actualiza el estado de trabajo",
-    # Fix Bug 1: patrón corto 'foco a X' que el usuario usa naturalmente
     "foco a ", "foco en ",
     "mi foco es", "mi foco sera", "mi foco ahora es",
     "cambio de foco", "cambio el foco",
@@ -204,6 +197,36 @@ TOOL_SET_SESSION_GOAL_KEYWORDS = [
     "mi meta hoy",
 ]
 
+# Keywords para tool_analizar_mercado — detectan intent de consulta de mercado
+TOOL_ANALIZAR_MERCADO_KEYWORDS = [
+    # Consultas directas de precio
+    "precio del btc", "precio de btc", "precio bitcoin",
+    "precio del eth", "precio de eth", "precio ethereum",
+    "precio actual", "precio de la cripto", "precio del cripto",
+    "cuanto vale el btc", "cuanto vale btc", "cuanto vale bitcoin",
+    "cuanto vale el eth", "cuanto vale eth", "cuanto vale ethereum",
+    "cuanto esta el btc", "cuanto esta bitcoin",
+    "cuanto esta el eth", "cuanto esta ethereum",
+    # Consultas de señal / análisis
+    "senal de trading", "señal de trading",
+    "senal del mercado", "señal del mercado",
+    "analiza el mercado", "analizame el mercado",
+    "analizar mercado", "consulta el mercado",
+    "que dice el mercado", "como esta el mercado",
+    "indicadores del mercado", "indicadores de btc",
+    "rsi de btc", "rsi bitcoin", "rsi eth",
+    "ema de btc", "atr de btc",
+    # Frases cortas con crypto
+    "btcusdt", "ethusdt",
+    "analizar btc", "analizar eth",
+    "como va el btc", "como va bitcoin",
+    "como va el eth", "como va ethereum",
+    "dame la senal", "dame la señal",
+    "hay senal", "hay señal",
+    "mercado cripto", "mercado crypto",
+    "consulta mercado", "ver mercado",
+]
+
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
@@ -215,11 +238,7 @@ TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas funciones", "cuantas clases",
 ]
 
-# Fix: carril math para preguntas aritméticas y matemáticas puras
-# Antes estas preguntas caían a RAG donde el fidelity las bloqueaba
-# porque los números del enunciado no aparecen en ningún chunk.
 MATH_KEYWORDS = [
-    # Operaciones explícitas
     "dividido", "dividido entre", "dividido por",
     "multiplicado", "multiplicado por",
     "mas menos", "cuanto es", "cuanto da",
@@ -231,11 +250,8 @@ MATH_KEYWORDS = [
     "potencia de", "al cuadrado", "al cubo",
     "porcentaje de", "el porcentaje",
     "cuantos son",
-    # Patrones numéricos directos (ej. "847 / 13", "20 * 5")
-    # Se evalúan con regex en router.py, no como keyword exacta
 ]
 
-# Patrón regex para expresiones matemáticas directas: "847 / 13", "20 * 5", "3 + 4"
 _RE_MATH_EXPR = re.compile(
     r'^\s*[\d.,]+\s*[+\-*/÷x×]\s*[\d.,]+\s*$',
     re.IGNORECASE,
@@ -257,7 +273,6 @@ RAG_HINTS = [
     "para que sirve el", "para que sirve la",
 ]
 
-# [A] Fix A: keywords de razonamiento personal → memory:work_state
 MEMORY_REASONING_KEYWORDS = [
     "que me conviene hacer",
     "que me conviene atacar",
@@ -273,7 +288,7 @@ MEMORY_REASONING_KEYWORDS = [
     "por donde arrancamos",
     "que me recomendas hacer",
     "que me recomendas atacar",
-    "que me recomendarías",
+    "que me recomiendarías",
     "que es lo mas importante para mi",
     "cual es lo mas importante para mi",
     "que es lo primero que debo hacer",
@@ -289,14 +304,14 @@ MEMORY_REASONING_KEYWORDS = [
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
-    "tool_set_session_goal",
+    "tool_set_session_goal", "tool_analizar_mercado",
     "memory",
     "memory:profile", "memory:work_state", "memory:tasks",
     "memory:project_facts", "memory:episode",
     "rag", "identity",
     "unsupported",
-    "math",           # Fix: carril para preguntas matemáticas puras
-    "tool_save_note", # Fix: carril para guardar notas libres
+    "math",
+    "tool_save_note",
 }
 
 class RouterDebugInfo(TypedDict):
@@ -323,6 +338,7 @@ __all__ = [
     "_COMPLETE_TASK_PATTERN",
     "TOOL_UPDATE_WORK_STATE_KEYWORDS",
     "TOOL_SET_SESSION_GOAL_KEYWORDS",
+    "TOOL_ANALIZAR_MERCADO_KEYWORDS",
     "TOOL_UNSUPPORTED_KEYWORDS",
     "MATH_KEYWORDS",
     "_RE_MATH_EXPR",
