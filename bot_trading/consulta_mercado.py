@@ -44,13 +44,13 @@ import sys
 from pathlib import Path
 
 # ───────────────────────────────────────────────
-# Resolucín de rutas — siempre desde este archivo, no desde cwd
+# Resolución de rutas — siempre desde este archivo, no desde cwd
 # ───────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DOTENV     = SCRIPT_DIR / ".env"
 CACHE_FILE = SCRIPT_DIR / "data" / "last_market_data.json"
 
-# Agregar el directorio razíz del bot al path para imports relativos
+# Agregar el directorio raíz del bot al path para imports relativos
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -75,10 +75,8 @@ def _cargar_cache(symbol: str) -> dict | None:
     try:
         with open(CACHE_FILE, encoding="utf-8") as f:
             cache = json.load(f)
-        # El caché puede ser un dict por símbolo o un dict directo
         if symbol in cache:
             return cache[symbol]
-        # Si no hay símbolo específico, devolver el primero disponible
         if cache:
             return next(iter(cache.values()))
     except Exception:
@@ -105,8 +103,12 @@ def _consultar_live(symbol: str) -> dict:
     """Conecta a Binance, obtiene datos reales y calcula indicadores.
 
     Importa solo los módulos necesarios del bot (no el ciclo productivo).
+    Módulos confirmados con Get-ChildItem src:
+      src/pipeline/conexion_api.py
+      src/core/estrategias_bot1.py
+      src/core/gestor_indicadores.py
     """
-    from src.pipeline.conexionapi import connect_to_binance, get_historical_data
+    from src.pipeline.conexion_api import connect_to_binance, get_historical_data
     from src.core.estrategias_bot1 import tomar_decision
     from src.core.gestor_indicadores import calcular_indicadores
 
@@ -168,7 +170,7 @@ def main() -> None:
     # Modo precio: solo el precio actual, sin indicadores (más rápido)
     if args.modo == "precio":
         try:
-            from src.pipeline.conexionapi import connect_to_binance, get_historical_data
+            from src.pipeline.conexion_api import connect_to_binance, get_historical_data
             client = connect_to_binance()
             raw    = get_historical_data(client, symbol=symbol, interval="1m", limit=5)
             import pandas as pd
