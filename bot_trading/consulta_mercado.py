@@ -27,10 +27,10 @@ Salida: una línea JSON en stdout con este schema estricto:
 En caso de error:
   {"ok": false, "error": "<descripcion>", "source": "none"}
 
-Módulos reales confirmados (Get-ChildItem + Select-String):
-  src/pipeline/conexion_api.py       → connect_to_binance, get_historical_data
-  src/core/gestor_indicadores.py     → calcular_todos_los_indicadores(df)
-  src/core/estrategias_bot1.py       → estrategia_compra, estrategia_venta
+Módulos y firmas reales confirmadas:
+  get_historical_data(symbol, interval, limit, client, ...) — symbol es posicional
+  calcular_todos_los_indicadores(df)
+  estrategia_compra(indicadores), estrategia_venta(indicadores)
 """
 from __future__ import annotations
 
@@ -89,12 +89,6 @@ def _guardar_cache(symbol: str, data: dict) -> None:
 
 
 def _derivar_signal(indicadores: dict) -> str:
-    """Llama estrategia_compra y estrategia_venta y deriva la señal.
-
-    Ambas funciones reciben el dict de indicadores y retornan un dict
-    con al menos {"decision": bool/str} o similar. Manejamos de forma
-    defensiva cualquier firma que retornen.
-    """
     try:
         from src.core.estrategias_bot1 import estrategia_compra, estrategia_venta
     except ImportError:
@@ -104,7 +98,6 @@ def _derivar_signal(indicadores: dict) -> str:
 
     try:
         resultado_compra = estrategia_compra(indicadores)
-        # Acepta: True, "buy", {"decision": True}, {"accion": "compra"}, etc.
         if isinstance(resultado_compra, bool) and resultado_compra:
             signal = "buy"
         elif isinstance(resultado_compra, str) and resultado_compra.lower() in ("buy", "compra", "long"):
@@ -134,34 +127,34 @@ def _derivar_signal(indicadores: dict) -> str:
 
 
 def _consultar_live(symbol: str) -> dict:
-    """Conecta a Binance, obtiene datos reales y calcula indicadores.
+    """Conecta a Binance y calcula indicadores.
 
-    Usa los nombres reales confirmados de los módulos del bot.
+    Firma real confirmada:
+      get_historical_data(symbol, interval, limit, client, ...)
+      symbol es el primer parámetro posicional — NO pasar client primero.
     """
     from src.pipeline.conexion_api import connect_to_binance, get_historical_data
     from src.core.gestor_indicadores import calcular_todos_los_indicadores
 
     client = connect_to_binance()
-    raw    = get_historical_data(client, symbol=symbol, interval="1m", limit=100)
 
-    if not raw or len(raw) < 20:
-        raise ValueError(f"Datos insuficientes para {symbol}: {len(raw) if raw else 0} velas")
+    # Firma: get_historical_data(symbol, interval, limit, client, ...)
+    df = get_historical_data(symbol, "1m", 100, client=client)
+
+    # get_historical_data ya retorna DataFrame normalizado
+    if df is None or len(df) < 20:
+        raise ValueError(f"Datos insuficientes para {symbol}: {len(df) if df is not None else 0} velas")
 
     import pandas as pd
-    df = pd.DataFrame(raw, columns=[
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base", "taker_buy_quote", "ignore",
-    ])
+    # Asegurar tipos numéricos por si acaso
     for col in ("close", "high", "low", "open", "volume"):
-        df[col] = pd.to_numeric(df[col])
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # calcular_todos_los_indicadores retorna lista o dict según la versión
     resultado_ind = calcular_todos_los_indicadores(df)
 
-    # Normalizar: puede retornar lista de dicts o un dict directo
     if isinstance(resultado_ind, list) and resultado_ind:
-        indicadores = resultado_ind[-1]  # última vela
+        indicadores = resultado_ind[-1]
     elif isinstance(resultado_ind, dict):
         indicadores = resultado_ind
     else:
@@ -205,13 +198,8 @@ def main() -> None:
             from src.pipeline.conexion_api import connect_to_binance, get_historical_data
             import pandas as pd
             client = connect_to_binance()
-            raw    = get_historical_data(client, symbol=symbol, interval="1m", limit=5)
-            df     = pd.DataFrame(raw, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "num_trades",
-                "taker_buy_base", "taker_buy_quote", "ignore",
-            ])
-            price = round(float(pd.to_numeric(df["close"]).iloc[-1]), 4)
+            df     = get_historical_data(symbol, "1m", 5, client=client)
+            price  = round(float(pd.to_numeric(df["close"]).iloc[-1]), 4)
             _emit({"ok": True, "symbol": symbol, "price": price, "source": "live"})
         except Exception as exc:
             cached = _cargar_cache(symbol)
