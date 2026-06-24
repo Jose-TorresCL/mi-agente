@@ -13,7 +13,7 @@ Salida: una línea JSON en stdout con este schema estricto:
     "ok": true,
     "symbol": "BTCUSDT",
     "price": 62814.2,
-    "signal": "sell",          # buy | sell | hold
+    "signal": "sell",
     "timeframe": "1m",
     "indicators": {
       "rsi": 62.1,
@@ -21,20 +21,16 @@ Salida: una línea JSON en stdout con este schema estricto:
       "ema_fast": 62780.1,
       "ema_slow": 62610.4
     },
-    "source": "live"           # live | cache
+    "source": "live"
   }
 
 En caso de error:
   {"ok": false, "error": "<descripcion>", "source": "none"}
 
-Garantías:
-  - Siempre imprime exactamente un JSON en la última línea de stdout.
-  - Resuelve .env desde el directorio del script, no desde cwd.
-  - Si Binance falla, intenta leer data/last_market_data.json (caché).
-  - PYTHONUTF8=1 en el subprocess previene UnicodeError en Windows.
-
-Dependencias (deben estar en bot_trading/.venv):
-  python-binance, pandas, pandas-ta, python-dotenv
+Módulos reales confirmados (Get-ChildItem + Select-String):
+  src/pipeline/conexion_api.py       → connect_to_binance, get_historical_data
+  src/core/gestor_indicadores.py     → calcular_todos_los_indicadores(df)
+  src/core/estrategias_bot1.py       → estrategia_compra, estrategia_venta
 """
 from __future__ import annotations
 
@@ -44,32 +40,26 @@ import sys
 from pathlib import Path
 
 # ───────────────────────────────────────────────
-# Resolución de rutas — siempre desde este archivo, no desde cwd
-# ───────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DOTENV     = SCRIPT_DIR / ".env"
 CACHE_FILE = SCRIPT_DIR / "data" / "last_market_data.json"
 
-# Agregar el directorio raíz del bot al path para imports relativos
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-# Cargar .env antes de cualquier import del bot
 try:
     from dotenv import load_dotenv
     load_dotenv(DOTENV)
 except ImportError:
-    pass  # python-dotenv no instalado, continuar sin .env
+    pass
 
 
 def _emit(data: dict) -> None:
-    """Imprime el JSON de salida y termina. Única función de output."""
     print(json.dumps(data, ensure_ascii=False))
     sys.stdout.flush()
 
 
 def _cargar_cache(symbol: str) -> dict | None:
-    """Lee data/last_market_data.json y devuelve el último snapshot del símbolo."""
     if not CACHE_FILE.exists():
         return None
     try:
@@ -85,7 +75,6 @@ def _cargar_cache(symbol: str) -> dict | None:
 
 
 def _guardar_cache(symbol: str, data: dict) -> None:
-    """Escribe el snapshot actual en data/last_market_data.json."""
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         cache = {}
@@ -96,27 +85,67 @@ def _guardar_cache(symbol: str, data: dict) -> None:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass  # fallo silencioso — el caché es best-effort
+        pass
+
+
+def _derivar_signal(indicadores: dict) -> str:
+    """Llama estrategia_compra y estrategia_venta y deriva la señal.
+
+    Ambas funciones reciben el dict de indicadores y retornan un dict
+    con al menos {"decision": bool/str} o similar. Manejamos de forma
+    defensiva cualquier firma que retornen.
+    """
+    try:
+        from src.core.estrategias_bot1 import estrategia_compra, estrategia_venta
+    except ImportError:
+        return "hold"
+
+    signal = "hold"
+
+    try:
+        resultado_compra = estrategia_compra(indicadores)
+        # Acepta: True, "buy", {"decision": True}, {"accion": "compra"}, etc.
+        if isinstance(resultado_compra, bool) and resultado_compra:
+            signal = "buy"
+        elif isinstance(resultado_compra, str) and resultado_compra.lower() in ("buy", "compra", "long"):
+            signal = "buy"
+        elif isinstance(resultado_compra, dict):
+            v = resultado_compra.get("decision") or resultado_compra.get("accion") or resultado_compra.get("signal") or ""
+            if v is True or str(v).lower() in ("buy", "compra", "long", "true", "1"):
+                signal = "buy"
+    except Exception:
+        pass
+
+    if signal == "hold":
+        try:
+            resultado_venta = estrategia_venta(indicadores)
+            if isinstance(resultado_venta, bool) and resultado_venta:
+                signal = "sell"
+            elif isinstance(resultado_venta, str) and resultado_venta.lower() in ("sell", "venta", "short"):
+                signal = "sell"
+            elif isinstance(resultado_venta, dict):
+                v = resultado_venta.get("decision") or resultado_venta.get("accion") or resultado_venta.get("signal") or ""
+                if v is True or str(v).lower() in ("sell", "venta", "short", "true", "1"):
+                    signal = "sell"
+        except Exception:
+            pass
+
+    return signal
 
 
 def _consultar_live(symbol: str) -> dict:
     """Conecta a Binance, obtiene datos reales y calcula indicadores.
 
-    Importa solo los módulos necesarios del bot (no el ciclo productivo).
-    Módulos confirmados con Get-ChildItem src:
-      src/pipeline/conexion_api.py
-      src/core/estrategias_bot1.py
-      src/core/gestor_indicadores.py
+    Usa los nombres reales confirmados de los módulos del bot.
     """
     from src.pipeline.conexion_api import connect_to_binance, get_historical_data
-    from src.core.estrategias_bot1 import tomar_decision
-    from src.core.gestor_indicadores import calcular_indicadores
+    from src.core.gestor_indicadores import calcular_todos_los_indicadores
 
     client = connect_to_binance()
     raw    = get_historical_data(client, symbol=symbol, interval="1m", limit=100)
 
     if not raw or len(raw) < 20:
-        raise ValueError(f"Datos insuficientes de Binance para {symbol}: {len(raw) if raw else 0} velas")
+        raise ValueError(f"Datos insuficientes para {symbol}: {len(raw) if raw else 0} velas")
 
     import pandas as pd
     df = pd.DataFrame(raw, columns=[
@@ -124,20 +153,29 @@ def _consultar_live(symbol: str) -> dict:
         "close_time", "quote_asset_volume", "num_trades",
         "taker_buy_base", "taker_buy_quote", "ignore",
     ])
-    df["close"] = pd.to_numeric(df["close"])
-    df["high"]  = pd.to_numeric(df["high"])
-    df["low"]   = pd.to_numeric(df["low"])
+    for col in ("close", "high", "low", "open", "volume"):
+        df[col] = pd.to_numeric(df[col])
 
-    indicadores = calcular_indicadores(df)
-    decision    = tomar_decision(indicadores)
+    # calcular_todos_los_indicadores retorna lista o dict según la versión
+    resultado_ind = calcular_todos_los_indicadores(df)
 
+    # Normalizar: puede retornar lista de dicts o un dict directo
+    if isinstance(resultado_ind, list) and resultado_ind:
+        indicadores = resultado_ind[-1]  # última vela
+    elif isinstance(resultado_ind, dict):
+        indicadores = resultado_ind
+    else:
+        indicadores = {}
+
+    signal = _derivar_signal(indicadores)
     precio_actual = float(df["close"].iloc[-1])
 
-    signal = "hold"
-    if decision == "buy":
-        signal = "buy"
-    elif decision == "sell":
-        signal = "sell"
+    def _safe(key):
+        v = indicadores.get(key) or indicadores.get(key.lower()) or 0
+        try:
+            return round(float(v), 4)
+        except Exception:
+            return 0.0
 
     return {
         "ok":         True,
@@ -146,10 +184,10 @@ def _consultar_live(symbol: str) -> dict:
         "signal":     signal,
         "timeframe":  "1m",
         "indicators": {
-            "rsi":      round(float(indicadores.get("RSI") or 0), 2),
-            "atr":      round(float(indicadores.get("ATR") or 0), 4),
-            "ema_fast": round(float(indicadores.get("EMA_fast") or 0), 4),
-            "ema_slow": round(float(indicadores.get("EMA_slow") or 0), 4),
+            "rsi":      _safe("RSI"),
+            "atr":      _safe("ATR"),
+            "ema_fast": _safe("EMA_fast"),
+            "ema_slow": _safe("EMA_slow"),
         },
         "source":     "live",
     }
@@ -157,24 +195,18 @@ def _consultar_live(symbol: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Consulta de mercado para Lautaro")
-    parser.add_argument("--symbol", default="BTCUSDT", help="Ticker Binance (ej. BTCUSDT)")
-    parser.add_argument(
-        "--modo",
-        choices=["precio", "indicadores", "full"],
-        default="full",
-        help="Nivel de detalle de la consulta",
-    )
+    parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--modo", choices=["precio", "indicadores", "full"], default="full")
     args = parser.parse_args()
     symbol = args.symbol.upper().strip()
 
-    # Modo precio: solo el precio actual, sin indicadores (más rápido)
     if args.modo == "precio":
         try:
             from src.pipeline.conexion_api import connect_to_binance, get_historical_data
+            import pandas as pd
             client = connect_to_binance()
             raw    = get_historical_data(client, symbol=symbol, interval="1m", limit=5)
-            import pandas as pd
-            df    = pd.DataFrame(raw, columns=[
+            df     = pd.DataFrame(raw, columns=[
                 "open_time", "open", "high", "low", "close", "volume",
                 "close_time", "quote_asset_volume", "num_trades",
                 "taker_buy_base", "taker_buy_quote", "ignore",
@@ -190,13 +222,11 @@ def main() -> None:
                 _emit({"ok": False, "error": str(exc), "source": "none"})
         return
 
-    # Modo indicadores / full: precio + indicadores + señal
     try:
         data = _consultar_live(symbol)
-        _guardar_cache(symbol, data)   # actualizar caché si todo fue bien
+        _guardar_cache(symbol, data)
         _emit(data)
     except Exception as exc:
-        # Fallback a caché local
         cached = _cargar_cache(symbol)
         if cached:
             cached["source"] = "cache"
