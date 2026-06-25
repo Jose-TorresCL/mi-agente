@@ -2,7 +2,7 @@
 
 Este módulo es el único punto de contacto entre Lautaro y bot_trading.
 No importa ningún módulo del bot directamente — usa subprocess para
-aislar los .venv y evitar conflictos de dependencias.
+aislarlo y evitar conflictos de dependencias.
 
 Arquitectura:
   Lautaro (mi-agente/.venv)  ←→  tools_trading.py
@@ -21,13 +21,11 @@ Path de configuración:
   BOT_DIR    = C:\\Users\\lenovo\\Proyectos\\bot_trading
   PYTHON_BOT = BOT_DIR\\.venv\\Scripts\\python.exe
   SCRIPT     = BOT_DIR\\consulta_mercado.py
-
-Para cambiar el path del bot, editar las constantes de este módulo.
-En el futuro pueden moverse a config.py o a .env.
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -36,12 +34,12 @@ from app.schemas import ToolResult
 
 log = get_logger(__name__)
 
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────────────
 BOT_DIR    = Path(r"C:\Users\lenovo\Proyectos\bot_trading")
 PYTHON_BOT = BOT_DIR / ".venv" / "Scripts" / "python.exe"
 SCRIPT     = BOT_DIR / "consulta_mercado.py"
 TIMEOUT    = 15   # segundos
-# ─────────────────────────────────────────────
+# ──────────────────────────────────────────────
 
 _SYMBOL_MAP: dict[str, str] = {
     "btc":     "BTCUSDT",
@@ -70,22 +68,17 @@ def _normalizar_simbolo(texto: str) -> str:
 
 
 def _detectar_alertas(ind: dict) -> list[str]:
-    """Detecta condiciones extremas en los indicadores y retorna lista de alertas.
-
-    Retorna strings listos para mostrar. Lista vacía = sin alertas.
-    """
+    """Detecta condiciones extremas y retorna lista de alertas."""
     alertas = []
     rsi      = ind.get("rsi", 0)
     ema_fast = ind.get("ema_fast", 0)
     ema_slow = ind.get("ema_slow", 0)
 
-    # RSI extremo
     if rsi and rsi < 20:
-        alertas.append(f"⚠️  RSI {rsi:.1f} — SOBREVENTA EXTREMA (posible rebote)")  
+        alertas.append(f"⚠️  RSI {rsi:.1f} — SOBREVENTA EXTREMA (posible rebote)")
     elif rsi and rsi > 80:
         alertas.append(f"⚠️  RSI {rsi:.1f} — SOBRECOMPRA EXTREMA (posible corrección)")
 
-    # Cruce de EMAs
     if ema_fast and ema_slow and ema_fast > 0 and ema_slow > 0:
         diff_pct = abs(ema_fast - ema_slow) / ema_slow * 100
         if ema_fast < ema_slow:
@@ -99,7 +92,12 @@ def _detectar_alertas(ind: dict) -> list[str]:
 
 
 def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResult:
-    """Llama a consulta_mercado.py vía subprocess y devuelve ToolResult."""
+    """Llama a consulta_mercado.py vía subprocess y devuelve ToolResult.
+
+    El subprocess hereda os.environ completo para que Binance pueda
+    conectarse (PATH, variables de red, proxies, etc.).
+    Solo se sobreescribe PYTHONUTF8=1 para forzar UTF-8 en Windows.
+    """
     if not PYTHON_BOT.exists():
         log.warning("[tools_trading] Python del bot no encontrado: %s", PYTHON_BOT)
         return ToolResult(
@@ -117,6 +115,11 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             tool_name="tool_analizar_mercado",
         )
 
+    # Heredar entorno completo del sistema + forzar UTF-8
+    # Sin esto, Binance falla desde subprocess (sin PATH ni variables de red)
+    subprocess_env = os.environ.copy()
+    subprocess_env["PYTHONUTF8"] = "1"
+
     try:
         result = subprocess.run(
             [str(PYTHON_BOT), str(SCRIPT), "--symbol", symbol, "--modo", modo],
@@ -124,7 +127,7 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             text=True,
             timeout=TIMEOUT,
             cwd=str(BOT_DIR),
-            env={"PYTHONUTF8": "1"},
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired:
         log.warning("[tools_trading] Timeout (%ds) consultando %s", TIMEOUT, symbol)
@@ -183,8 +186,13 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
             tool_name="tool_analizar_mercado",
         )
 
-    log.info("[tools_trading] Consulta exitosa: %s precio=%.2f senal=%s fuente=%s",
-             symbol, data.get("price", 0), data.get("signal", "?"), data.get("source", "?"))
+    log.info(
+        "[tools_trading] Consulta exitosa: %s precio=%.2f senal=%s fuente=%s",
+        data.get("symbol", symbol),
+        data.get("price", 0),
+        data.get("signal", "?"),
+        data.get("source", "?"),
+    )
 
     return ToolResult(
         ok=True,
@@ -195,13 +203,10 @@ def _llamar_bot_trading(symbol: str = "BTCUSDT", modo: str = "full") -> ToolResu
 
 
 def _formatear_respuesta(data: dict) -> str:
-    """Convierte el dict JSON del bot en texto estructurado para Lautaro.
+    """Convierte el dict JSON del bot en texto estructurado.
 
-    Incluye:
-    - Snapshot de precio, señal e indicadores.
-    - Bloque de alertas si hay condiciones extremas (opción 4).
-    El campo data['_alertas'] se adjunta para que intelligence.py lo use
-    en el prompt de interpretación LLM (opción 1).
+    Incluye snapshot de precio/señal/indicadores y bloque de alertas
+    si hay condiciones extremas (opción 4).
     """
     if not data.get("ok"):
         return f"⚠️  {data.get('error', 'Error desconocido en el bot')}"
@@ -227,7 +232,7 @@ def _formatear_respuesta(data: dict) -> str:
         if "ema_fast" in ind: lines.append(f"  EMA rápida: {ind['ema_fast']:,.2f}")
         if "ema_slow" in ind: lines.append(f"  EMA lenta:  {ind['ema_slow']:,.2f}")
 
-    # ── Paso A (opción 4): alertas de condiciones extremas ──────────────────
+    # Alertas de condiciones extremas (opción 4)
     alertas = _detectar_alertas(ind)
     if alertas:
         lines.append("")
