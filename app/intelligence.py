@@ -14,10 +14,8 @@ Contrato público
     process_turn(route, user_input, vectordb, chat_history) -> DecisionResult  # legacy
 
 feat(etapa1-opción1): interpretación natural de mercado vía LLM (CERRADO).
-  _decide_trading() llama directamente a _llamar_bot_trading() para obtener
-  el ToolResult con .data completo, lo pasa al LLM con prompt especializado.
-  Fallback: si el LLM tarda o falla, devuelve el formato estructurado.
 feat(etapa1-opción4): alertas extremas en tools_trading._formatear_respuesta.
+fix: ToolResult es TypedDict — acceso por [] no por punto (CERRADO).
 """
 from __future__ import annotations
 
@@ -244,24 +242,18 @@ def _extraer_simbolo(user_input: str) -> str:
 def _decide_trading(user_input: str) -> str:
     """Llama directamente a _llamar_bot_trading y aplica interpretación LLM.
 
-    Usa _llamar_bot_trading() en vez de dispatch_tool() para obtener
-    el ToolResult con .data (dict JSON completo del bot), necesario
-    para verificar .ok y pasar el snapshot al LLM.
-
-    Fallback: si el LLM falla o timeout, retorna el bloque estructurado.
+    ToolResult es TypedDict — acceso por dict[key], no por atributo.
     """
     from app.tools_trading import _llamar_bot_trading
 
-    symbol     = _extraer_simbolo(user_input)
-    tool_result = _llamar_bot_trading(symbol=symbol)
+    symbol      = _extraer_simbolo(user_input)
+    tool_result = _llamar_bot_trading(symbol=symbol)  # devuelve dict (TypedDict)
 
-    if not tool_result.ok:
-        return tool_result.message
+    if not tool_result.get("ok"):
+        return tool_result.get("message", "⚠️  Error al consultar el mercado.")
 
-    # Paso A (opción 4): alertas ya incluidas en tool_result.message por _formatear_respuesta
-    snapshot_texto = tool_result.message
+    snapshot_texto = tool_result.get("message", "")
 
-    # Paso B (opción 1): interpretación LLM
     prompt = _TRADING_INTERP_PROMPT.format(
         snapshot=snapshot_texto,
         pregunta=user_input,
@@ -472,10 +464,6 @@ def _retrieve_rag_context(user_input: str, vectordb: Any, route: str) -> RagCont
         if snippet and exp_score >= _MIN_EXPERIENCE_SCORE:
             context_text = snippet + "\n\n---\n\n" + context_text
             experience_injected = True
-            log.debug(
-                "[R6-RAG] Experiencia episódica inyectada (score=%.3f >= %.2f)",
-                exp_score, _MIN_EXPERIENCE_SCORE,
-            )
         elif snippet:
             log.debug(
                 "[R6-RAG] Experiencia episódica descartada (score=%.3f < %.2f)",
@@ -650,9 +638,7 @@ def process_turn(
             source_docs=[], retrieval_ms=0, llm_ms=0, tokens_est=0,
         )
 
-    # ── tool_analizar_mercado: llama directo a _llamar_bot_trading ────────────
-    # Razón: dispatch_tool() envuelve el resultado en ToolResult sin .data.
-    # _llamar_bot_trading() retorna ToolResult con .data = dict JSON completo.
+    # ── tool_analizar_mercado ─────────────────────────────────────────
     if route == "tool_analizar_mercado":
         t0 = time.perf_counter()
         final_response = _decide_trading(user_input)
@@ -699,7 +685,7 @@ def process_turn(
         )
 
     if route == "rag" and _is_personal_reasoning(user_input):
-        log.debug("[pre-filtro C] razonamiento personal detectado → forzando memory:work_state")
+        log.debug("[pre-filtro C] razonamiento personal → forzando memory:work_state")
         t0 = time.perf_counter()
         answer = _decide_memory(user_input, ["work_state"], chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
