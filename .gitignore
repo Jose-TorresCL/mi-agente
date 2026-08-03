@@ -8,3 +8,9 @@ storage/
 .vscode/
 storage/project_facts.json
 .coverage
+# Logs de ejecución
+logs/
+data/logs/
+
+# Resultados de backtesting
+data/backtesting/
