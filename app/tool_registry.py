@@ -137,10 +137,98 @@ def _handle_create_task(user_input: str) -> str:
 
 def _handle_complete_task(user_input: str) -> str:
     task_id = extract_task_id(user_input)
-    if not task_id:
-        return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'"
-    return tool_result_to_str(tool_complete_task(task_id))
+    if task_id:
+        return tool_result_to_str(tool_complete_task(task_id))
 
+    text = user_input.lower()
+
+    # 1) Casos especiales: última / penúltima
+    is_last = any(
+        word in text
+        for word in ["ultima", "última", "última tarea", "ultima tarea"]
+    )
+    is_penultimate = any(
+        word in text
+        for word in ["penultima", "penúltima", "penúltima tarea", "penultima tarea"]
+    )
+
+    tasks_data = memory_manager.get_tasks()
+    pending = [
+        t for t in tasks_data.get("tasks", [])
+        if t.get("status") not in ("done", "completed")
+    ]
+
+    if is_last or is_penultimate:
+        if not pending:
+            return "No hay tareas pendientes para completar."
+
+        if is_penultimate and len(pending) < 2:
+            return (
+                "No puedo completar la penúltima tarea: solo hay una "
+                "tarea pendiente registrada."
+            )
+
+        if is_last:
+            target_index = len(pending) - 1
+        else:  # penúltima
+            target_index = len(pending) - 2
+
+        resolved_task = pending[target_index]
+        resolved_id = resolved_task.get("id", "")
+        resolved_title = resolved_task.get("title", "(sin título)")
+
+        tool_text = tool_result_to_str(tool_complete_task(resolved_id))
+        return f"✅ Tarea {resolved_id} marcada como completada: {resolved_title}"
+
+    # 2) Ordinales explícitos hasta quinto
+    ordinal_map = {
+        "primera": 0,
+        "primer": 0,
+        "1ra": 0,
+        "segunda": 1,
+        "segundo": 1,
+        "2da": 1,
+        "tercera": 2,
+        "tercer": 2,
+        "3ra": 2,
+        "cuarta": 3,
+        "cuarto": 3,
+        "4ta": 3,
+        "quinta": 4,
+        "quinto": 4,
+        "5ta": 4,
+    }
+
+    selected_index = None
+    for word, idx in ordinal_map.items():
+        if re.search(rf"\b{re.escape(word)}\b", text):
+            selected_index = idx
+            break
+
+    if selected_index is not None:
+        if not pending:
+            return "No hay tareas pendientes para completar."
+
+        if selected_index >= len(pending):
+            return (
+                f"No encontré una tarea pendiente en la posición {selected_index + 1}. "
+                f"Ahora mismo hay {len(pending)} tareas pendientes."
+            )
+
+        resolved_task = pending[selected_index]
+        resolved_id = resolved_task.get("id", "")
+        resolved_title = resolved_task.get("title", "(sin título)")
+
+        tool_text = tool_result_to_str(tool_complete_task(resolved_id))
+        return f"✅ Tarea {resolved_id} marcada como completada: {resolved_title}"
+
+    return (
+        "No pude identificar qué tarea completar. "
+        "Prueba con un ID ('marca T-002 como completada') "
+        "o con un ordinal ('marca la primera tarea como completada', "
+        "'marca la última tarea como completada', "
+        "'marca la penúltima tarea como completada')."
+    )
 
 def _handle_update_work_state(user_input: str) -> str:
     result = tool_update_work_state(user_input)
@@ -339,7 +427,7 @@ TOOLS: dict[str, dict] = {
         "fn": tool_analizar_mercado,
         "carril": "tool_analizar_mercado",
         "descripcion": "Consulta precio, indicadores y señal del mercado vía bot_trading",
-        "risk": RiskLevel.READ,
+        "risk": RiskLevel.SYSTEM,
         "handler": _handle_analizar_mercado,
         "keywords": [
             "mercado",
@@ -411,7 +499,7 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
             error_code="INTERNAL_ERROR",
             tool_name=carril,
         )
-
+    
 
 def dispatch_tool_str(carril: str, user_input: str) -> str | None:
     """Wrapper de compatibilidad: retorna str en vez de ToolResult."""
