@@ -1,121 +1,121 @@
 # ADR-002 — Arquitectura de memoria en capas y tipos formales
 
-**Fecha original:** 2026-04 (Fase 2 — 4 capas JSON)  
-**Última actualización:** 19/05/2026 (Fase 8D — MemoryType enum + experience_index)  
-**Estado:** ✅ IMPLEMENTADO  
-**Autor:** Jose Torres + Lautaro  
-**ADRs relacionados:** ADR-003 (memory_manager), ADR-006 (experience_index)
-
-> **Nota de versionado:** Este ADR se expandió para incorporar la capa 5
-> (experience_index vectorial) y el enum `MemoryType` formal, añadidos en
-> Fases 8A y 8D. Las decisiones originales de Fase 2 no cambiaron.
+**Fecha:** 2026-04 → actualizado 2026-05  
+**Estado:** ✅ Aceptado  
+**Autor:** Jose Torres
 
 ---
 
 ## Contexto
 
-Un asistente IA local necesita diferentes tipos de recuerdo con horizontes
+Un asistente IA local necesita diferentes tipos de "recuerdo" con horizontes
 temporales y costos de acceso distintos.
 
 Usar un único archivo plano o solo el historial de conversación produce:
 - Contextos demasiado largos (exceden ventana del LLM)
 - Pérdida de información entre sesiones
 - Sin distinción entre datos volátiles y datos permanentes
-- Sin forma de recuperar experiencias pasadas por similitud semántica
 
----
+## Decisión
 
-## Decisión 1 — Arquitectura de 5 capas de memoria (Fase 2 + Fase 8A)
-
-Se adoptó una arquitectura de capas de memoria inspirada en la cognición
-humana y en el paper [MemGPT (2023)](https://arxiv.org/abs/2310.08560).
+Se adoptó una **arquitectura de 5 capas de memoria**, con tipos formales
+definidos mediante `MemoryType` enum en `app/schemas.py`.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  CAPA 1 — Working Memory (RAM)                        │
-│  Scope: turno actual                                 │
-│  Storage: variable en RAM (chat_history list)        │
-│  MemoryType: WORKING                                 │
+│  CAPA 1 — Memoria de trabajo (Working Memory)       │
+│  Scope: turno actual                                │
+│  Contenido: input del usuario + respuesta en curso  │
+│  Storage: variable en RAM (chat_history list)       │
 └─────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────┐
-│  CAPA 2 — Operational Memory (JSON)                  │
-│  Scope: sesión y estado persistente                  │
-│  Storage: work_state.json, tasks.json                │
-│  MemoryType: WORKING                                 │
+│  CAPA 2 — Memoria corta (Short-Term / Episódica)    │
+│  Scope: sesión actual (~10 turnos)                  │
+│  Contenido: historial de mensajes de la sesión      │
+│  Storage: storage/memory.json → clave "messages"    │
 └─────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────┐
-│  CAPA 3 — Semantic Memory (JSON)                     │
-│  Scope: permanente entre sesiones                    │
-│  Storage: profile.json, project_facts.json           │
-│  MemoryType: SEMANTIC                                │
+│  CAPA 3 — Memoria semántica (Semantic / RAG)        │
+│  Scope: permanente entre sesiones                   │
+│  Contenido: documentos indexados del proyecto       │
+│  Storage: storage/chroma/ (vectores Chroma)         │
 └─────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────┐
-│  CAPA 4 — Episodic Memory (JSON)                     │
-│  Scope: histórico de sesiones pasadas                │
-│  Storage: episodic_memory.json (resúmenes)           │
-│  MemoryType: EPISODIC                                │
+│  CAPA 4 — Memoria declarativa (Long-Term)           │
+│  Scope: permanente, estructurada                    │
+│  Contenido: perfil, tareas, hechos, work_state,     │
+│             episodios de texto                      │
+│  Storage: storage/memory.json (secciones separadas) │
 └─────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────┐
-│  CAPA 5 — Experience Index (Chroma vectorial) [8A]   │
-│  Scope: episodios indexados por similitud semántica  │
-│  Storage: storage/experience_index/ (Chroma)         │
-│  MemoryType: EPISODIC                                │
+│  CAPA 5 — Experience Index (Episódica vectorial)    │
+│  Scope: permanente, búsqueda semántica              │
+│  Contenido: episodios de sesión + señal éxito/fallo │
+│  Storage: storage/chroma/ colección experience_index│
 └─────────────────────────────────────────────────────┘
 ```
 
----
+### MemoryType enum
 
-## Decisión 2 — MemoryType enum formal (Fase 8D)
-
-**Problema**: las funciones de `memory_manager.py` no declaraban explícitamente
-qué tipo de memoria manejaban, lo que permitía mezclas accidentales.
-
-**Solución**: `schemas.py` define `MemoryType(str, Enum)` con 4 valores:
+Cada pieza de contexto que se inyecta al LLM tiene un tipo formal
+definido en `app/schemas.py`:
 
 ```python
 class MemoryType(str, Enum):
-    WORKING    = "working"     # RAM + work_state + tasks
-    SEMANTIC   = "semantic"    # profile + project_facts
-    EPISODIC   = "episodic"    # episodic_memory + experience_index
-    PROCEDURAL = "procedural"  # reservado para reglas futuras
+    PROFILE    = "profile"     # quién es el usuario
+    WORK_STATE = "work_state"  # foco actual y siguiente paso
+    TASKS      = "tasks"       # tareas abiertas
+    EPISODE    = "episode"     # última sesión episódica
+    FACTS      = "facts"       # hechos declarativos guardados
 ```
 
-Todas las funciones públicas de `memory_manager.py` tienen anotaciones
-explícitas de tipo con `MemoryType`, documentando la arquitectura directamente
-en el código.
+Esto permite solicitar contexto selectivo por tipo en vez de volcar todo:
 
-**Verificación**:
-```powershell
-grep MemoryType app/memory_manager.py  # debe devolver 15+ líneas
+```python
+# Antes: contexto completo siempre
+ctx = memory_manager.get_full_context()
+
+# Ahora: contexto selectivo por tipo
+ctx = memory_manager.get_context_for([MemoryType.WORK_STATE, MemoryType.TASKS])
 ```
-
----
 
 ## Alternativas consideradas
 
 | Alternativa | Pros | Contras |
-|---|---|---|
+|-------------|------|---------|
 | Solo historial plano | Simple | Olvida entre sesiones, contexto enorme |
-| Base de datos SQL | Robusto | Overkill hasta ~500 episodios |
-| Solo RAG | Buen recall semántico | No recuerda datos operacionales |
-| **5 capas + MemoryType** ✅ | Cada tipo de dato en su lugar natural | Mayor complejidad inicial |
-
----
+| Base de datos SQL | Robusto | Overkill para proyecto local |
+| Solo RAG | Buen recall semántico | No recuerda datos operacionales (tareas, foco) |
+| **5 capas + MemoryType** ✅ | Cada tipo de dato en su lugar natural, recuperación selectiva | Mayor complejidad inicial |
 
 ## Consecuencias
 
-- El LLM recibe solo el contexto relevante para cada turno.
-- `MemoryType` hace explícita la arquitectura directamente en el código.
-- La capa 5 (Chroma) permite recuperación semántica de episodios sin fine-tuning.
-- Migrar a SQLite es opt-in cuando episodios superen ~500 entradas.
+**Positivas:**
+- El LLM recibe solo el contexto relevante para cada turno (recuperación selectiva).
+- La memoria declarativa persiste indefinidamente sin depender del historial.
+- Cada capa se puede actualizar, limpiar o migrar de forma independiente.
+- El `MemoryType` enum actúa como contrato: si se agrega un tipo nuevo,
+  todas las funciones de contexto deben manejarlo explícitamente.
+
+**Trade-offs:**
+- Requiere disciplina para no mezclar responsabilidades entre capas.
+- El archivo `storage/memory.json` crece con el tiempo → requiere
+  política de limpieza (ej: máximo N episodios).
+- La Capa 5 (experience_index) vive en Chroma separado del RAG principal,
+  lo que requiere gestión de dos colecciones distintas.
+
+## Documento relacionado
+
+Ver [`docs/arquitectura-memoria.md`](../arquitectura-memoria.md) para el mapa completo con ejemplos de datos.
 
 ## Archivos clave
 
-- `app/schemas.py` — `MemoryType` enum
-- `app/memory_manager.py` — guardiana con anotaciones MemoryType
-- `app/episode_store.py` — capa 4 (JSON) + capa 5 (Chroma)
-- `storage/experience_index/` — índice vectorial de episodios
+- `storage/memory.json` — capas 2 y 4
+- `storage/chroma/` — capa 3 (RAG) y capa 5 (experience_index)
+- `app/memory_manager.py` — acceso unificado a todas las capas
+- `app/schemas.py` — `MemoryType` enum y modelos de datos
+- `app/episode_store.py` — gestión de la Capa 5

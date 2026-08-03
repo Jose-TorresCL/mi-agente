@@ -1,123 +1,141 @@
-# ADR-006 — Experience Index y feedback loop de calidad episódica
+# ADR-006 — Experience Index: feedback loop de calidad entre sesiones
 
-**Fecha:** 19/05/2026 (Fases 8A–8C)  
-**Estado:** ✅ IMPLEMENTADO  
-**Autor:** Jose Torres + Lautaro  
-**ADRs relacionados:** ADR-002 (capas de memoria), ADR-004 (calidad RAG), ADR-005 (carriles)
+**Estado:** ✅ Aceptado  
+**Fecha:** 2026-05  
+**Autores:** Jose Torres + Asistente IA local
 
 ---
 
 ## Contexto
 
-Tras implementar la memoria episódica (ADR-002), los episodios se guardaban
-en `episodic_memory.json` como texto plano. Esto funcionaba para mostrar el
-último episodio, pero tenía dos límites importantes:
+El agente acumula conocimiento sobre el proyecto a través del RAG (documentos)
+y de la memoria declarativa (perfil, tareas, hechos). Pero ninguno de esos
+mecanismos captura lo que *pasó* en sesiones anteriores:
 
-1. **Búsqueda solo por posición**: solo se podía recuperar el episodio más
-   reciente. No había forma de encontrar episodios relevantes por *tema*.
+- ¿Qué temas se discutieron la última vez?
+- ¿Fue esa sesión productiva o terminó sin avances?
+- ¿Qué contexto necesito recuperar para continuar donde lo dejé?
 
-2. **Sin distinción de calidad**: un episodio donde el agente falló se
-   recuperaba con el mismo peso que uno donde solucionó el problema.
+Además, no había forma de mejorar la calidad del agente en el tiempo:
+cada sesión era independiente, sin señal de qué funcionó bien y qué no.
 
-El proyecto tenía ya Chroma funcionando para RAG. Reutilizar la misma
-infraestructura para indexar episodios era natural y sin costo adicional.
+## Decisión
 
----
+Se implementó un **experience index** como Capa 5 de la arquitectura de memoria,
+con un **feedback loop de calidad** al final de cada sesión.
 
-## Decisión 1 — Índice Chroma separado para episodios (Fase 8A)
+### Estructura del episodio
 
-**Por qué un índice separado** (no mezclado con el RAG de documentos):
-- Los documentos del proyecto son estáticos; los episodios son dinámicos.
-- Mezclarlos contaminaría el RAG con texto conversacional informal.
-- Un índice separado permite limpiar, reconstruir o migrar episodios sin
-  tocar el índice documental.
+Cada sesión genera un documento episódico con esta estructura:
 
+```python
+@dataclass
+class Episode:
+    session_id: str        # timestamp ISO "2026-05-19T12:37"
+    summary: str           # resumen generado por el LLM
+    turns: int             # número de turnos de la sesión
+    dominant_lane: str     # carril más usado en la sesión
+    tasks_completed: int   # tareas completadas en la sesión
+    exitoso: bool          # señal de calidad del usuario (s/n)
+    timestamp: str         # ISO 8601
 ```
-storage/
-  chroma/              ← documentos del proyecto (estático)
-  intent_index/        ← ejemplos de intención para el router
-  experience_index/    ← episodios de sesión (dinámico) [8A]
-```
 
-**Flujo de indexación**:
+### Flujo de indexación
+
 ```
 Fin de sesión
     ↓
-save_episode() → episodic_memory.json
+[1] LLM genera resumen del historial de turnos
     ↓
-pregunta s/n (¿fue exitosa esta sesión?)
+[2] episode_store.index_episode(episode)
+    → embed(summary) con nomic-embed-text
+    → guardar en Chroma colección "experience_index"
     ↓
-indexacion.py (o indexacion.py --only-episodes)
+[3] episode_store.close_session(session_id, lane, tasks)
+    → actualiza metadatos del episodio en Chroma
     ↓
-experience_index en Chroma con metadato exitoso=True/False
+[4] usuario responde ¿fue productiva esta sesión? (s/n)
+    ↓
+[5] episode_store.mark_episode(session_id, exitoso=True/False)
+    → actualiza campo exitoso en el documento de Chroma
 ```
 
----
+### Recuperación episódica
 
-## Decisión 2 — experience_lookup en carril RAG (Fase 8B)
-
-Cuando el carril elegido es `rag`, `intelligence.py` llama a
-`experience_lookup(query, score_threshold=0.80)` antes de construir el prompt.
-
-Si encuentra un episodio relevante con score ≥ 0.80, lo inyecta como
-`context_prefix` al inicio del contexto RAG:
+Cuando el router detecta el carril `memory` con intent de episodio
+("¿qué aprendí la sesión anterior?", "¿en qué quedamos?"), se ejecuta:
 
 ```python
-# intelligence.py — _decide_rag()
-experience = experience_lookup(user_input, score_threshold=0.80)
-if experience:
-    context_text = f"[Experiencia previa relevante]\n{experience}\n\n" + context_text
+episodes = episode_store.search(query, k=3)
+# Devuelve los 3 episodios más similares semánticamente
+# con sus metadatos: turns, lane, exitoso, timestamp
 ```
 
-**Consecuencia**: respuestas RAG pueden incluir aprendizajes de sesiones
-pasadas sin necesidad de fine-tuning.
+### Boost de relevancia por éxito
 
----
+Los episodios marcados como exitosos (`exitoso=True`) reciben un boost
++0.15 en su score de relevancia al recuperarse:
 
-## Decisión 3 — Señal de calidad y boost +0.15 (Fase 8C)
-
-**Problema**: no todos los episodios son igualmente útiles. Un episodio
-donde el agente cometió errores no debería recuperarse igual que uno exitoso.
-
-**Solución**: al cerrar cada sesión, el sistema pregunta:
-```
-¿Esta sesión fue exitosa? [s/n]
-```
-La respuesta se guarda como metadato `exitoso: bool` en el episodio.
-
-En `search_episodes()`, los episodios con `exitoso=True` reciben boost:
 ```python
-final_score = base_score + 0.15 if episode["exitoso"] else base_score
+for ep in results:
+    if ep.metadata.get("exitoso"):
+        ep.score += 0.15
+results.sort(key=lambda x: x.score, reverse=True)
 ```
 
-Episodios con `exitoso=False` se filtran si hay alternativos con score ≥ 0.65.
+Esto hace que el agente tienda a recuperar y referirse a sesiones productivas
+en lugar de sesiones fallidas.
 
----
+### Colección separada del RAG
 
-## Alternativas descartadas
+El experience_index vive en la colección `"experience_index"` de Chroma,
+**separada** de la colección RAG principal. Esto garantiza que:
 
-| Alternativa | Razón del descarte |
-|---|---|
-| Fine-tuning sobre episodios | Inviable en hardware local sin GPU dedicada |
-| Historial completo como contexto | Excede ventana del LLM rápidamente |
-| SQLite desde ya | Overhead prematuro — JSON+Chroma es suficiente hasta ~500 episodios |
-| Índice mezclado con RAG documental | Contamina búsquedas documentales con texto conversacional |
+- La reindexación de documentos (`python indexacion.py`) no borra los episodios.
+- Los episodios no contaminan los resultados de búsqueda RAG.
+- El experience_index puede crecer indefinidamente sin afectar el rendimiento RAG.
 
----
+## Alternativas consideradas
+
+| Alternativa | Pros | Contras |
+|-------------|------|---------|
+| Solo guardar episodios en memory.json (texto) | Simple | No permite búsqueda semántica entre sesiones |
+| Episodios en la misma colección RAG | Un solo vectorstore | Contamina resultados RAG con contenido episódico |
+| Sin señal de calidad | Sin fricción para el usuario | No hay base para mejorar o filtrar episodios |
+| Señal automática por métricas (tareas completadas) | Sin intervención del usuario | No captura valor subjetivo de la sesión |
+| **Experience index separado + señal s/n** ✅ | Semántico, separado, con calidad explícita | Requiere colección Chroma adicional y gestión de metadatos |
 
 ## Consecuencias
 
-- El agente puede responder “¿en qué quedamos la sesión del martes?” con
-  búsqueda semántica real, no solo el último episodio.
-- La señal de calidad crea un **feedback loop**: sesiones exitosas tienen
-  más peso en recuperaciones futuras.
-- La inyección de experiencias previas desactiva el caché para esa respuesta
-  específica (evita respuestas obsoletas).
-- Cuando episodios superen ~500, migrar a SQLite con embeddings en Chroma.
+**Positivas:**
+- El agente puede responder "¿qué aprendí la sesión anterior?" con contenido real
+  recuperado semánticamente, no solo el último texto guardado.
+- La señal `exitoso` crea un feedback loop: sesiones productivas tienen más
+  probabilidad de ser referenciadas en futuras sesiones.
+- La separación de colecciones garantiza que `python indexacion.py`
+  nunca borre el historial de episodios.
+- El log `[episode_store]` permite trazabilidad completa del ciclo de vida
+  de cada episodio.
+
+**Trade-offs:**
+- Si el LLM tarda demasiado en generar el resumen al cerrar (timeout),
+  el episodio se guarda sin resumen (fallback a texto vacío) — esto ya ocurrió
+  en la sesión de 2026-05-19T12:39.
+- La señal s/n es binaria. Una escala 1-5 daría más resolución pero añade
+  fricción al usuario al salir.
+- El boost +0.15 es fijo y no se ha calibrado con datos reales todavía.
+
+### Deuda técnica aceptada
+
+- No hay límite de episodios por sesión en Chroma. A largo plazo,
+  si hay cientos de episodios, el tiempo de búsqueda podría aumentar.
+  Solución futura: retención rolling de los últimos N episodios.
+- El boost +0.15 debería calibrarse observando cuántos episodios exitosos
+  vs. fallidos existen después de 30+ sesiones reales.
 
 ## Archivos clave
 
-- `app/episode_store.py` — save_episode(), search_episodes(), experience_lookup()
-- `storage/experience_index/` — índice Chroma de episodios
-- `storage/episodic_memory.json` — episodios en JSON (fuente de verdad)
-- `indexacion.py` — indexa episodios post-sesión
+- `app/episode_store.py` — gestión del experience_index
+- `app/schemas.py` — `Episode` dataclass
+- `app/intelligence.py` — integración en el carril `exit`
+- `storage/chroma/` — colección `experience_index`
