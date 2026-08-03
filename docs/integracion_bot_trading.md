@@ -11,24 +11,23 @@ La integración está diseñada para mantener aislados ambos entornos Python:
 Lautaro no importa módulos internos de `bot_trading` directamente.
 En cambio, ejecuta un script externo vía `subprocess` y recibe la respuesta en formato JSON.
 
-## Para qué sirve
+## Alcance
 
-Esta integración permite que Lautaro responda consultas como:
+Esta integración permite responder consultas como:
 
 - "Analiza el mercado de BTC"
 - "Qué precio tiene ETH"
 - "Dame la señal de BTCUSDT"
 
-El objetivo no es convertir a Lautaro en un bot de ejecución de órdenes,
-sino en un asistente local capaz de consultar y resumir información de mercado
-a través de una tool segura y desacoplada.
+Su objetivo es consultar y resumir información de mercado desde una tool segura
+y desacoplada. No está diseñada para ejecutar órdenes ni automatizar operaciones sensibles.
 
 ## Arquitectura
 
 ```text
 Usuario
   ↓
-chat.py / Telegram
+chat.py / telegram_interface.py
   ↓
 router.py
   ↓
@@ -42,7 +41,7 @@ bot_trading/.venv/Scripts/python.exe
   ↓
 bot_trading/consulta_mercado.py
   ↓ JSON stdout
-tools_trading.py
+app/tools_trading.py
   ↓
 ToolResult
   ↓
@@ -57,11 +56,11 @@ La integración usa `subprocess` como frontera entre proyectos.
 
 Esto evita:
 
-- conflictos de dependencias entre `.venv`,
-- imports cruzados entre repositorios,
-- acoplamiento fuerte entre Lautaro y la lógica interna de `bot_trading`.
+- conflictos de dependencias entre `.venv`
+- imports cruzados entre repositorios
+- acoplamiento fuerte entre Lautaro y la lógica interna de `bot_trading`
 
-La regla es:
+Regla de responsabilidad:
 
 - Lautaro decide **cuándo** consultar mercado.
 - `bot_trading` decide **cómo** obtener precio, indicadores y señal.
@@ -72,40 +71,35 @@ La regla es:
 ### En Lautaro
 
 - `app/tools_trading.py`
-  - Wrapper principal de integración con `bot_trading`
-  - Llama al script externo vía `subprocess`
-  - Controla timeout, parsea JSON y devuelve `ToolResult`
+  - wrapper principal de integración con `bot_trading`
+  - llama al script externo vía `subprocess`
+  - controla timeout, parsea JSON y devuelve `ToolResult`
 
 - `app/tool_registry.py`
-  - Registra `tool_analizar_mercado`
-  - Expone el carril `tool_analizar_mercado`
-  - Permite que `dispatch_tool()` preserve el `ToolResult` estructurado
+  - registra `tool_analizar_mercado`
+  - expone el carril `tool_analizar_mercado`
+  - preserva `ToolResult` estructurado en `dispatch_tool()`
 
 - `app/router.py`
-  - Detecta consultas de mercado por keywords
-  - Enruta preguntas como "Analiza el mercado de BTC" al carril correcto
+  - detecta consultas de mercado por keywords
+  - enruta preguntas como "Analiza el mercado de BTC"
 
 - `app/intelligence.py`
-  - Usa la tool y, si el LLM no logra interpretar la salida,
-    hace fallback al formato estructurado devuelto por la tool
-
-- `app/llm_client.py`
-  - Cliente unificado del LLM local (`qwen3:8b`)
-  - Puede añadir interpretación extra sobre la salida de trading,
-    pero no es requisito para que la tool funcione
+  - usa la tool
+  - si el LLM no logra interpretar la salida, hace fallback al formato estructurado
 
 ### En bot_trading
 
 - `.venv/Scripts/python.exe`
-  - Intérprete Python aislado del proyecto `bot_trading`
+  - intérprete Python aislado del proyecto `bot_trading`
 
 - `consulta_mercado.py`
-  - Script ejecutado por Lautaro vía `subprocess`
-  - Consulta mercado y emite JSON por stdout
+  - script ejecutado por Lautaro vía `subprocess`
+  - consulta mercado y emite JSON por stdout
 
 ## Flujo de ejecución
 
-1. El usuario pregunta algo como:
+1. El usuario hace una consulta como:
    - "Analiza el mercado de BTC"
 
 2. `router.py` detecta keywords de mercado y enruta a:
@@ -113,7 +107,7 @@ La regla es:
 
 3. `tool_registry.py` llama al handler correspondiente.
 
-4. El handler usa `tool_analizar_mercado(...)`, que termina llamando:
+4. El handler usa `tool_analizar_mercado(...)`, que termina llamando a:
    - `app/tools_trading.py`
 
 5. `tools_trading.py`:
@@ -132,21 +126,21 @@ La regla es:
    - EMA rápida / lenta
    - alertas simples de contexto
 
-7. Si el LLM no logra generar una interpretación adicional,
-   Lautaro igual responde usando el mensaje estructurado de la tool.
+7. Si el LLM no logra generar una interpretación adicional, Lautaro responde igual
+   usando el mensaje estructurado de la tool.
 
 ## Contrato de respuesta
 
 La tool devuelve un `ToolResult` estructurado.
 
-Caso exitoso:
+### Caso exitoso
 
 - `ok=True`
 - `message=<texto formateado>`
 - `data=<json original del bot>`
 - `tool_name="tool_analizar_mercado"`
 
-Caso fallido:
+### Caso fallido
 
 - `ok=False`
 - `message=<error amigable>`
@@ -172,7 +166,6 @@ Además:
 - `stderr` del bot se mapea a error estructurado
 - si el LLM no genera interpretación, Lautaro usa el formato estructurado
 - `consulta_mercado.py` puede usar caché local si Binance falla
-  (según el contrato definido en `bot_trading`)
 
 ## Pruebas manuales recomendadas
 
@@ -203,9 +196,9 @@ Analiza el mercado de BTC
 
 Esperado:
 
-- el router debe enrutar a `tool_analizar_mercado`
-- `tools_trading.py` debe loguear consulta exitosa
-- Lautaro debe responder con snapshot técnico aunque el LLM no interprete
+- el router enruta a `tool_analizar_mercado`
+- `tools_trading.py` loguea consulta exitosa
+- Lautaro responde con snapshot técnico aunque el LLM no interprete
 
 ### 3. Prueba de degradación sana
 
@@ -231,8 +224,7 @@ Ventajas:
 - evita conflictos de entorno
 - deja una frontera clara entre sistemas
 
-Desventajas:
-- más costo de integración
+Costo:
 - hay que validar paths, timeout y parseo de stdout
 
 ### 2. ToolResult como contrato interno
@@ -263,11 +255,10 @@ Hoy esta integración:
 - no modifica balances
 - no automatiza operaciones sensibles
 
-Esto es intencional: la prioridad actual del proyecto es consolidación y seguridad.
+Esto es intencional: la prioridad actual es consolidación y seguridad.
 
 ## Próximos pasos sugeridos
 
-- documentar la tool en el README principal con un resumen corto
-- agregar tests manuales repetibles para BTC / ETH / error controlado
+- resumir esta integración en el `README.md`
+- agregar pruebas manuales repetibles para BTC, ETH y error controlado
 - revisar si el carril trading necesita una interpretación LLM más corta
-  para reducir timeouts en CPU
