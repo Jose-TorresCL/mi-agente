@@ -223,7 +223,49 @@ El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
 ---
 
 ## Herramientas Disponibles (5)
+---
 
+### Integración con bot_trading (mercado cripto)
+
+Lautaro se integra con el proyecto externo `bot_trading` para consultar precio,
+indicadores y señal de mercado de criptomonedas de forma segura. [docs/integracion_bot_trading.md]
+
+**Características:**
+
+- Usa un wrapper dedicado `app/tools_trading.py` que llama a
+  `bot_trading/consulta_mercado.py` vía `subprocess`, sin importar módulos internos
+  del bot.
+- Mantiene separación de entornos: Lautaro usa su `.venv` y `bot_trading` el suyo,
+  evitando conflictos de dependencias.
+- Devuelve un snapshot técnico completo: símbolo, timeframe, precio, señal
+  (BUY/SELL/HOLD), RSI, ATR y EMAs, más alertas simples de contexto alcista/bajista.
+- Se enruta mediante el carril `tool_analizar_mercado` en `app/tool_registry.py`,
+  activado por keywords como `mercado`, `precio`, `btc`, `bitcoin`, `eth`,
+  `trading`, `binance`, `cripto`.
+
+**Ejemplo de uso (CLI):**
+
+```bash
+python chat.py
+# En la sesión:
+Analiza el mercado de BTC
+```
+
+```text
+📊 BTCUSDT — 1m
+Precio: $63,768.08
+Señal: 🟡 HOLD
+RSI: 41.1
+ATR: 20.03
+EMA rápida: 63,780.64
+EMA lenta: 63,796.01
+
+Alertas:
+📉 EMA rápida < EMA lenta — contexto bajista
+```
+
+> Detalles completos de esta integración (paths, manejo de errores, pruebas
+> manuales) están documentados en `docs/integracion_bot_trading.md`.
 El agente puede ejecutar estas herramientas sin pasar por el LLM:
 
 - `tool_save_fact(content)` — Guarda hecho en `project_facts.json`
