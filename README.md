@@ -90,9 +90,74 @@ mi-agente/
 > `storage/episodic_memory.json` (este último con **un episodio semilla**
 > `type: plan_retoma`, no con memoria real).
 >
-> ⚠️ Tras clonar o hacer pull, si no quieres que tus episodios locales aparezcan
-> en `git status`, marca el archivo como no rastreable en tu copia:
-> `git update-index --skip-worktree storage/episodic_memory.json`
+> ⚠️ Antes de hacer pull, respalda tu memoria local. Ver
+> [Storage / Episodic memory](#storage--episodic-memory).
+
+---
+
+## Storage / Episodic memory
+
+`storage/episodic_memory.json` guarda los episodios de trabajo de Lautaro
+(qué se hizo en cada sesión). El repositorio versiona ese archivo **solo con
+un episodio semilla** (`type: plan_retoma`), no con memoria real.
+
+### El problema
+
+Como el archivo está versionado, tu copia local y la del repo compiten:
+
+- Si tienes episodios propios y haces `git pull`, git puede **abortar el merge**
+  ("local changes would be overwritten") o, si resuelves mal el conflicto,
+  **sobrescribir tus episodios**.
+- Cada sesión con Lautaro ensucia `git status` con cambios que no quieres commitear.
+
+### La receta (una sola vez por máquina)
+
+**1. Respalda antes de cualquier pull o merge**
+
+```powershell
+Copy-Item storage\episodic_memory.json storage\episodic_memory.backup.json
+```
+
+O usa el script, que además guarda una copia fechada en `storage/backups/`
+y te recuerda el paso siguiente:
+
+```powershell
+.\scripts\backup_memory.ps1
+```
+
+**2. Dile a git que ignore los cambios locales de ese archivo**
+
+```powershell
+git update-index --skip-worktree storage/episodic_memory.json
+```
+
+Desde ese momento tus episodios dejan de aparecer en `git status` y `git pull`
+ya no pelea con ellos. El flag es **local**: no viaja al repositorio ni afecta
+a nadie más.
+
+**3. Para revertirlo** (cuando quieras volver a versionar el archivo)
+
+```powershell
+git update-index --no-skip-worktree storage/episodic_memory.json
+```
+
+### Cómo verificar
+
+```powershell
+git ls-files -v storage/episodic_memory.json
+```
+
+| Salida | Significa |
+|---|---|
+| `H storage/episodic_memory.json` | rastreado normal (pull puede pisarlo) |
+| `S storage/episodic_memory.json` | `skip-worktree` activo (protegido) |
+
+> ⚠️ Con `skip-worktree` activo, un `git pull` que traiga cambios en ese archivo
+> puede fallar. Si pasa: desactiva el flag, respalda, haz pull, restaura tu
+> backup y vuelve a activar el flag.
+>
+> ⚠️ Nunca borres `storage/episodic_memory.json` sin respaldo previo:
+> es memoria real de trabajo y no se puede reconstruir.
 
 ---
 
@@ -179,6 +244,12 @@ Herramientas de solo lectura añadidas después (no escriben nada):
 python -m app.tool_plan_retoma next_actions
 python -m app.tool_plan_retoma            # plan completo
 ```
+
+  Carril registrado en `tool_registry.TOOLS["tool_plan_retoma"]` (`risk = READ`).
+  Frases que lo activan: *"plan de retoma"*, *"acciones del plan"*,
+  *"recomendaciones del plan"*, *"retomar el proyecto"*, *"auditoría de documentación"*.
+  No se usan "plan" ni "tareas" sueltos para no robarle consultas a
+  `memory:work_state` ni a `memory:tasks`.
 
 - `tool_analizar_mercado(texto)` — Consulta mercado vía `bot_trading`. Ver sección
   [Integración con bot_trading](#integración-con-bot_trading); `risk = SYSTEM`.
@@ -364,8 +435,15 @@ python chat.py
 | Variable | Requerida | Descripción |
 |---|---|---|
 | `TELEGRAM_TOKEN` | Solo Telegram | Token del bot de Telegram |
+| `BOT_TRADING_PATH` | Solo trading | Carpeta raíz de **`bot_trading`**. Default en `app/config.py`; sobrescribible por `.env` |
+| `BOT_TRADING_PYTHON` | No | Intérprete del bot. Default: `<BOT_TRADING_PATH>/.venv/Scripts/python.exe` |
+| `BOT_TRADING_SCRIPT` | No | Script a ejecutar. Default: `<BOT_TRADING_PATH>/consulta_mercado.py` |
+| `BOT_TRADING_TIMEOUT` | No | Timeout duro del subprocess en segundos (default: `15`) |
 | `BINANCE_API_KEY` | Solo trading | Clave de API de Binance — vive en el `.env` de **`bot_trading`**, no en este repo |
 | `BINANCE_API_SECRET` | Solo trading | Secreto de API de Binance — ídem, nunca en `mi-agente` |
+
+Plantilla lista para copiar: [`.env.example`](.env.example) → `Copy-Item .env.example .env`.
+El `.env` real está en `.gitignore`; la plantilla no lleva secretos.
 
 > ⚠️ Las claves de Binance **no se configuran en `mi-agente`**. El subprocess hereda el
 > entorno del sistema y el bot lee su propio `.env`. Lautaro nunca lee ni loguea esas claves.
