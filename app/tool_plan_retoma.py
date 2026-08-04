@@ -80,6 +80,19 @@ _TITULOS: dict[str, str] = {
 # ──────────────────────────────────────────────
 
 
+def detectar_seccion(texto: str) -> str | None:
+    """Detecta, dentro de una frase libre, qué sección del plan se pide.
+
+    Pensado para el handler del registry: 'dame las acciones del plan de retoma'
+    → 'next_actions'. Si la frase no nombra ninguna sección, devuelve None
+    y el llamador debe entregar el plan completo (no es un error).
+
+    Es un alias semántico de _normalizar_clave() con nombre público, para que
+    tool_registry no dependa de un helper privado.
+    """
+    return _normalizar_clave(texto)
+
+
 def _normalizar_clave(texto: str) -> str | None:
     """Traduce texto libre a una clave canónica del plan.
 

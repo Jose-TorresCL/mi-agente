@@ -61,9 +61,10 @@ intelligence.py → respuesta al usuario
 
 | Parámetro | Valor actual | Dónde vive |
 |---|---|---|
-| Intérprete del bot | `C:\Users\lenovo\Proyectos\bot_trading\.venv\Scripts\python.exe` | `tools_trading.PYTHON_BOT` |
-| Script invocado | `consulta_mercado.py --symbol <TICKER> --modo full` | `tools_trading.SCRIPT` |
-| Timeout duro | 15 s | `tools_trading.TIMEOUT` |
+| Carpeta del bot | `BOT_TRADING_PATH` (default: `C:\Users\lenovo\Proyectos\bot_trading`) | `app/config.py` + `.env` |
+| Intérprete del bot | `BOT_TRADING_PYTHON` (default: `<PATH>/.venv/Scripts/python.exe`) | `app/config.py` + `.env` |
+| Script invocado | `BOT_TRADING_SCRIPT` — `consulta_mercado.py --symbol <TICKER> --modo full` | `app/config.py` + `.env` |
+| Timeout duro | `BOT_TRADING_TIMEOUT` (default: 15 s) | `app/config.py` + `.env` |
 | Entorno | copia de `os.environ` + `PYTHONUTF8=1` | `_llamar_bot_trading()` |
 | Nivel de riesgo | `RiskLevel.SYSTEM` | `tool_registry.TOOLS` |
 | Símbolos soportados | BTC, ETH, BNB, SOL, XRP, ADA, DOGE (+ normalización `xxx` → `XXXUSDT`) | `_SYMBOL_MAP` |
@@ -109,7 +110,7 @@ Se conserva únicamente como **caché de respaldo** dentro de `bot_trading`.
 | R1 | Binance no responde / sin internet | Consulta falla | El bot cae a su caché local (`last_market_data.json`) y marca `source: "cache"`, que Lautaro muestra como `[caché]` | Mostrar antigüedad del dato (edad en minutos) |
 | R2 | El bot se cuelga | Lautaro bloqueado | `timeout=15s` duro; devuelve `error_code="TIMEOUT"` | Métrica de latencia por consulta de mercado |
 | R3 | Datos stale presentados como frescos | Decisión mal informada | Etiqueta `[caché]` en el mensaje | Umbral de "demasiado viejo" → abstención |
-| R4 | Bot ausente o ruta cambiada | Error opaco | `BOT_NOT_FOUND` / `SCRIPT_NOT_FOUND` con mensaje claro | Mover rutas a `config.py` / `.env` (hoy están hardcodeadas) |
+| R4 | Bot ausente o ruta cambiada | Error opaco | `BOT_NOT_FOUND` / `SCRIPT_NOT_FOUND` con mensaje claro. **Cerrado del lado config:** rutas y timeout viven en `app/config.py`, sobrescribibles por `.env` (ver `.env.example`), con `assert` de no-vacío y batería `tests/test_config_bot_trading.py` | Aplicar el reemplazo en `tools_trading.py` al unificar ramas (ver abajo) |
 | R5 | JSON inválido o stdout sucio | Crash de parseo | `_extraer_json_de_stdout()` toma la última línea `{...}`; si falla → `INVALID_JSON` con `raw` truncado a 500 chars | — |
 | R6 | Excepción del bot | Crash de Lautaro | Todo capturado → `SCRIPT_ERROR` con `stderr` truncado y `returncode` | — |
 | R7 | **Ejecución no autorizada de órdenes** | Pérdida de dinero real | La tool solo consulta. Está clasificada `RiskLevel.SYSTEM`, y `dispatch_tool()` rechaza `SYSTEM` salvo habilitación explícita | Confirmación humana obligatoria antes de cualquier tool que opere |
@@ -165,7 +166,24 @@ python -c "from app.tools_trading import tool_analizar_mercado; r = tool_analiza
 
 ## Próximos pasos (post-integración)
 
-1. Mover `BOT_DIR`, `PYTHON_BOT`, `SCRIPT` y `TIMEOUT` a `app/config.py` o `.env` (cierra R4).
+1. ~~Mover `BOT_DIR`, `PYTHON_BOT`, `SCRIPT` y `TIMEOUT` a `app/config.py` o `.env`~~ — **hecho** en `app/config.py` + `.env.example`. Falta aplicar el reemplazo dentro de `tools_trading.py` cuando se unifiquen las ramas:
+
+   ```diff
+   -BOT_DIR = Path(r"C:\Users\lenovo\Proyectos\bot_trading")
+   -PYTHON_BOT = BOT_DIR / ".venv" / "Scripts" / "python.exe"
+   -SCRIPT = BOT_DIR / "consulta_mercado.py"
+   -TIMEOUT = 15
+   +from app.config import (
+   +    BOT_TRADING_PATH as BOT_DIR,
+   +    BOT_TRADING_PYTHON as PYTHON_BOT,
+   +    BOT_TRADING_SCRIPT as SCRIPT,
+   +    BOT_TRADING_TIMEOUT as TIMEOUT,
+   +)
+   ```
+
+   Los alias mantienen los nombres internos del módulo: el resto de
+   `tools_trading.py` no cambia ni una línea.
+
 2. Exponer la edad del dato cuando `source == "cache"` (cierra R3).
 3. Registrar métrica de latencia y tasa de error del carril `tool_analizar_mercado`.
 4. Definir el contrato de confirmación humana **antes** de escribir cualquier tool que opere.

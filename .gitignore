@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 .env.*
+# Excepción: la plantilla SIN secretos sí se versiona
+!.env.example
 storage/
 .chromadb/
 .vscode/
