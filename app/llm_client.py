@@ -50,7 +50,7 @@ def get_llm() -> ChatOllama:
 def generate_raw(
     prompt: str,
     temperature: float = 0.3,
-    num_predict: int = 150,
+    num_predict: int = 512,
     timeout: int = 120,
 ) -> str | None:
     """Llama al LLM con un prompt libre, sin RAG ni chain LangChain.

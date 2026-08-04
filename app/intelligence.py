@@ -261,7 +261,7 @@ def _decide_trading(user_input: str) -> str:
     interpretacion = generate_raw(
         prompt,
         temperature=0.4,
-        num_predict=120,
+        num_predict=512,
         timeout=_TRADING_INTERP_TIMEOUT,
     )
 
@@ -388,7 +388,7 @@ def _synthesize_memory_answer(
         chat_history=history_snippet,
         question=question,
     )
-    answer = generate_raw(prompt, temperature=0.3, num_predict=150,
+    answer = generate_raw(prompt, temperature=0.3, num_predict=512
                           timeout=_MEMORY_SYNTHESIS_TIMEOUT)
     if answer:
         return answer
@@ -575,7 +575,7 @@ def _decide_exit(chat_history: list) -> DecisionResult:
             "Sin bullet points ni numeración. Solo 2 líneas.\n\n"
             f"Conversación:\n{history_text}\n\nResumen:"
         )
-        generated = generate_raw(prompt, temperature=0.1, num_predict=45,
+        generated = generate_raw(prompt, temperature=0.1, num_predict=150,
                                  timeout=_EPISODE_TIMEOUT)
         if generated:
             summary = generated

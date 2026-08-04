@@ -116,7 +116,7 @@ def build_chain(system_prompt: str):
 def generate_raw(
     prompt: str,
     temperature: float = 0.3,
-    num_predict: int = 150,
+    num_predict: int = 512,
     timeout: int = _GENERATE_TIMEOUT,
 ) -> str | None:
     """Genera texto libre con el LLM sin construir una cadena RAG completa.
