@@ -7,7 +7,6 @@ Ejecutar:
     python indexacion.py --all            # indexa documentos RAG Y re-indexa episodios
 """
 import sys
-from pathlib import Path
 
 from app.indexing_core import (
     ensure_directories,
@@ -17,64 +16,26 @@ from app.indexing_core import (
     build_vectorstore,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-
-EXCLUDED_FILES = {
-    "data/docs/proyecto/estado_proyecto.md",
-    "data/docs/proyecto/roadmap.md",
-}
-
-EXCLUDED_PATH_PARTS = {
-    "data/docs/proyecto/historico/",
-    "data/docs/adr/borradores/",
-    ".pytest_cache/",
-}
-
-INCLUDED_PREFIXES = (
-    "data/docs/proyecto/",
-    "data/docs/referencia/",
-    "data/docs/adr/",
-)
-
-
-def normalize_source(source: str) -> str:
-    return source.replace("\\", "/").strip()
-
-
-def should_include(doc) -> bool:
-    source = normalize_source(str(doc.metadata.get("source", "")))
-
-    if not source:
-        return False
-
-    if not source.startswith(INCLUDED_PREFIXES):
-        return False
-
-    if source in EXCLUDED_FILES:
-        return False
-
-    if any(part in source for part in EXCLUDED_PATH_PARTS):
-        return False
-
-    return True
-
 
 def index_documents() -> None:
+    """Indexa los documentos RAG en Chroma (sin filtro extra en este archivo)."""
     ensure_directories()
 
     print("INFO: Cargando documentos...")
     docs = load_documents()
-    print(f"INFO: Documentos cargados (raw): {len(docs)}")
+    print(f"INFO: Documentos cargados: {len(docs)}")
 
-    filtered_docs = [doc for doc in docs if should_include(doc)]
-    excluded_count = len(docs) - len(filtered_docs)
-
-    print(f"INFO: Documentos incluidos: {len(filtered_docs)}")
-    print(f"INFO: Documentos excluidos por política: {excluded_count}")
+    if not docs:
+        print("ERROR: No se cargaron documentos. Se aborta la indexación.")
+        return
 
     print("INFO: Dividiendo en chunks...")
-    chunks = split_documents(filtered_docs)
+    chunks = split_documents(docs)
     print(f"INFO: Total de chunks: {len(chunks)}")
+
+    if not chunks:
+        print("ERROR: No se generaron chunks. Se aborta la construcción del vector store.")
+        return
 
     print("INFO: Reiniciando índice anterior...")
     reset_vectorstore()
@@ -86,6 +47,7 @@ def index_documents() -> None:
 
 
 def index_episodes() -> None:
+    """Re-indexa todos los episodios de episodic_memory.json en experience_index."""
     from app.episode_store import reindex_all, episode_index_stats
 
     print("INFO: Re-indexando episodios en experience_index...")
