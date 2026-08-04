@@ -95,6 +95,7 @@ pytest tests/test_memory_layer.py -v
 - Tasa "respuesta con evidencia" visible en `show_metrics.py` (R2-D)
 - Aging del caché: entradas > 7 días se recalculan (R2-E)
 
+
 ### Métricas objetivo (a validar con uso real)
 
 | Métrica | Objetivo |
@@ -107,11 +108,35 @@ pytest tests/test_memory_layer.py -v
 
 ### Validación
 
-```powershell
+powershell
 python show_metrics.py
 # Esperado: tabla con tiempos por carril, % cache hit, top docs
-```
 
+### R2-F — Bug de instrumentación: tiempos en 0ms (04/08/2026)
+
+**Estado**: 🔲 Pendiente
+
+`show_metrics.py` reporta 0ms en todos los campos de tiempo (Total, LLM,
+Retrieval, Fidelity) a pesar de tener 381 turnos registrados en
+`storage/metrics.jsonl`. La distribución por carril y el conteo de turnos
+sí funcionan correctamente — el problema es específico de los campos de
+duración.
+
+**Hipótesis a verificar**:
+
+- `record_turn()` no está guardando los campos de duración con el nombre
+  correcto, o
+- `show_metrics.py` los está leyendo con una clave distinta a la que
+  realmente se guarda en el JSON.
+
+**Por qué importa**: sin tiempos reales, no se puede comparar el impacto
+de cambios como `num_predict` (150→512, ver commit `bd2c6383`) ni evaluar
+modelos alternativos con el protocolo de R7.
+
+**Archivo a revisar**: `app/metrics.py` (función `record_turn`) y
+`show_metrics.py` (función de agregación de tiempos).
+
+---
 ---
 
 ## R3 — Evaluación real del sistema
@@ -139,11 +164,16 @@ python run_eval.py --json
 ### Criterio de "done" verificado
 
 ```text
-Routing Matrix (27 casos)   27/27
+Routing Matrix (28 casos)   28/28
 Batería 20 preguntas        20/20
 ────────────────────────────────
-TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
+TOTAL : 48/48 — SISTEMA HABILITADO PARA R7
 ```
+
+**Nota (04/08/2026)**: el conteo subió de 27 a 28 casos en routing matrix
+en algún momento entre el cierre original de R3 y hoy. Confirmado con
+`run_eval.py --verbose` — revisar `test_routing_matrix.py` si se quiere
+saber qué caso se agregó y documentarlo.
 
 ---
 
@@ -296,6 +326,31 @@ Antes de expandir tools nuevas, conviene endurecer estas tres cosas:
 | R7-A | Script de benchmark: latencia + calidad sobre batería fija | `benchmark.py` | Bajo |
 | R7-B | Abstraer nombre del modelo como constante en `config.py` | `app/config.py` | Bajo |
 | R7-C | Documentar proceso de comparación de modelos | `docs/proyecto/cambio-modelo.md` | Bajo |
+
+### Modelos evaluados / pendientes (04/08/2026)
+
+- `llama3.2:latest` (3B) — **modelo activo**. Sin thinking tokens,
+  compatible con el pipeline actual. Confirmado 48/48 en `run_eval.py`
+  con `num_predict=512`.
+- `qwen3:8b` — probado manualmente en Ollama (responde bien standalone),
+  no integrado en Lautaro. Pendiente:
+  - parsear bloques `<think>...</think>` antes de `fidelity_check`,
+  - confirmar que `num_predict=512` (ver commit `bd2c6383`) es
+    suficiente para el thinking + la respuesta.
+- `gemma4:e2b` / `gemma4:latest` — probados manualmente. Mismas
+  pendientes que Qwen3 (thinking tokens sin parsear). `gemma4:latest`
+  (9.6GB) es demasiado pesado para 16GB RAM en CPU-only — usar `e2b`
+  si se retoma la evaluación.
+
+**Hallazgo 04/08/2026**: el fallo original de Qwen3/Gemma4 puede deberse
+a `num_predict` insuficiente (150) sumado al gasto de tokens en el bloque
+`<think>`. Antes de reintentar esos modelos, ya se subió `num_predict` a
+512 (commit `bd2c6383`) — falta confirmar si con eso alcanza o si además
+se necesita parseo explícito del bloque de razonamiento.
+
+**Regla**: no cambiar `MODEL_NAME` en `config.py` sin (1) baseline con
+`llama3.2` actual, (2) parseo de thinking tags si el modelo los usa,
+(3) nuevo `run_eval.py` para comparar.
 
 ### Cómo comparar modelos (cuando llegue el momento)
 
