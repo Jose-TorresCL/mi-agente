@@ -1,0 +1,34 @@
+{
+  "validation": {
+    "readme": "pendiente",
+    "adr_docs": "pendiente",
+    "vision_doc": "pendiente"
+  },
+  "missing_sections": [
+    "README: no menciona bot_trading, tools_trading.py, ni el carril/tool tool_analizar_mercado",
+    "README: tabla de Documentación solo lista ADR-001 a ADR-008 (falta ADR-009 y cualquier ADR de trading)",
+    "No existe un ADR dedicado a 'integración bot_trading como tool externa' (decisión, alternativas, riesgos)",
+    "vision-agente.md: no incorpora bot_trading al diagrama de arquitectura ni a los principios (ej. 'local primero' vs. llamadas a Binance API externas)",
+    "vision-agente.md: sección 'Estado actual' quedó fechada 06/2026, anterior a la integración de trading (posterior, 24-25/06)",
+    "Falta sección de riesgos explícita para bot_trading: fallo de Binance, fallback a caché (last_market_data.json), timeout de subprocess, RiskLevel.SYSTEM bloqueado hasta confirmación humana",
+    "Falta un 'next_steps' o roadmap actualizado que indique qué sigue tras habilitar tool_analizar_mercado (ej. habilitar operaciones reales, límites de riesgo, testing)",
+    "No hay diagrama ni tabla que muestre cómo Lautaro y bot_trading se comunican (subprocess, JSON, timeout=15s, entorno heredado)",
+    "requirements.txt / variables de entorno: README no documenta variables necesarias para bot_trading (ej. claves API de Binance, .env)"
+  ],
+  "recommendations": [
+    "Crear ADR-010 'Integración bot_trading como tool externa' documentando: decisión de usar subprocess en vez de import directo, alternativas descartadas, riesgos (fallo de red, datos stale, ejecución no autorizada) y mitigaciones (RiskLevel.SYSTEM, fallback silencioso)",
+    "Actualizar README.md: agregar sección 'Integración con bot_trading' (qué hace tool_analizar_mercado, cómo se invoca, qué símbolos soporta, qué devuelve) y sumar ADR-009 (y el nuevo ADR-010) a la tabla de Documentación",
+    "Actualizar docs/vision-agente.md: incorporar bot_trading al diagrama de flujo y reconciliar el principio 'local primero' con el hecho de que bot_trading consulta una API externa (Binance) — aclarar el límite entre 'razonamiento local' y 'datos de mercado externos'",
+    "Agregar tabla de variables de entorno para bot_trading (ej. BINANCE_API_KEY, BINANCE_API_SECRET) similar a la tabla existente de TELEGRAM_TOKEN",
+    "Documentar explícitamente el estado de habilitación de la tool: hoy es RiskLevel.SYSTEM (solo lectura de mercado, sin ejecutar operaciones) — esto es un riesgo/alcance clave que hoy no aparece en ningún .md",
+    "Añadir sección 'Próximos pasos' actualizada en vision-agente.md o README que reemplace el genérico '🔭 Próximo: pruebas integrales + definir siguiente dirección' con el plan real post-integración trading",
+    "Ejecutar la meta ya fijada en ADR-009 (cobertura de docstrings con `interrogate`, umbral 70%→85%) y verificar si se cumplió, ya que el ADR data de hace ~7 semanas"
+  ],
+  "next_actions": [
+    "Redactar y mergear ADR-010 sobre bot_trading antes de seguir agregando funcionalidad de trading",
+    "Actualizar README.md con la sección de integración bot_trading y refrescar la tabla de documentación",
+    "Revisar y refechar docs/vision-agente.md incorporando el estado post-integración (fecha actual, agosto 2026)",
+    "Correr `interrogate app/ --fail-under 70 --verbose` para verificar si el criterio de ADR-009 sigue cumpliéndose tras los cambios de trading",
+    "Abrir un issue/checklist en GitHub para trackear 'documentación bot_trading pendiente' y asociarlo a un PR de docs antes de expandir el bot"
+  ]
+}

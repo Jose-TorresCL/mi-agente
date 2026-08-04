@@ -14,6 +14,8 @@ Estas son las decisiones "oficiales" numeradas, en orden cronológico:
 - ADR-006 - Experience index y feedback loop (`ADR-006-experience-index.md`)
 - ADR-007 - Modelo único vs multi-modelo (`ADR-007-modelo-unico-vs-multi-modelo.md`)
 - ADR-008 - Candidato de reemplazo de modelo (`ADR-008-candidato-reemplazo-modelo.md`)
+- ADR-009 - Sincronización de documentación (`ADR-009-perplexity-sync.md`)
+- ADR-010 - Integración de bot_trading como tool externa: subprocess + JSON (`ADR-010-integracion-bot_trading.md`)
 
 ## ADR complementarios / históricos
 

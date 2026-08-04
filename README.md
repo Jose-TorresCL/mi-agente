@@ -54,6 +54,8 @@ mi-agente/
 │   ├── semantic_cache.py       # Caché semántica de consultas
 │   ├── llm_client.py           # Cliente Ollama unificado
 │   ├── tools.py                # Herramientas ejecutables (5)
+│   ├── tools_trading.py        # Wrapper de bot_trading (rama feat/integracion-bot-trading)
+│   ├── tool_plan_retoma.py     # Lectura de analysis/retoma_plan.json (solo lectura)
 │   ├── tool_registry.py        # Registro de herramientas disponibles
 │   ├── tool_helpers.py         # Utilidades para herramientas
 │   ├── schemas.py              # TypedDict — contratos de datos
@@ -70,17 +72,22 @@ mi-agente/
 │   └── config.py               # Configuración centralizada
 │
 ├── docs/                       # Documentación del proyecto
-│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-008)
+│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-010)
 │   ├── vision-agente.md        # Visión y hoja de ruta
 │   ├── arquitectura-memoria.md # Detalle de las 4 capas de memoria
 │   └── hardware-modelos.md     # Hardware y modelos recomendados
+│
+├── analysis/                   # Planes y auditorías en JSON
+│   └── retoma_plan.json        # Plan de retoma / auditoría de documentación
 │
 ├── data/                       # Documentos a indexar
 └── tests/                      # Tests del proyecto
 ```
 
 > `storage/` (ChromaDB e índices) y `.venv/` se generan localmente
-> y no están en el repositorio.
+> y no están en el repositorio. Excepción: `storage/examples/` contiene
+> archivos de **ejemplo** versionados (formato de referencia, no datos reales).
+> Nunca copies un `*.example.json` encima de tu memoria real.
 
 ---
 
@@ -154,6 +161,100 @@ El agente puede ejecutar estas herramientas sin pasar por el LLM:
 - `tool_complete_task(task_id)` — Marca tarea como completada
 - `tool_update_work_state(field, value)` — Actualiza `work_state.json`
 - `tool_set_session_goal(content)` — Guarda objetivo de sesión
+
+Herramientas de solo lectura añadidas después (no escriben nada):
+
+- `tool_plan_retoma(seccion=None)` — Lee `analysis/retoma_plan.json` y devuelve el plan
+  completo o una sección concreta. Claves: `validation`, `missing_sections`,
+  `recommendations`, `next_actions` (acepta alias en español: `validacion`, `faltantes`,
+  `recomendaciones`, `acciones`). Devuelve `ToolResult`; `risk = READ`.
+
+```powershell
+# Uso directo, sin pasar por el chat
+python -m app.tool_plan_retoma next_actions
+python -m app.tool_plan_retoma            # plan completo
+```
+
+- `tool_analizar_mercado(texto)` — Consulta mercado vía `bot_trading`. Ver sección
+  [Integración con bot_trading](#integración-con-bot_trading); `risk = SYSTEM`.
+
+---
+
+## Integración con bot_trading
+
+Lautaro puede consultar mercado de criptomonedas delegando en **`bot_trading`**, un
+proyecto externo con su propio repositorio y su propio `.venv`. La decisión completa
+(alternativas, riesgos y mitigaciones) está en
+[ADR-010](docs/adr/ADR-010-integracion-bot_trading.md).
+
+> **Estado:** el código de la integración (`app/tools_trading.py`, carril
+> `tool_analizar_mercado`) vive hoy en la rama `feat/integracion-bot-trading`.
+> Esta sección y ADR-010 documentan esa decisión desde `feat/perplexity-sync`.
+
+### Qué hace
+
+`tool_analizar_mercado(texto)` devuelve precio, señal (BUY/SELL/HOLD) e indicadores
+(RSI, ATR, EMA rápida y lenta) del símbolo detectado, más alertas simples
+(sobreventa/sobrecompra, cruce de EMAs).
+
+### Cómo se comunican
+
+```text
+Usuario → router.py → tool_registry.py → app/tools_trading.py
+                                              ↓ subprocess (timeout 15s)
+                          bot_trading/.venv/Scripts/python.exe
+                          consulta_mercado.py --symbol BTCUSDT --modo full
+                                              ↓ JSON por stdout
+                              app/tools_trading.py → ToolResult → respuesta
+```
+
+| Aspecto | Valor |
+|---|---|
+| Mecanismo | `subprocess` (sin imports cruzados entre proyectos) |
+| Contrato | una línea JSON por `stdout` |
+| Timeout | 15 s duro |
+| Entorno | copia de `os.environ` + `PYTHONUTF8=1`, `cwd` = carpeta del bot |
+| Nivel de riesgo | `RiskLevel.SYSTEM` (accede a recursos externos) |
+| Alcance | **solo lectura de mercado — no ejecuta órdenes** |
+| Símbolos | BTC, ETH, BNB, SOL, XRP, ADA, DOGE (`btc` → `BTCUSDT`; fallback `BTCUSDT`) |
+
+### Ejemplos
+
+```text
+Tú: Analiza el mercado de BTC
+Agente: 📊 BTCUSDT — 1m
+        Precio: $63,120.45
+        Señal: 🟡 HOLD
+        RSI: 48.3 · ATR: 112.40 · EMA rápida/lenta
+        Alertas: 📈 EMA rápida > EMA lenta — contexto alcista
+```
+
+### Riesgos y mitigaciones (resumen)
+
+| Riesgo | Mitigación |
+|---|---|
+| Binance caído / sin internet | El bot cae a su caché local y la respuesta se marca `[caché]` |
+| El bot se cuelga | Timeout de 15 s → `error_code="TIMEOUT"`, Lautaro sigue vivo |
+| JSON inválido o stdout sucio | Se toma la última línea `{...}`; si falla → `INVALID_JSON` |
+| Bot o script ausente | `BOT_NOT_FOUND` / `SCRIPT_NOT_FOUND` con mensaje claro |
+| Ejecución no autorizada de órdenes | La tool solo consulta; `dispatch_tool()` rechaza `SYSTEM` sin habilitación explícita |
+| Fuga de claves de Binance | Las claves viven en el `.env` de `bot_trading`; Lautaro no las lee ni las loguea |
+
+Ningún fallo del bot lanza excepción hacia Lautaro: todo se traduce a
+`ToolResult(ok=False, error_code=...)`.
+
+### Verificación rápida
+
+```powershell
+# 1. El bot responde por sí solo (dentro de bot_trading)
+python consulta_mercado.py --symbol BTCUSDT --modo full
+
+# 2. El wrapper traduce bien (dentro de mi-agente)
+python -c "from app.tools_trading import tool_analizar_mercado; r = tool_analizar_mercado('btc'); print(r['ok'], r.get('error_code')); print(r['message'])"
+```
+
+Esperado: `ok=True` y un bloque `📊 BTCUSDT`. Si el bot no está disponible,
+`ok=False` con un `error_code` legible — nunca un traceback.
 
 ---
 
@@ -258,6 +359,11 @@ python chat.py
 | Variable | Requerida | Descripción |
 |---|---|---|
 | `TELEGRAM_TOKEN` | Solo Telegram | Token del bot de Telegram |
+| `BINANCE_API_KEY` | Solo trading | Clave de API de Binance — vive en el `.env` de **`bot_trading`**, no en este repo |
+| `BINANCE_API_SECRET` | Solo trading | Secreto de API de Binance — ídem, nunca en `mi-agente` |
+
+> ⚠️ Las claves de Binance **no se configuran en `mi-agente`**. El subprocess hereda el
+> entorno del sistema y el bot lee su propio `.env`. Lautaro nunca lee ni loguea esas claves.
 
 Todas las demás opciones de configuración (modelos, rutas, umbrales) se encuentran en `app/config.py`.
 
@@ -302,6 +408,9 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 | [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
 | [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
 | [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
+| [ADR-009](docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
+| [ADR-010](docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
+| [Plan de retoma](analysis/retoma_plan.json) | Auditoría de documentación y próximas acciones (leíble con `tool_plan_retoma`) |
 | [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
 | [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
 | [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
@@ -315,8 +424,16 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 ✅ R2 — Dashboard de métricas con análisis de drift  
 ✅ R3 — Caché semántica + mejoras fidelity  
 ✅ R4 — Recuperación selectiva de memoria por tipo  
+✅ Integración `bot_trading` como tool externa (subprocess + JSON) — documentada en ADR-010  
+✅ Plan de retoma versionado (`analysis/retoma_plan.json`) + `tool_plan_retoma`  
 
-🔭 Próximo: pruebas integrales + definir siguiente dirección
+🔭 Próximo (consolidación antes de expandir):
+
+1. Mover rutas y timeout de `tools_trading.py` a `config.py` / `.env` (hoy son rutas absolutas de Windows)
+2. Exponer la antigüedad del dato cuando la respuesta viene de caché
+3. Métricas del carril `tool_analizar_mercado` (latencia + tasa de error)
+4. Definir el contrato de confirmación humana **antes** de cualquier tool que opere en el mercado
+5. Actualizar `docs/vision-agente.md` con el estado post-integración (ver `analysis/retoma_plan.json`)
 
 ---
 
