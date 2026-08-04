@@ -85,9 +85,14 @@ mi-agente/
 ```
 
 > `storage/` (ChromaDB e índices) y `.venv/` se generan localmente
-> y no están en el repositorio. Excepción: `storage/examples/` contiene
-> archivos de **ejemplo** versionados (formato de referencia, no datos reales).
-> Nunca copies un `*.example.json` encima de tu memoria real.
+> y no están en el repositorio. Excepciones versionadas a propósito:
+> `storage/project_facts.json`, `storage/workstate.json` y
+> `storage/episodic_memory.json` (este último con **un episodio semilla**
+> `type: plan_retoma`, no con memoria real).
+>
+> ⚠️ Tras clonar o hacer pull, si no quieres que tus episodios locales aparezcan
+> en `git status`, marca el archivo como no rastreable en tu copia:
+> `git update-index --skip-worktree storage/episodic_memory.json`
 
 ---
 

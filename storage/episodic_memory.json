@@ -1,5 +1,5 @@
 {
-  "_nota": "Episodio de EJEMPLO con el formato que espera storage/episodic_memory.json. Este archivo es solo referencia versionada: NO lo copies encima de tu episodic_memory.json real (perderías episodios). Para insertarlo, usa app/tool_plan_retoma.build_episode_plan_retoma() y agrégalo a la lista 'episodes' existente.",
+  "_nota": "Archivo de memoria episodica. Este commit trae UN episodio semilla (type: plan_retoma) generado desde analysis/retoma_plan.json. En local, Lautaro agrega episodios a la lista 'episodes'. Tras el pull, ejecuta: git update-index --skip-worktree storage/episodic_memory.json para que tus episodios reales no aparezcan en git status.",
   "episodes": [
     {
       "date": "2026-08-03",

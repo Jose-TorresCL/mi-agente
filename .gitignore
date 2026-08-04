@@ -3,11 +3,8 @@ __pycache__/
 *.pyc
 .env
 .env.*
-storage/*
+storage/
 .chromadb/
 .vscode/
 storage/project_facts.json
 .coverage
-
-# Excepción: ejemplos de formato versionados (no contienen datos reales)
-!storage/examples/
