@@ -388,7 +388,7 @@ def _synthesize_memory_answer(
         chat_history=history_snippet,
         question=question,
     )
-    answer = generate_raw(prompt, temperature=0.3, num_predict=512
+    answer = generate_raw(prompt, temperature=0.3, num_predict=512,
                           timeout=_MEMORY_SYNTHESIS_TIMEOUT)
     if answer:
         return answer
@@ -504,7 +504,15 @@ def _generate_rag_answer(
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
     is_faithful, score = verify_fidelity(answer, rag_ctx["source_docs"], question=user_input)
-    if not is_faithful:
+
+    if score == -1.0:
+        # Respuesta no verificada: se antepone advertencia explícita.
+        # No hace falta forzar can_cache aquí — el score=-1.0 ya queda
+        # por debajo de _CACHE_MIN_SCORE en _decide_rag, así que nunca se cachea.
+        warning = "⚠️ No pude verificar esta respuesta contra los documentos (embeddings ocupados). Tómala con cautela:\n\n"
+        answer = warning + answer
+        is_faithful = True  # score=-1.0 ya quedó registrado en logs vía log_fidelity_uncertain
+    elif not is_faithful:
         log.warning("[R6-RAG] Respuesta bloqueada por fidelidad (score=%.3f): %s",
                     score, user_input[:60])
         return NO_EVIDENCE_MSG, rag_ctx["source_docs"], llm_ms, False, score
