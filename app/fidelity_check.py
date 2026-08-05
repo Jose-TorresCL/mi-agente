@@ -42,8 +42,12 @@ Limitaciones conocidas:
     pero se loguea en fidelity_uncertain.jsonl como bypass de emergencia.
 
 Fix retry embed: cuando get_embedding() devuelve None post-LLM (CPU ocupada
-durante inferencia), se espera 3s y reintenta una vez antes de hacer skip.
-Esto resuelve el [fidelity:skip] sistemático en CPU sin GPU dedicada.
+durante inferencia), se espera _EMBED_RETRY_SLEEP segundos (6s) y reintenta
+hasta _EMBED_RETRY_ATTEMPTS veces (2) antes de marcar la respuesta como
+[fidelity:unverified]. Esto resuelve el bloqueo sistemático en CPU sin GPU
+dedicada, y el tag [fidelity:unverified] deja claro en los logs que la
+fidelidad NO se pudo verificar (a diferencia de [fidelity:skip], que es un
+bypass deliberado por diseño, no una falla).
 
 Contrato de retorno:
   verify_fidelity SIEMPRE retorna tuple[bool, float].
@@ -100,7 +104,9 @@ _RE_TASK_ID      = re.compile(r'^\d{9,12}$')   # timestamps de 10 dígitos: 0612
 _RE_NUMBERS = re.compile(r'\b\d[\d.,]*\b')
 
 # Segundos de espera antes de reintentar embed post-LLM
-_EMBED_RETRY_SLEEP = 3
+_EMBED_RETRY_SLEEP = 6
+# Cantidad de reintentos de embed antes de dar por no verificada la respuesta
+_EMBED_RETRY_ATTEMPTS = 2
 
 
 # ─────────────────────────────────────────────
@@ -373,10 +379,16 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
-    # Retry único: si Ollama devuelve None post-LLM (CPU ocupada),
-    # esperar _EMBED_RETRY_SLEEP segundos y reintentar antes de hacer skip.
-    if ans_embedding is None:
-        print(f"[fidelity:retry] embed devolvió None — reintentando en {_EMBED_RETRY_SLEEP}s")
+    # Retry con backoff fijo: si Ollama devuelve None post-LLM (CPU ocupada),
+    # esperar _EMBED_RETRY_SLEEP segundos y reintentar hasta _EMBED_RETRY_ATTEMPTS
+    # veces antes de marcar la respuesta como no verificada.
+    attempt = 0
+    while ans_embedding is None and attempt < _EMBED_RETRY_ATTEMPTS:
+        attempt += 1
+        print(
+            f"[fidelity:retry] embed devolvió None — intento {attempt}/{_EMBED_RETRY_ATTEMPTS}, "
+            f"reintentando en {_EMBED_RETRY_SLEEP}s"
+        )
         time.sleep(_EMBED_RETRY_SLEEP)
         try:
             ans_embedding = get_embedding(answer)
@@ -384,8 +396,8 @@ def _validate_fidelity(
             ans_embedding = None
 
     if ans_embedding is None:
-        reason = "embed respuesta devolvió None tras retry (Ollama ocupado post-LLM)"
-        print(f"[fidelity:skip] {reason}")
+        reason = f"embed respuesta devolvió None tras {_EMBED_RETRY_ATTEMPTS} reintentos (Ollama ocupado post-LLM)"
+        print(f"[fidelity:unverified] {reason}")
         log_fidelity_uncertain(question or answer, reason)
         return True, 1.0
 
