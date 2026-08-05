@@ -62,6 +62,8 @@ from app.semantic_cache import get_embedding
 FIDELITY_EMERGENCY_MODE = "bypass"  # options: 'bypass' | 'uncertain'
 
 _MAX_CONTEXT_CHARS = 4000
+_FIDELITY_EMBED_TIMEOUT = 3.5
+_FIDELITY_EMBED_MAX_CHARS = 1500
 
 _RE_SINGLE_DIGIT = re.compile(r"^\d$")
 _RE_YEAR = re.compile(r"^(19|20)\d{2}$")
@@ -220,6 +222,13 @@ def _build_context_text(chunks_texts: list[str], max_chars: int = _MAX_CONTEXT_C
         total += len(piece) + 2
 
     return "\n\n".join(parts).strip()
+
+def _prepare_text_for_embedding(text: str, max_chars: int = _FIDELITY_EMBED_MAX_CHARS) -> str:
+    """Trunca el texto antes de enviarlo a embeddings para reducir bytes transferidos."""
+    clean = " ".join(text.strip().split())
+    if len(clean) <= max_chars:
+        return clean
+    return clean[:max_chars].rstrip()
 
 
 def _check_numeric_claims(
@@ -396,8 +405,9 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
+    answer_for_embed = _prepare_text_for_embedding(answer)
     try:
-        ans_embedding = get_embedding(answer)
+        ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
     except Exception:
         reason = "error embed respuesta"
         print(f"[fidelity:uncertain] {reason}")
@@ -415,7 +425,7 @@ def _validate_fidelity(
         )
         time.sleep(_EMBED_RETRY_SLEEP)
         try:
-            ans_embedding = get_embedding(answer)
+            ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
         except Exception:
             ans_embedding = None
 
@@ -425,8 +435,9 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return True, -1.0
 
+    context_for_embed = _prepare_text_for_embedding(context_text)
     try:
-        context_embedding = get_embedding(context_text)
+        context_embedding = get_embedding(context_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
     except Exception:
         context_embedding = None
 
