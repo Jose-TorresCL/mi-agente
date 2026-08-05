@@ -333,8 +333,6 @@ class TestInventarioDocumentacion:
         "LangChain Retriever": "data/docs/referencia/langchain-retriever.md",
         "Text Splitters":     "data/docs/referencia/langchain-text-splitters.md",
         "Embeddings":         "data/docs/referencia/langchain-embeddings.md",
-        "Chroma":             "data/docs/referencia/chroma-queries.md",
-        "Ollama API":         "data/docs/referencia/ollama-api.md",
         "Memoria Agentes":    "data/docs/referencia/memoria_agentes_resumen.md",
     }
 

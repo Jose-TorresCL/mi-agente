@@ -18,16 +18,24 @@ from app.indexing_core import (
 
 
 def index_documents() -> None:
-    """Indexa los documentos RAG en Chroma (comportamiento original)."""
+    """Indexa los documentos RAG en Chroma (sin filtro extra en este archivo)."""
     ensure_directories()
 
     print("INFO: Cargando documentos...")
     docs = load_documents()
     print(f"INFO: Documentos cargados: {len(docs)}")
 
+    if not docs:
+        print("ERROR: No se cargaron documentos. Se aborta la indexación.")
+        return
+
     print("INFO: Dividiendo en chunks...")
     chunks = split_documents(docs)
     print(f"INFO: Total de chunks: {len(chunks)}")
+
+    if not chunks:
+        print("ERROR: No se generaron chunks. Se aborta la construcción del vector store.")
+        return
 
     print("INFO: Reiniciando índice anterior...")
     reset_vectorstore()
@@ -52,7 +60,7 @@ def main() -> None:
     args = set(sys.argv[1:])
 
     only_episodes = "--only-episodes" in args
-    index_all     = "--all" in args
+    index_all = "--all" in args
 
     if only_episodes:
         index_episodes()
@@ -60,7 +68,6 @@ def main() -> None:
         index_documents()
         index_episodes()
     else:
-        # Comportamiento por defecto: solo documentos RAG (sin cambios)
         index_documents()
 
 

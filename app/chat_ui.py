@@ -30,6 +30,53 @@ def print_welcome() -> None:
 
 
 # ──────────────────────────────────────────────
+# Estado de "pensando" (spinner)
+# ──────────────────────────────────────────────
+
+def with_status(mensaje: str = "Lautaro está pensando..."):
+    """Devuelve un context manager de Rich con spinner.
+
+    Uso:
+        with with_status("Buscando en la base de conocimiento..."):
+            resultado = funcion_que_tarda()
+    """
+    return console.status(f"[cyan]{mensaje}[/cyan]", spinner="dots")
+
+
+# ──────────────────────────────────────────────
+# Errores (nuevo)
+# ──────────────────────────────────────────────
+
+def print_error(mensaje: str, detalle: str = "") -> None:
+    """Muestra un error de forma visualmente diferenciada del resto del flujo.
+
+    mensaje: descripción corta y humana del problema (para el usuario).
+    detalle: texto técnico opcional (excepción, traceback resumido) en modo dim.
+    """
+    cuerpo = Text(mensaje, style="bold red")
+    if detalle:
+        cuerpo.append("\n\n")
+        cuerpo.append(detalle, style="dim")
+
+    console.print(Panel(
+        cuerpo,
+        title="⚠️  Error",
+        border_style="red",
+        padding=(0, 2),
+    ))
+
+
+def print_warning(mensaje: str) -> None:
+    """Aviso no bloqueante (ej: fallback activado, tool no disponible)."""
+    console.print(Panel(
+        Text(mensaje, style="bold yellow"),
+        title="⚠️  Aviso",
+        border_style="yellow",
+        padding=(0, 2),
+    ))
+
+
+# ──────────────────────────────────────────────
 # Session Intelligence Briefing (Paso D)
 # ──────────────────────────────────────────────
 
@@ -55,13 +102,7 @@ _STATE_LABEL = {
 
 
 def _mostrar_briefing_compacto(briefing: dict) -> None:
-    """Briefing resumido (<5 líneas) para reaperturas del mismo día.
-
-    Muestra solo lo esencial: estado, foco, conteo de tareas y sugerencia.
-    Se activa cuando briefing['es_retomada'] es True.
-    La lógica completa sigue intacta en mostrar_briefing() para
-    la primera apertura del día.
-    """
+    """Briefing resumido (<5 líneas) para reaperturas del mismo día."""
     state      = briefing.get("session_state", "drifting")
     icon       = _STATE_ICON.get(state, "💡")
     foco       = briefing.get("foco", "sin foco")
@@ -88,23 +129,15 @@ def _mostrar_briefing_compacto(briefing: dict) -> None:
 
 
 def mostrar_briefing(briefing: dict) -> None:
-    """Muestra el resumen de arranque de sesión con Session Intelligence.
-
-    Ramifica entre dos modos según briefing['es_retomada']:
-      - False (primera apertura del día): briefing completo con todas las secciones.
-      - True  (segunda+ apertura del día): modo compacto de <5 líneas.
-
-    El modo compacto delega en _mostrar_briefing_compacto().
-    El modo completo ejecuta la lógica original intacta.
-    """
+    """Muestra el resumen de arranque de sesión con Session Intelligence."""
     if briefing.get("es_retomada", False):
         _mostrar_briefing_compacto(briefing)
         return
 
     # ── Modo completo (primera apertura del día) ──────────────────
-    state   = briefing.get("session_state", "drifting")
-    icon    = _STATE_ICON.get(state, "💡")
-    label   = _STATE_LABEL.get(state, state)
+    state    = briefing.get("session_state", "drifting")
+    icon     = _STATE_ICON.get(state, "💡")
+    label    = _STATE_LABEL.get(state, state)
     all_open = briefing["tasks"]["all_open"]
     stale    = briefing["tasks"]["stale"]
     ep       = briefing.get("last_episode")
@@ -170,8 +203,6 @@ def mostrar_briefing(briefing: dict) -> None:
             else "📅"
         )
 
-        # Tag (retomada) si es_retomada pero estamos en modo completo
-        # (edge case: es_retomada=True pero se fuerza modo completo externamente)
         retomada_tag = " [cyan](retomada)[/cyan]" if briefing.get("es_retomada") else ""
         carril_str = f" · carril dominante: {ep_carril}" if ep_carril else ""
         console.print(
@@ -230,28 +261,32 @@ def print_sources(docs) -> None:
 
 
 # ──────────────────────────────────────────────
-# Debug retrieval (solo en desarrollo)
+# Debug retrieval (solo en desarrollo) — ahora en panel
 # ──────────────────────────────────────────────
 
 def print_debug_retrieval(question: str, docs) -> None:
     if not DEBUG_RETRIEVAL:
         return
 
-    console.print("[blue]DEBUG RETRIEVAL:[/blue]")
-    console.print(f"[blue]Pregunta:[/blue] {question}")
+    contenido = Text()
+    contenido.append(f"Pregunta: {question}\n\n", style="bold blue")
 
     if not docs:
-        console.print("[blue]No se recuperaron documentos.[/blue]\n")
-        return
+        contenido.append("No se recuperaron documentos.", style="blue")
+    else:
+        for i, d in enumerate(docs, 1):
+            src = d.metadata.get("source", "desconocido")
+            name = Path(src).name if src != "desconocido" else src
+            doc_type = d.metadata.get("doc_type", "sin_tipo")
+            section = d.metadata.get("section", "sin_seccion")
+            preview = d.page_content[:220].replace("\n", " ")
 
-    for i, d in enumerate(docs, 1):
-        src = d.metadata.get("source", "desconocido")
-        name = Path(src).name if src != "desconocido" else src
-        doc_type = d.metadata.get("doc_type", "sin_tipo")
-        section = d.metadata.get("section", "sin_seccion")
-        preview = d.page_content[:220].replace("\n", " ")
+            contenido.append(f"{i}. {name} | {doc_type} | {section}\n", style="blue")
+            contenido.append(f"{preview}...\n\n", style="dim")
 
-        console.print(f"[blue]{i}. {name} | {doc_type} | {section}[/blue]")
-        console.print(f"[dim]{preview}...[/dim]")
-
-    console.print()
+    console.print(Panel(
+        contenido,
+        title="🔍 Debug retrieval",
+        border_style="blue",
+        padding=(0, 2),
+    ))

@@ -66,14 +66,34 @@ log = get_logger(__name__)
 
 
 SESSION_STATS: dict[str, int] = {
-    "kw":    0,
-    "emb":   0,
-    "llm":   0,
+    "kw": 0,
+    "emb": 0,
+    "llm": 0,
     "total": 0,
 }
 
+
 EMBED_THRESHOLD = intent_index.EMBED_THRESHOLD
-EMBED_TOP_K     = intent_index.EMBED_TOP_K
+EMBED_TOP_K = intent_index.EMBED_TOP_K
+
+
+_GREETING_KEYWORDS = {
+    "hola",
+    "holi",
+    "buenas",
+    "buenos dias",
+    "buen día",
+    "buen dia",
+    "buenas tardes",
+    "buenas noches",
+    "gracias",
+    "muchas gracias",
+    "ok",
+    "oki",
+    "dale",
+    "listo",
+    "perfecto",
+}
 
 
 def _has_read_verb(q_normalized: str) -> bool:
@@ -84,14 +104,23 @@ def _has_task_suggestion_signal(q: str) -> bool:
     return any(signal in q for signal in _TASK_SUGGESTION_SIGNALS)
 
 
+def _is_greeting_or_trivial(question: str) -> bool:
+    q = " ".join(_normalize(question).split())
+    return q in _GREETING_KEYWORDS
+
+
 def classify_memory_query(question: str) -> str | None:
     q = _normalize(question)
-    if any(k in q for k in MEMORY_PROFILE_KEYWORDS):       return "profile"
-    if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):    return "work_state"
+    if any(k in q for k in MEMORY_PROFILE_KEYWORDS):
+        return "profile"
+    if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):
+        return "work_state"
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) and not _has_task_suggestion_signal(q):
         return "tasks"
-    if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS): return "project_facts"
-    if any(k in q for k in MEMORY_EPISODE_KEYWORDS):       return "episode"
+    if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS):
+        return "project_facts"
+    if any(k in q for k in MEMORY_EPISODE_KEYWORDS):
+        return "episode"
     return None
 
 
@@ -120,41 +149,53 @@ def _route_by_keywords(question: str) -> str | None:
     if q in {"!estado", "!estatus", "!status"}:
         return "!estado"
 
-    if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):                return "tool_save_fact"
-    if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):              return "tool_create_task"
+    if _is_greeting_or_trivial(question):
+        return "identity"
+
+    if any(k in q for k in TOOL_SAVE_FACT_KEYWORDS):
+        return "tool_save_fact"
+    if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):
+        return "tool_create_task"
     if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) or _COMPLETE_TASK_PATTERN.search(q):
         return "tool_complete_task"
-    if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):         return "tool_set_session_goal"
-    if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):        return "tool_update_work_state"
-    if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):              return "unsupported"
+    if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):
+        return "tool_set_session_goal"
+    if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):
+        return "tool_update_work_state"
+    if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):
+        return "unsupported"
 
     # Antes de memoria: "plan de retoma" es más específico que "cual es el plan".
     if any(k in q for k in TOOL_PLAN_RETOMA_KEYWORDS):              return "tool_plan_retoma"
 
     if extract_file_path(question) is not None and _has_read_verb(q):
         return "tool_read_file"
-    if any(k in q for k in TOOL_LIST_KEYWORDS):                     return "tool_list_files"
-    if any(k in q for k in TOOL_READ_KEYWORDS):                     return "tool_read_file"
+    if any(k in q for k in TOOL_LIST_KEYWORDS):
+        return "tool_list_files"
+    if any(k in q for k in TOOL_READ_KEYWORDS):
+        return "tool_read_file"
 
-    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):                return "identity"
+    if any(k in q for k in AGENT_IDENTITY_KEYWORDS):
+        return "identity"
 
-    # [A] Fix A: razonamiento personal antes de classify_memory_query.
-    if any(k in q for k in MEMORY_REASONING_KEYWORDS):              return "memory:work_state"
+    if any(k in q for k in MEMORY_REASONING_KEYWORDS):
+        return "memory:work_state"
 
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
 
-    # Fix: notas libres → tool_save_fact (antes caían a RAG)
-    if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):                return "tool_save_fact"
+    if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):
+        return "tool_save_fact"
 
-    # Fix: preguntas matemáticas → math
-    if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q): return "math"
+    if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q):
+        return "math"
 
-    # Consultas de mercado / trading → tool_analizar_mercado
-    if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):         return "tool_analizar_mercado"
+    if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):
+        return "tool_analizar_mercado"
 
-    if any(k in q for k in RAG_HINTS):                              return "rag"
+    if any(k in q for k in RAG_HINTS):
+        return "rag"
 
     return None
 
@@ -186,9 +227,9 @@ def _route_by_embeddings(question: str) -> str | None:
 def format_estado() -> str:
     from app.semantic_cache import cache_stats
 
-    stats  = cache_stats()
-    total  = SESSION_STATS["total"] or 1
-    kw_pct  = SESSION_STATS["kw"]  * 100 // total
+    stats = cache_stats()
+    total = SESSION_STATS["total"] or 1
+    kw_pct = SESSION_STATS["kw"] * 100 // total
     emb_pct = SESSION_STATS["emb"] * 100 // total
     llm_pct = SESSION_STATS["llm"] * 100 // total
 

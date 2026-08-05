@@ -1,7 +1,7 @@
 # Plan de Robustecimiento — Fases R1 a R7
 
-> Última actualización: 25/05/2026
-> Estado general: **R1 ✅ | R2 ✅ | R3 ✅ | R4 ✅ Parcial | R5 ✅ Parcial + auditoría RAG en curso | R6 🔲 | R7 🔓**
+> Última actualización: 03/08/2026
+> Estado general: **R1 ✅ | R2 ✅ | R3 ✅ | R4 ✅ Parcial | R5 ✅ Parcial + auditoría RAG en curso | R6 🔲 Foco actual | R7 🔓 Desbloqueado**
 
 ## Por qué existe este plan
 
@@ -19,6 +19,25 @@ habitación, se revisan cañerías, electricidad y medidores.
 
 ---
 
+## Estado práctico actual (03/08/2026)
+
+El foco operativo real del proyecto pasó de expansión a **consolidación**:
+router, memoria, tools y documentación alineada con el código. [file:131][file:133]
+
+Hoy el principal problema práctico no es “falta de features”, sino que
+algunas consultas simples todavía responden de forma genérica o poco útil,
+especialmente en el carril `memory`, donde la síntesis breve puede degradarse
+a fallback y perder intención específica. [file:131]
+
+Por eso, el orden real de trabajo queda así:
+
+1. Endurecer comportamiento de router y memoria para consultas simples.
+2. Hacer tools más previsibles y auditables.
+3. Mantener la base documental alineada con el estado real.
+4. Recién después, evaluar cambios de modelo.
+
+---
+
 ## Mapa de fases
 
 | Fase | Título | Prioridad | Estado |
@@ -28,14 +47,14 @@ habitación, se revisan cañerías, electricidad y medidores.
 | R3 | Evaluación real del sistema | 🟠 Intermedio | ✅ COMPLETO |
 | R4 | Robustecer memoria por capas | 🔴→🟠 F/I | ✅ Parcial |
 | R5 | Robustecer RAG + auditoría base documental | 🟠 Intermedio | ✅ Parcial — auditoría activa |
-| R6 | Tools seguras y previsibles | 🟠 Intermedio | 🔲 Pendiente |
+| R6 | Tools seguras y previsibles | 🟠 Intermedio | 🔲 Pendiente — **foco actual** |
 | R7 | Preparar cambios futuros de modelo | 🟡 Avanzado | 🔓 DESBLOQUEADO |
 
 ---
 
 ## R1 — Endurecer contratos internos
 
-**Prioridad**: 🔴 Fundamental
+**Prioridad**: 🔴 Fundamental  
 **Estado**: ✅ COMPLETO — cerrado 19/05/2026
 
 ### Qué se implementó
@@ -62,7 +81,7 @@ pytest tests/test_memory_layer.py -v
 
 ## R2 — Observabilidad completa
 
-**Prioridad**: 🔴 Fundamental
+**Prioridad**: 🔴 Fundamental  
 **Estado**: ✅ COMPLETO — infraestructura lista; baseline numérico se genera con uso real
 
 ### Qué se implementó
@@ -76,6 +95,7 @@ pytest tests/test_memory_layer.py -v
 - Tasa "respuesta con evidencia" visible en `show_metrics.py` (R2-D)
 - Aging del caché: entradas > 7 días se recalculan (R2-E)
 
+
 ### Métricas objetivo (a validar con uso real)
 
 | Métrica | Objetivo |
@@ -88,16 +108,40 @@ pytest tests/test_memory_layer.py -v
 
 ### Validación
 
-```powershell
+powershell
 python show_metrics.py
 # Esperado: tabla con tiempos por carril, % cache hit, top docs
-```
 
+### R2-F — Bug de instrumentación: tiempos en 0ms (04/08/2026)
+
+**Estado**: 🔲 Pendiente
+
+`show_metrics.py` reporta 0ms en todos los campos de tiempo (Total, LLM,
+Retrieval, Fidelity) a pesar de tener 381 turnos registrados en
+`storage/metrics.jsonl`. La distribución por carril y el conteo de turnos
+sí funcionan correctamente — el problema es específico de los campos de
+duración.
+
+**Hipótesis a verificar**:
+
+- `record_turn()` no está guardando los campos de duración con el nombre
+  correcto, o
+- `show_metrics.py` los está leyendo con una clave distinta a la que
+  realmente se guarda en el JSON.
+
+**Por qué importa**: sin tiempos reales, no se puede comparar el impacto
+de cambios como `num_predict` (150→512, ver commit `bd2c6383`) ni evaluar
+modelos alternativos con el protocolo de R7.
+
+**Archivo a revisar**: `app/metrics.py` (función `record_turn`) y
+`show_metrics.py` (función de agregación de tiempos).
+
+---
 ---
 
 ## R3 — Evaluación real del sistema
 
-**Prioridad**: 🟠 Intermedio
+**Prioridad**: 🟠 Intermedio  
 **Estado**: ✅ COMPLETO — cerrado 19/05/2026 con run_eval.py
 
 ### Qué se implementó
@@ -112,25 +156,30 @@ python show_metrics.py
 ### Cómo correr
 
 ```powershell
-python run_eval.py             # reporte en terminal
-python run_eval.py --verbose   # cada caso detallado
-python run_eval.py --json      # salida JSON para CI
+python run_eval.py          # reporte en terminal
+python run_eval.py --verbose
+python run_eval.py --json
 ```
 
 ### Criterio de "done" verificado
 
-```
-Routing Matrix (27 casos)   27/27
+```text
+Routing Matrix (28 casos)   28/28
 Batería 20 preguntas        20/20
 ────────────────────────────────
-TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
+TOTAL : 48/48 — SISTEMA HABILITADO PARA R7
 ```
+
+**Nota (04/08/2026)**: el conteo subió de 27 a 28 casos en routing matrix
+en algún momento entre el cierre original de R3 y hoy. Confirmado con
+`run_eval.py --verbose` — revisar `test_routing_matrix.py` si se quiere
+saber qué caso se agregó y documentarlo.
 
 ---
 
 ## R4 — Robustecer memoria por capas
 
-**Prioridad**: 🔴→🟠 Fundamental a Intermedio
+**Prioridad**: 🔴→🟠 Fundamental a Intermedio  
 **Estado**: ✅ Parcial — capas existen y `MemoryType` está implementado, falta composición explícita
 
 ### Ya implementado ✅
@@ -150,9 +199,15 @@ TOTAL : 47/47 — SISTEMA HABILITADO PARA R7
 | R4-C | Test: composición de capas no excede límite de tokens | `tests/test_memory_layer.py` | Bajo |
 | R4-D | Alinear `ProfileData` en `schemas.py` con claves reales de `profile.json` (`user_name`, `user_level`, `project_type`) | `app/schemas.py` | Bajo |
 
+### Nota operativa 03/08/2026
+
+R4 sigue siendo relevante porque el fallo práctico actual del carril `memory`
+sugiere que la composición entre intención del usuario, estado de trabajo y
+respuesta sintetizada todavía no está suficientemente afinada. [file:131]
+
 ### Ejemplo de mezcla de capas (R4-A)
 
-```
+```text
 Pregunta: "¿qué aprendí la sesión pasada y cuál es el foco actual?"
 
 Hoy: heurística (puede responder mal o mezclar)
@@ -165,8 +220,8 @@ Después de R4-A:
 
 ## R5 — Robustecer RAG + auditoría base documental
 
-**Prioridad**: 🟠 Intermedio
-**Estado**: ✅ Parcial — MMR, fidelity_check y exclusiones implementados. Auditoría de docs en curso (25/05/2026).
+**Prioridad**: 🟠 Intermedio  
+**Estado**: ✅ Parcial — MMR, fidelity_check y exclusiones implementados. Auditoría de docs en curso.
 
 ### Ya implementado ✅
 
@@ -186,11 +241,11 @@ Después de R4-A:
 | R5-B | Reporte "top docs más recuperados" para detectar ruido | `show_metrics.py` | Bajo | Media |
 | R5-C | Evaluar retrieval con consultas fijas por categoría | `run_eval.py` | Bajo | Media |
 | R5-D | Revisar chunking solo si hay fallos repetidos detectados por R5-C | `indexacion.py` | Medio | Baja |
-| **R5-E** | **Excluir `chroma-introduccion.md` y `chroma-queries.md` del índice (scraping)** | `indexacion.py` | Bajo | **Alta** |
-| **R5-F** | **Verificar si `ollama-api.md` (56KB) está indexado y excluirlo si es así** | `indexacion.py` | Bajo | **Alta** |
-| **R5-G** | **Verificar e indexar `paper-lightmem-resumen.md`** | `indexacion.py` | Bajo | **Alta** |
-| **R5-H** | **Verificar indexación de los 6 ADRs** | `indexacion.py` | Bajo | Media |
-| **R5-I** | **Actualizar tabla base documental en `arquitectura_actual.md`** con lista real de indexados | `data/docs/proyecto/arquitectura_actual.md` | Bajo | **Alta** |
+| R5-E | Excluir `chroma-introduccion.md` y `chroma-queries.md` del índice (scraping) | `indexacion.py` | Bajo | Alta |
+| R5-F | Verificar si `ollama-api.md` (56KB) está indexado y excluirlo si es así | `indexacion.py` | Bajo | Alta |
+| R5-G | Verificar e indexar `paper-lightmem-resumen.md` | `indexacion.py` | Bajo | Alta |
+| R5-H | Verificar indexación de los 6 ADRs | `indexacion.py` | Bajo | Media |
+| R5-I | Actualizar tabla base documental en `arquitectura_actual.md` con lista real de indexados | `data/docs/proyecto/arquitectura_actual.md` | Bajo | Alta |
 
 ### Documentos auditados el 25/05/2026
 
@@ -202,7 +257,7 @@ Después de R4-A:
 | `paper-memgpt-resumen.md` | ✅ Actualizado | Sección de implementación alineada con Fase 8 |
 | `chroma-uso-proyecto.md` | ✅ Creado nuevo | Documento curado sobre Chroma para RAG |
 | `paper-lightmem-resumen.md` | ✅ Excelente | Verificar e indexar urgente |
-| `arquitectura-memoria.md` | ✅ El mejor del corpus | Indexado (citado en Telegram). Agregar a tabla base. |
+| `arquitectura-memoria.md` | ✅ El mejor del corpus | Indexado (citado en Telegram). Agregar a tabla base |
 | `langchain-embeddings.md` | ✅ OK | Mantener |
 | `langchain-retriever.md` | ✅ OK | Mantener |
 | `langchain-rag-concepto.md` | ✅ OK | Mantener |
@@ -211,8 +266,17 @@ Después de R4-A:
 
 ## R6 — Tools seguras y previsibles
 
-**Prioridad**: 🟠 Intermedio
+**Prioridad**: 🟠 Intermedio  
 **Estado**: 🔲 Pendiente — `tool_registry.py` existe, falta clasificación por riesgo y contratos de retorno
+
+### Por qué sube de prioridad ahora
+
+El uso real mostró que las **tools simples y previsibles** están siendo más
+útiles que la síntesis libre del LLM en varias consultas operativas. [file:131]
+
+Por eso R6 pasa a ser el foco principal de consolidación: si las tools leen,
+escriben y devuelven resultados de forma clara y auditada, Lautaro sigue siendo
+útil incluso cuando el carril de síntesis falle. [file:131]
 
 ### Pendiente 🔲
 
@@ -234,11 +298,19 @@ Después de R4-A:
 | `tool_complete_task` | Medio | Escritura segura |
 | `tool_update_work_state` | Medio | Escritura segura |
 
+### Micro-prioridad operativa
+
+Antes de expandir tools nuevas, conviene endurecer estas tres cosas:
+
+1. retorno consistente,
+2. logging de efectos laterales,
+3. clasificación clara de riesgo.
+
 ---
 
 ## R7 — Preparar cambios futuros de modelo
 
-**Prioridad**: 🟡 Avanzado
+**Prioridad**: 🟡 Avanzado  
 **Estado**: 🔓 DESBLOQUEADO — R1–R3 completos desde 19/05/2026
 
 ### Prerequisito cumplido ✅
@@ -255,6 +327,31 @@ Después de R4-A:
 | R7-B | Abstraer nombre del modelo como constante en `config.py` | `app/config.py` | Bajo |
 | R7-C | Documentar proceso de comparación de modelos | `docs/proyecto/cambio-modelo.md` | Bajo |
 
+### Modelos evaluados / pendientes (04/08/2026)
+
+- `llama3.2:latest` (3B) — **modelo activo**. Sin thinking tokens,
+  compatible con el pipeline actual. Confirmado 48/48 en `run_eval.py`
+  con `num_predict=512`.
+- `qwen3:8b` — probado manualmente en Ollama (responde bien standalone),
+  no integrado en Lautaro. Pendiente:
+  - parsear bloques `<think>...</think>` antes de `fidelity_check`,
+  - confirmar que `num_predict=512` (ver commit `bd2c6383`) es
+    suficiente para el thinking + la respuesta.
+- `gemma4:e2b` / `gemma4:latest` — probados manualmente. Mismas
+  pendientes que Qwen3 (thinking tokens sin parsear). `gemma4:latest`
+  (9.6GB) es demasiado pesado para 16GB RAM en CPU-only — usar `e2b`
+  si se retoma la evaluación.
+
+**Hallazgo 04/08/2026**: el fallo original de Qwen3/Gemma4 puede deberse
+a `num_predict` insuficiente (150) sumado al gasto de tokens en el bloque
+`<think>`. Antes de reintentar esos modelos, ya se subió `num_predict` a
+512 (commit `bd2c6383`) — falta confirmar si con eso alcanza o si además
+se necesita parseo explícito del bloque de razonamiento.
+
+**Regla**: no cambiar `MODEL_NAME` en `config.py` sin (1) baseline con
+`llama3.2` actual, (2) parseo de thinking tags si el modelo los usa,
+(3) nuevo `run_eval.py` para comparar.
+
 ### Cómo comparar modelos (cuando llegue el momento)
 
 1. Correr `python run_eval.py --json > baseline_llama32.json` con modelo actual
@@ -270,21 +367,22 @@ o de la arquitectura.
 
 ---
 
-## Orden recomendado — estado actualizado 25/05/2026
+## Orden recomendado — actualizado 03/08/2026
 
-```
+```text
 ✅ R1 — Contratos internos
-✅ R2 — Observabilidad (infraestructura lista, baseline con uso real)
-✅ R3 — Evaluación 47 casos con run_eval.py
-         ↓
-R4-D    (alinear ProfileData en schemas.py)               ← micro-tarea, riesgo bajo
-R5-E/F  (excluir docs scraping de indexacion.py)          ← URGENTE antes de re-indexar
-R5-G    (verificar e indexar paper-lightmem)              ← alta prioridad
-R4-A/B  (composición de capas mixtas)                     ← siguiente grande
-R5-A/B  (auditabilidad RAG en métricas)                   ← en paralelo con R4
-R6-A/B  (tools seguras)
-         ↓
-R7      (comparar modelos con baseline)                   ← DESBLOQUEADO
+✅ R2 — Observabilidad
+✅ R3 — Evaluación
+        ↓
+R4-D    (alinear ProfileData en schemas.py)                ← micro-tarea, riesgo bajo
+R5-E/F  (excluir docs scraping de indexacion.py)           ← urgente antes de re-indexar
+R5-G    (verificar e indexar paper-lightmem)               ← alta prioridad
+R4-A/B  (composición de capas mixtas)                      ← siguiente grande de memoria
+R6-A/B  (tools seguras + contrato de retorno)              ← foco actual
+B-01/B-02 (router: exit / definiciones que caen mal)       ← hardening inmediato
+R5-A/B  (auditabilidad RAG en métricas)                    ← en paralelo
+        ↓
+R7      (comparar modelos con baseline)                    ← después de consolidar
 ```
 
 ---
@@ -295,4 +393,14 @@ R7      (comparar modelos con baseline)                   ← DESBLOQUEADO
 - ❌ Re-indexar sin excluir primero `chroma-introduccion.md`, `chroma-queries.md` y `ollama-api.md`
 - ❌ Migrar a SQLite antes de que episodios superen ~500 entradas
 - ❌ Agregar multiagente antes de que un solo agente sea estable y medible
-- ❌ Agregar nuevas skills de Fase 9+ antes de completar R4–R5
+- ❌ Agregar nuevas skills o fases futuras antes de consolidar R4–R6
+
+---
+
+## Buenas prácticas de ejecución
+
+- Usa `venv` siempre activo antes de probar cambios.
+- Haz commits pequeños y con intención clara.
+- Mantén documentación y código alineados el mismo día del cambio.
+- Verifica con una prueba mínima antes de seguir a otra capa.
+- No automatices acciones sensibles sin confirmación humana.

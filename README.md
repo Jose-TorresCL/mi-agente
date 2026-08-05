@@ -223,7 +223,49 @@ El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
 ---
 
 ## Herramientas Disponibles (5)
+---
 
+### Integración con bot_trading (mercado cripto)
+
+Lautaro se integra con el proyecto externo `bot_trading` para consultar precio,
+indicadores y señal de mercado de criptomonedas de forma segura. [docs/integracion_bot_trading.md]
+
+**Características:**
+
+- Usa un wrapper dedicado `app/tools_trading.py` que llama a
+  `bot_trading/consulta_mercado.py` vía `subprocess`, sin importar módulos internos
+  del bot.
+- Mantiene separación de entornos: Lautaro usa su `.venv` y `bot_trading` el suyo,
+  evitando conflictos de dependencias.
+- Devuelve un snapshot técnico completo: símbolo, timeframe, precio, señal
+  (BUY/SELL/HOLD), RSI, ATR y EMAs, más alertas simples de contexto alcista/bajista.
+- Se enruta mediante el carril `tool_analizar_mercado` en `app/tool_registry.py`,
+  activado por keywords como `mercado`, `precio`, `btc`, `bitcoin`, `eth`,
+  `trading`, `binance`, `cripto`.
+
+**Ejemplo de uso (CLI):**
+
+```bash
+python chat.py
+# En la sesión:
+Analiza el mercado de BTC
+```
+
+```text
+📊 BTCUSDT — 1m
+Precio: $63,768.08
+Señal: 🟡 HOLD
+RSI: 41.1
+ATR: 20.03
+EMA rápida: 63,780.64
+EMA lenta: 63,796.01
+
+Alertas:
+📉 EMA rápida < EMA lenta — contexto bajista
+```
+
+> Detalles completos de esta integración (paths, manejo de errores, pruebas
+> manuales) están documentados en `docs/integracion_bot_trading.md`.
 El agente puede ejecutar estas herramientas sin pasar por el LLM:
 
 - `tool_save_fact(content)` — Guarda hecho en `project_facts.json`
@@ -261,7 +303,7 @@ python -m app.tool_plan_retoma            # plan completo
 Lautaro puede consultar mercado de criptomonedas delegando en **`bot_trading`**, un
 proyecto externo con su propio repositorio y su propio `.venv`. La decisión completa
 (alternativas, riesgos y mitigaciones) está en
-[ADR-010](docs/adr/ADR-010-integracion-bot_trading.md).
+[ADR-010](data/docs/adr/ADR-010-integracion-bot_trading.md).
 
 > **Estado:** el código de la integración (`app/tools_trading.py`, carril
 > `tool_analizar_mercado`) vive hoy en la rama `feat/integracion-bot-trading`.
@@ -483,20 +525,20 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 
 | Documento | Contenido |
 |---|---|
-| [ADR-001](docs/adr/ADR-001-router-hibrido.md) | Router híbrido 3 capas |
-| [ADR-002](docs/adr/ADR-002-memoria-en-capas.md) | Memoria en capas y tipos formales |
-| [ADR-003](docs/adr/ADR-003-memory-manager.md) | memory_manager como guardián único |
-| [ADR-004](docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
-| [ADR-005](docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
-| [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
-| [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
-| [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
-| [ADR-009](docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
-| [ADR-010](docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
+| [ADR-001](data/docs/adr/ADR-001-router-hibrido.md) | Router híbrido 3 capas |
+| [ADR-002](data/docs/adr/ADR-002-memoria-en-capas.md) | Memoria en capas y tipos formales |
+| [ADR-003](data/docs/adr/ADR-003-memory-manager.md) | memory_manager como guardián único |
+| [ADR-004](data/docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
+| [ADR-005](data/docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
+| [ADR-006](data/docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
+| [ADR-007](data/docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
+| [ADR-008](data/docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
+| [ADR-009](data/docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
+| [ADR-010](data/docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
 | [Plan de retoma](analysis/retoma_plan.json) | Auditoría de documentación y próximas acciones (leíble con `tool_plan_retoma`) |
-| [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
-| [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
-| [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
+| [Visión](data/docs/proyecto/vision-agente.md) | Hoja de ruta del proyecto |
+| [Arquitectura de memoria](data/docs/proyecto/arquitectura-memoria.md) | Detalle de las 4 capas |
+| [Hardware y modelos](data/docs/proyecto/hardware-modelos.md) | Modelos compatibles con el hardware |
 
 ---
 

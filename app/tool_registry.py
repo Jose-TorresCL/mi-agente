@@ -1,4 +1,7 @@
-"""Registro centralizado de tools — B4 / R6-A
+from __future__ import annotations
+
+"""
+Registro centralizado de tools — B4 / R6-A
 
 Cada entrada en TOOLS tiene:
   fn:          La función de app/tools.py a invocar.
@@ -8,9 +11,8 @@ Cada entrada en TOOLS tiene:
                READ   → solo lectura, sin efectos secundarios.
                WRITE  → escribe en storage/ interno del agente.
                SYSTEM → accede a recursos externos.
-  handler:     Función (user_input: str) -> str con toda la lógica de parseo
-               y construcción de respuesta. Retorna str para compatibilidad
-               con intelligence.py (via dispatch_tool_str).
+  handler:     Función (user_input: str) -> str | ToolResult con toda la lógica
+               de parseo y construcción de respuesta.
 
 API pública (R6-A):
   dispatch_tool(carril, user_input) -> ToolResult | None
@@ -21,7 +23,8 @@ API pública (R6-A):
       Usar en intelligence.py y cualquier caller que espere str.
 
 Convención:
-  - Los handlers reciben el user_input crudo y retornan la respuesta final.
+  - Los handlers reciben el user_input crudo.
+  - Pueden retornar str o ToolResult.
   - suggest_next_step() es responsabilidad del handler de tool_update_work_state.
   - Cualquier fallo interno debe retornar un ToolResult con ok=False, nunca lanzar.
 
@@ -29,7 +32,6 @@ Regla de seguridad (R6-A):
   dispatch_tool() rechaza tools con risk=SYSTEM a menos que se agregue
   soporte explícito de confirmación humana (no implementado aún).
 """
-from __future__ import annotations
 
 import re
 
@@ -56,12 +58,19 @@ from app import memory_manager
 
 # ── Handlers ──────────────────────────────────────────────
 
+
 def _handle_save_fact(user_input: str) -> str:
     prefixes = [
-        "guarda como hecho que", "guarda como hecho:", "guarda como hecho",
-        "guardar hecho que", "registra que", "anota que",
-        "guarda el hecho que", "registra el hecho que",
-        "guarda esto como hecho:", "guarda esto como hecho",
+        "guarda como hecho que",
+        "guarda como hecho:",
+        "guarda como hecho",
+        "guardar hecho que",
+        "registra que",
+        "anota que",
+        "guarda el hecho que",
+        "registra el hecho que",
+        "guarda esto como hecho:",
+        "guarda esto como hecho",
     ]
     content = user_input.strip()
     for prefix in prefixes:
@@ -80,11 +89,22 @@ def _handle_save_fact(user_input: str) -> str:
 def _handle_create_task(user_input: str) -> str:
     text = user_input.lower()
     for prefix in [
-        "crea una tarea:", "crea una tarea", "crear tarea:", "crear tarea",
-        "agrega una tarea:", "agrega una tarea", "nueva tarea:", "nueva tarea",
-        "áñade una tarea:", "áñade una tarea", "anota una tarea:", "anota una tarea",
-        "registra una tarea:", "registra una tarea",
-        "agregar tarea:", "agregar tarea",
+        "crea una tarea:",
+        "crea una tarea",
+        "crear tarea:",
+        "crear tarea",
+        "agrega una tarea:",
+        "agrega una tarea",
+        "nueva tarea:",
+        "nueva tarea",
+        "áñade una tarea:",
+        "áñade una tarea",
+        "anota una tarea:",
+        "anota una tarea",
+        "registra una tarea:",
+        "registra una tarea",
+        "agregar tarea:",
+        "agregar tarea",
     ]:
         if text.startswith(prefix):
             raw = user_input[len(prefix):].strip()
@@ -105,19 +125,110 @@ def _handle_create_task(user_input: str) -> str:
                 for p in ["alta", "high", "baja", "low", "media", "medium"]:
                     if raw.lower().endswith(p):
                         raw = raw[:-len(p)].strip().rstrip(",;")
-                        priority = {"alta": "high", "baja": "low", "media": "medium"}.get(p, p)
+                        priority = {"alta": "high", "baja": "low", "media": "medium"}.get(
+                            p, p
+                        )
                         break
 
             return tool_result_to_str(tool_create_task(title=raw, priority=priority))
+
     return tool_result_to_str(tool_create_task(title=user_input, priority="medium"))
 
 
 def _handle_complete_task(user_input: str) -> str:
     task_id = extract_task_id(user_input)
-    if not task_id:
-        return "No encontré el ID de la tarea. Indícalo así: 'marca T-002 como completada'"
-    return tool_result_to_str(tool_complete_task(task_id))
+    if task_id:
+        return tool_result_to_str(tool_complete_task(task_id))
 
+    text = user_input.lower()
+
+    # 1) Casos especiales: última / penúltima
+    is_last = any(
+        word in text
+        for word in ["ultima", "última", "última tarea", "ultima tarea"]
+    )
+    is_penultimate = any(
+        word in text
+        for word in ["penultima", "penúltima", "penúltima tarea", "penultima tarea"]
+    )
+
+    tasks_data = memory_manager.get_tasks()
+    pending = [
+        t for t in tasks_data.get("tasks", [])
+        if t.get("status") not in ("done", "completed")
+    ]
+
+    if is_last or is_penultimate:
+        if not pending:
+            return "No hay tareas pendientes para completar."
+
+        if is_penultimate and len(pending) < 2:
+            return (
+                "No puedo completar la penúltima tarea: solo hay una "
+                "tarea pendiente registrada."
+            )
+
+        if is_last:
+            target_index = len(pending) - 1
+        else:  # penúltima
+            target_index = len(pending) - 2
+
+        resolved_task = pending[target_index]
+        resolved_id = resolved_task.get("id", "")
+        resolved_title = resolved_task.get("title", "(sin título)")
+
+        tool_text = tool_result_to_str(tool_complete_task(resolved_id))
+        return f"✅ Tarea {resolved_id} marcada como completada: {resolved_title}"
+
+    # 2) Ordinales explícitos hasta quinto
+    ordinal_map = {
+        "primera": 0,
+        "primer": 0,
+        "1ra": 0,
+        "segunda": 1,
+        "segundo": 1,
+        "2da": 1,
+        "tercera": 2,
+        "tercer": 2,
+        "3ra": 2,
+        "cuarta": 3,
+        "cuarto": 3,
+        "4ta": 3,
+        "quinta": 4,
+        "quinto": 4,
+        "5ta": 4,
+    }
+
+    selected_index = None
+    for word, idx in ordinal_map.items():
+        if re.search(rf"\b{re.escape(word)}\b", text):
+            selected_index = idx
+            break
+
+    if selected_index is not None:
+        if not pending:
+            return "No hay tareas pendientes para completar."
+
+        if selected_index >= len(pending):
+            return (
+                f"No encontré una tarea pendiente en la posición {selected_index + 1}. "
+                f"Ahora mismo hay {len(pending)} tareas pendientes."
+            )
+
+        resolved_task = pending[selected_index]
+        resolved_id = resolved_task.get("id", "")
+        resolved_title = resolved_task.get("title", "(sin título)")
+
+        tool_text = tool_result_to_str(tool_complete_task(resolved_id))
+        return f"✅ Tarea {resolved_id} marcada como completada: {resolved_title}"
+
+    return (
+        "No pude identificar qué tarea completar. "
+        "Prueba con un ID ('marca T-002 como completada') "
+        "o con un ordinal ('marca la primera tarea como completada', "
+        "'marca la última tarea como completada', "
+        "'marca la penúltima tarea como completada')."
+    )
 
 def _handle_update_work_state(user_input: str) -> str:
     result = tool_update_work_state(user_input)
@@ -212,7 +323,7 @@ def _handle_plan_retoma(user_input: str) -> str:
     return tool_result_to_str(tool_plan_retoma(seccion))
 
 
-def _handle_analizar_mercado(user_input: str) -> str:
+def _handle_analizar_mercado(user_input: str) -> ToolResult:
     """Extrae el símbolo del texto libre y llama a tool_analizar_mercado.
 
     Normaliza: 'btc', 'bitcoin', 'BTC', 'BTCUSDT' → todo pasa por _normalizar_simbolo.
@@ -222,77 +333,83 @@ def _handle_analizar_mercado(user_input: str) -> str:
       mercado, precio, btc, bitcoin, eth, ethereum, señal, indicadores,
       trading, binance, cripto, criptomoneda
     """
-    from app.tools_trading import _normalizar_simbolo
-
-    # Buscar ticker en el texto
     u = user_input.lower()
-    symbol = "BTCUSDT"  # fallback
+    symbol = "BTCUSDT"
+
     for term, ticker in [
-        ("btcusdt", "BTCUSDT"), ("ethusdt", "ETHUSDT"), ("bnbusdt", "BNBUSDT"),
-        ("bitcoin", "BTCUSDT"), ("ethereum", "ETHUSDT"),
-        ("btc", "BTCUSDT"), ("eth", "ETHUSDT"), ("bnb", "BNBUSDT"),
-        ("sol", "SOLUSDT"), ("solana", "SOLUSDT"),
-        ("xrp", "XRPUSDT"), ("ada", "ADAUSDT"), ("doge", "DOGEUSDT"),
+        ("btcusdt", "BTCUSDT"),
+        ("ethusdt", "ETHUSDT"),
+        ("bnbusdt", "BNBUSDT"),
+        ("bitcoin", "BTCUSDT"),
+        ("ethereum", "ETHUSDT"),
+        ("btc", "BTCUSDT"),
+        ("eth", "ETHUSDT"),
+        ("bnb", "BNBUSDT"),
+        ("sol", "SOLUSDT"),
+        ("solana", "SOLUSDT"),
+        ("xrp", "XRPUSDT"),
+        ("ada", "ADAUSDT"),
+        ("doge", "DOGEUSDT"),
     ]:
         if term in u:
             symbol = ticker
             break
 
-    result = tool_analizar_mercado(symbol=symbol)
-    return tool_result_to_str(result)
+    return tool_analizar_mercado(symbol)
 
 
 # ── Registro ────────────────────────────────────────────────
 
+
 TOOLS: dict[str, dict] = {
     "tool_list_files": {
-        "fn":          list_project_files,
-        "carril":      "tool_list_files",
+        "fn": list_project_files,
+        "carril": "tool_list_files",
         "descripcion": "Lista archivos del proyecto",
-        "risk":        RiskLevel.READ,
-        "handler":     _handle_list_files,
+        "risk": RiskLevel.READ,
+        "handler": _handle_list_files,
     },
     "tool_read_file": {
-        "fn":          read_project_file,
-        "carril":      "tool_read_file",
+        "fn": read_project_file,
+        "carril": "tool_read_file",
         "descripcion": "Lee el contenido de un archivo",
-        "risk":        RiskLevel.READ,
-        "handler":     _handle_read_file,
+        "risk": RiskLevel.READ,
+        "handler": _handle_read_file,
     },
     "tool_save_fact": {
-        "fn":          tool_save_fact,
-        "carril":      "tool_save_fact",
+        "fn": tool_save_fact,
+        "carril": "tool_save_fact",
         "descripcion": "Guarda un hecho en project_facts.json",
-        "risk":        RiskLevel.WRITE,
-        "handler":     _handle_save_fact,
+        "risk": RiskLevel.WRITE,
+        "handler": _handle_save_fact,
     },
     "tool_create_task": {
-        "fn":          tool_create_task,
-        "carril":      "tool_create_task",
+        "fn": tool_create_task,
+        "carril": "tool_create_task",
         "descripcion": "Crea una tarea en tasks.json",
-        "risk":        RiskLevel.WRITE,
-        "handler":     _handle_create_task,
+        "risk": RiskLevel.WRITE,
+        "handler": _handle_create_task,
     },
     "tool_complete_task": {
-        "fn":          tool_complete_task,
-        "carril":      "tool_complete_task",
+        "fn": tool_complete_task,
+        "carril": "tool_complete_task",
         "descripcion": "Marca una tarea como completada",
-        "risk":        RiskLevel.WRITE,
-        "handler":     _handle_complete_task,
+        "risk": RiskLevel.WRITE,
+        "handler": _handle_complete_task,
     },
     "tool_update_work_state": {
-        "fn":          tool_update_work_state,
-        "carril":      "tool_update_work_state",
+        "fn": tool_update_work_state,
+        "carril": "tool_update_work_state",
         "descripcion": "Actualiza work_state.json",
-        "risk":        RiskLevel.WRITE,
-        "handler":     _handle_update_work_state,
+        "risk": RiskLevel.WRITE,
+        "handler": _handle_update_work_state,
     },
     "tool_set_session_goal": {
-        "fn":          memory_manager.set_session_goal,
-        "carril":      "tool_set_session_goal",
+        "fn": memory_manager.set_session_goal,
+        "carril": "tool_set_session_goal",
         "descripcion": "Guarda el objetivo de la sesión actual en work_state.json",
-        "risk":        RiskLevel.WRITE,
-        "handler":     _handle_set_session_goal,
+        "risk": RiskLevel.WRITE,
+        "handler": _handle_set_session_goal,
     },
     "tool_plan_retoma": {
         "fn":          tool_plan_retoma,
@@ -307,26 +424,38 @@ TOOLS: dict[str, dict] = {
         "secciones":   list(PLAN_RETOMA_SECCIONES),
     },
     "tool_analizar_mercado": {
-        "fn":          tool_analizar_mercado,
-        "carril":      "tool_analizar_mercado",
+        "fn": tool_analizar_mercado,
+        "carril": "tool_analizar_mercado",
         "descripcion": "Consulta precio, indicadores y señal del mercado vía bot_trading",
-        "risk":        RiskLevel.READ,   # ✅ habilitada — subprocess probado manualmente
-        "handler":     _handle_analizar_mercado,
-        "keywords":    ["mercado", "precio", "btc", "bitcoin", "eth", "ethereum",
-                        "señal", "indicadores", "trading", "binance", "cripto"],
+        "risk": RiskLevel.SYSTEM,
+        "handler": _handle_analizar_mercado,
+        "keywords": [
+            "mercado",
+            "precio",
+            "btc",
+            "bitcoin",
+            "eth",
+            "ethereum",
+            "señal",
+            "indicadores",
+            "trading",
+            "binance",
+            "cripto",
+        ],
     },
 }
 
 
 def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
-    """Despacha user_input al handler del carril indicado.
+    """
+    Despacha user_input al handler del carril indicado.
 
     R6-A: retorna ToolResult estructurado en vez de str.
 
     Seguridad: rechaza tools con risk=SYSTEM.
 
     Args:
-        carril:     Nombre del carril (ej. 'tool_save_fact').
+        carril: Nombre del carril (ej. 'tool_save_fact').
         user_input: Texto crudo del usuario.
 
     Returns:
@@ -352,12 +481,17 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
         )
 
     try:
-        result_str = entry["handler"](user_input)
+        result = entry["handler"](user_input)
+
+        if isinstance(result, dict) and "ok" in result and "message" in result:
+            return result
+
         return ToolResult(
             ok=True,
-            message=result_str,
+            message=str(result),
             tool_name=carril,
         )
+
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -365,7 +499,7 @@ def dispatch_tool(carril: str, user_input: str) -> ToolResult | None:
             error_code="INTERNAL_ERROR",
             tool_name=carril,
         )
-
+    
 
 def dispatch_tool_str(carril: str, user_input: str) -> str | None:
     """Wrapper de compatibilidad: retorna str en vez de ToolResult."""

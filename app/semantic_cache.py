@@ -83,11 +83,11 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def get_embedding(text: str) -> list[float] | None:
+def get_embedding(text: str, timeout: float | None = None) -> list[float] | None:
     """Obtiene el embedding de un texto desde Ollama, con reintentos.
 
     Bajo carga CPU (el LLM genera en paralelo), Ollama puede tardar más de
-    los 10s originales. Por eso el timeout sube a 90s y se hacen hasta
+    los 10s originales. Por eso el timeout por defecto sube a 90s y se hacen hasta
     _EMBED_RETRIES reintentos con _EMBED_RETRY_WAIT segundos de espera.
 
     El campo 'embedding' ausente en la respuesta (HTTP 200 sin contenido útil,
@@ -99,18 +99,21 @@ def get_embedding(text: str) -> list[float] | None:
     Args:
         text: Texto a embeber. No se trunca — el llamador es responsable de
               limitar la longitud si es necesario (ver _MAX_CONTEXT_CHARS en fidelity_check).
+        timeout: Timeout en segundos para esta llamada concreta. Si es None,
+                 se usa el valor por defecto _EMBED_TIMEOUT.
 
     Returns:
         Lista de floats con el vector de embedding, o None si todos los
         intentos fallaron. Nunca lanza excepciones.
     """
     last_exc: Exception | None = None
+    timeout = _EMBED_TIMEOUT if timeout is None else timeout
     for attempt in range(1 + _EMBED_RETRIES):
         try:
             resp = requests.post(
                 f"{OLLAMA_URL}/api/embeddings",
                 json={"model": MODEL_NAME, "prompt": text},
-                timeout=_EMBED_TIMEOUT,
+                timeout=timeout,
             )
             resp.raise_for_status()
             embedding = resp.json().get("embedding")

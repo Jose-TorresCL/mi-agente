@@ -16,3 +16,4 @@ data/logs/
 
 # Resultados de backtesting
 data/backtesting/
+baseline_*.json
