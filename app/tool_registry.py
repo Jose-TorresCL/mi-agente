@@ -45,6 +45,11 @@ from app.tools import (
     suggest_next_step,
     extract_task_id,
 )
+from app.tool_plan_retoma import (
+    SECCIONES as PLAN_RETOMA_SECCIONES,
+    detectar_seccion as _detectar_seccion_plan,
+    tool_plan_retoma,
+)
 from app.schemas import RiskLevel, ToolResult, tool_result_to_str
 from app import memory_manager
 
@@ -193,6 +198,20 @@ def _handle_set_session_goal(user_input: str) -> str:
     return f"✅ Objetivo de sesión guardado: '{content}'"
 
 
+def _handle_plan_retoma(user_input: str) -> str:
+    """Devuelve el plan de retoma completo o la sección que nombre el usuario.
+
+    Regla de ambigüedad: si la frase no nombra ninguna sección conocida,
+    NO es un error — se entrega el plan completo. Solo se responde
+    'no reconocí la sección' cuando el usuario pidió algo explícito que no existe.
+
+    Alias soportados (vía app.tool_plan_retoma): 'acciones'/'next_actions',
+    'recomendaciones', 'faltantes', 'validacion'/'estado', 'proximos pasos'.
+    """
+    seccion = _detectar_seccion_plan(user_input)
+    return tool_result_to_str(tool_plan_retoma(seccion))
+
+
 def _handle_analizar_mercado(user_input: str) -> str:
     """Extrae el símbolo del texto libre y llama a tool_analizar_mercado.
 
@@ -274,6 +293,18 @@ TOOLS: dict[str, dict] = {
         "descripcion": "Guarda el objetivo de la sesión actual en work_state.json",
         "risk":        RiskLevel.WRITE,
         "handler":     _handle_set_session_goal,
+    },
+    "tool_plan_retoma": {
+        "fn":          tool_plan_retoma,
+        "carril":      "tool_plan_retoma",
+        "descripcion": "Lee analysis/retoma_plan.json y devuelve el plan o una sección",
+        "risk":        RiskLevel.READ,
+        "handler":     _handle_plan_retoma,
+        # Metadatos para !ayuda y futuras UIs. El matching real del router vive
+        # en router_config.TOOL_PLAN_RETOMA_KEYWORDS con frases más específicas,
+        # para no robarle consultas a memory:tasks ni a memory:work_state.
+        "keywords":    ["plan", "retoma", "tareas", "plan_retoma"],
+        "secciones":   list(PLAN_RETOMA_SECCIONES),
     },
     "tool_analizar_mercado": {
         "fn":          tool_analizar_mercado,

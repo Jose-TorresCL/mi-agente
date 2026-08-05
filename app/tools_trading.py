@@ -31,14 +31,17 @@ from pathlib import Path
 
 from app.logger import get_logger
 from app.schemas import ToolResult
+from app.config import (
+    BOT_TRADING_PATH as BOT_DIR,
+    BOT_TRADING_PYTHON as PYTHON_BOT,
+    BOT_TRADING_SCRIPT as SCRIPT,
+    BOT_TRADING_TIMEOUT as TIMEOUT,
+)
 
 log = get_logger(__name__)
 
 # ──────────────────────────────────────────────
-BOT_DIR    = Path(r"C:\Users\lenovo\Proyectos\bot_trading")
-PYTHON_BOT = BOT_DIR / ".venv" / "Scripts" / "python.exe"
-SCRIPT     = BOT_DIR / "consulta_mercado.py"
-TIMEOUT    = 15   # segundos
+# Configuración de bot_trading cargada desde app.config
 # ──────────────────────────────────────────────
 
 _SYMBOL_MAP: dict[str, str] = {

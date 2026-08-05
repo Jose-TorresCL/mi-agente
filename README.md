@@ -54,6 +54,8 @@ mi-agente/
 │   ├── semantic_cache.py       # Caché semántica de consultas
 │   ├── llm_client.py           # Cliente Ollama unificado
 │   ├── tools.py                # Herramientas ejecutables (5)
+│   ├── tools_trading.py        # Wrapper de bot_trading (rama feat/integracion-bot-trading)
+│   ├── tool_plan_retoma.py     # Lectura de analysis/retoma_plan.json (solo lectura)
 │   ├── tool_registry.py        # Registro de herramientas disponibles
 │   ├── tool_helpers.py         # Utilidades para herramientas
 │   ├── schemas.py              # TypedDict — contratos de datos
@@ -70,17 +72,92 @@ mi-agente/
 │   └── config.py               # Configuración centralizada
 │
 ├── docs/                       # Documentación del proyecto
-│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-008)
+│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-010)
 │   ├── vision-agente.md        # Visión y hoja de ruta
 │   ├── arquitectura-memoria.md # Detalle de las 4 capas de memoria
 │   └── hardware-modelos.md     # Hardware y modelos recomendados
+│
+├── analysis/                   # Planes y auditorías en JSON
+│   └── retoma_plan.json        # Plan de retoma / auditoría de documentación
 │
 ├── data/                       # Documentos a indexar
 └── tests/                      # Tests del proyecto
 ```
 
 > `storage/` (ChromaDB e índices) y `.venv/` se generan localmente
-> y no están en el repositorio.
+> y no están en el repositorio. Excepciones versionadas a propósito:
+> `storage/project_facts.json`, `storage/workstate.json` y
+> `storage/episodic_memory.json` (este último con **un episodio semilla**
+> `type: plan_retoma`, no con memoria real).
+>
+> ⚠️ Antes de hacer pull, respalda tu memoria local. Ver
+> [Storage / Episodic memory](#storage--episodic-memory).
+
+---
+
+## Storage / Episodic memory
+
+`storage/episodic_memory.json` guarda los episodios de trabajo de Lautaro
+(qué se hizo en cada sesión). El repositorio versiona ese archivo **solo con
+un episodio semilla** (`type: plan_retoma`), no con memoria real.
+
+### El problema
+
+Como el archivo está versionado, tu copia local y la del repo compiten:
+
+- Si tienes episodios propios y haces `git pull`, git puede **abortar el merge**
+  ("local changes would be overwritten") o, si resuelves mal el conflicto,
+  **sobrescribir tus episodios**.
+- Cada sesión con Lautaro ensucia `git status` con cambios que no quieres commitear.
+
+### La receta (una sola vez por máquina)
+
+**1. Respalda antes de cualquier pull o merge**
+
+```powershell
+Copy-Item storage\episodic_memory.json storage\episodic_memory.backup.json
+```
+
+O usa el script, que además guarda una copia fechada en `storage/backups/`
+y te recuerda el paso siguiente:
+
+```powershell
+.\scripts\backup_memory.ps1
+```
+
+**2. Dile a git que ignore los cambios locales de ese archivo**
+
+```powershell
+git update-index --skip-worktree storage/episodic_memory.json
+```
+
+Desde ese momento tus episodios dejan de aparecer en `git status` y `git pull`
+ya no pelea con ellos. El flag es **local**: no viaja al repositorio ni afecta
+a nadie más.
+
+**3. Para revertirlo** (cuando quieras volver a versionar el archivo)
+
+```powershell
+git update-index --no-skip-worktree storage/episodic_memory.json
+```
+
+### Cómo verificar
+
+```powershell
+git ls-files -v storage/episodic_memory.json
+```
+
+| Salida | Significa |
+|---|---|
+| `H storage/episodic_memory.json` | rastreado normal (pull puede pisarlo) |
+| `S storage/episodic_memory.json` | `skip-worktree` activo (protegido) |
+
+> ⚠️ Con `skip-worktree` activo, un `git pull` que traiga cambios en ese archivo
+> puede fallar. Si pasa: desactiva el flag, respalda, haz pull, restaura tu
+> backup y vuelve a activar el flag.
+>
+> ⚠️ Nunca borres `storage/episodic_memory.json` sin respaldo previo:
+> es memoria real de trabajo y no se puede reconstruir.
 
 ---
 
@@ -154,6 +231,106 @@ El agente puede ejecutar estas herramientas sin pasar por el LLM:
 - `tool_complete_task(task_id)` — Marca tarea como completada
 - `tool_update_work_state(field, value)` — Actualiza `work_state.json`
 - `tool_set_session_goal(content)` — Guarda objetivo de sesión
+
+Herramientas de solo lectura añadidas después (no escriben nada):
+
+- `tool_plan_retoma(seccion=None)` — Lee `analysis/retoma_plan.json` y devuelve el plan
+  completo o una sección concreta. Claves: `validation`, `missing_sections`,
+  `recommendations`, `next_actions` (acepta alias en español: `validacion`, `faltantes`,
+  `recomendaciones`, `acciones`). Devuelve `ToolResult`; `risk = READ`.
+
+```powershell
+# Uso directo, sin pasar por el chat
+python -m app.tool_plan_retoma next_actions
+python -m app.tool_plan_retoma            # plan completo
+```
+
+  Carril registrado en `tool_registry.TOOLS["tool_plan_retoma"]` (`risk = READ`).
+  Frases que lo activan: *"plan de retoma"*, *"acciones del plan"*,
+  *"recomendaciones del plan"*, *"retomar el proyecto"*, *"auditoría de documentación"*.
+  No se usan "plan" ni "tareas" sueltos para no robarle consultas a
+  `memory:work_state` ni a `memory:tasks`.
+
+- `tool_analizar_mercado(texto)` — Consulta mercado vía `bot_trading`. Ver sección
+  [Integración con bot_trading](#integración-con-bot_trading); `risk = SYSTEM`.
+
+---
+
+## Integración con bot_trading
+
+Lautaro puede consultar mercado de criptomonedas delegando en **`bot_trading`**, un
+proyecto externo con su propio repositorio y su propio `.venv`. La decisión completa
+(alternativas, riesgos y mitigaciones) está en
+[ADR-010](docs/adr/ADR-010-integracion-bot_trading.md).
+
+> **Estado:** el código de la integración (`app/tools_trading.py`, carril
+> `tool_analizar_mercado`) vive hoy en la rama `feat/integracion-bot-trading`.
+> Esta sección y ADR-010 documentan esa decisión desde `feat/perplexity-sync`.
+
+### Qué hace
+
+`tool_analizar_mercado(texto)` devuelve precio, señal (BUY/SELL/HOLD) e indicadores
+(RSI, ATR, EMA rápida y lenta) del símbolo detectado, más alertas simples
+(sobreventa/sobrecompra, cruce de EMAs).
+
+### Cómo se comunican
+
+```text
+Usuario → router.py → tool_registry.py → app/tools_trading.py
+                                              ↓ subprocess (timeout 15s)
+                          bot_trading/.venv/Scripts/python.exe
+                          consulta_mercado.py --symbol BTCUSDT --modo full
+                                              ↓ JSON por stdout
+                              app/tools_trading.py → ToolResult → respuesta
+```
+
+| Aspecto | Valor |
+|---|---|
+| Mecanismo | `subprocess` (sin imports cruzados entre proyectos) |
+| Contrato | una línea JSON por `stdout` |
+| Timeout | 15 s duro |
+| Entorno | copia de `os.environ` + `PYTHONUTF8=1`, `cwd` = carpeta del bot |
+| Nivel de riesgo | `RiskLevel.SYSTEM` (accede a recursos externos) |
+| Alcance | **solo lectura de mercado — no ejecuta órdenes** |
+| Símbolos | BTC, ETH, BNB, SOL, XRP, ADA, DOGE (`btc` → `BTCUSDT`; fallback `BTCUSDT`) |
+
+### Ejemplos
+
+```text
+Tú: Analiza el mercado de BTC
+Agente: 📊 BTCUSDT — 1m
+        Precio: $63,120.45
+        Señal: 🟡 HOLD
+        RSI: 48.3 · ATR: 112.40 · EMA rápida/lenta
+        Alertas: 📈 EMA rápida > EMA lenta — contexto alcista
+```
+
+### Riesgos y mitigaciones (resumen)
+
+| Riesgo | Mitigación |
+|---|---|
+| Binance caído / sin internet | El bot cae a su caché local y la respuesta se marca `[caché]` |
+| El bot se cuelga | Timeout de 15 s → `error_code="TIMEOUT"`, Lautaro sigue vivo |
+| JSON inválido o stdout sucio | Se toma la última línea `{...}`; si falla → `INVALID_JSON` |
+| Bot o script ausente | `BOT_NOT_FOUND` / `SCRIPT_NOT_FOUND` con mensaje claro |
+| Ejecución no autorizada de órdenes | La tool solo consulta; `dispatch_tool()` rechaza `SYSTEM` sin habilitación explícita |
+| Fuga de claves de Binance | Las claves viven en el `.env` de `bot_trading`; Lautaro no las lee ni las loguea |
+
+Ningún fallo del bot lanza excepción hacia Lautaro: todo se traduce a
+`ToolResult(ok=False, error_code=...)`.
+
+### Verificación rápida
+
+```powershell
+# 1. El bot responde por sí solo (dentro de bot_trading)
+python consulta_mercado.py --symbol BTCUSDT --modo full
+
+# 2. El wrapper traduce bien (dentro de mi-agente)
+python -c "from app.tools_trading import tool_analizar_mercado; r = tool_analizar_mercado('btc'); print(r['ok'], r.get('error_code')); print(r['message'])"
+```
+
+Esperado: `ok=True` y un bloque `📊 BTCUSDT`. Si el bot no está disponible,
+`ok=False` con un `error_code` legible — nunca un traceback.
 
 ---
 
@@ -258,6 +435,18 @@ python chat.py
 | Variable | Requerida | Descripción |
 |---|---|---|
 | `TELEGRAM_TOKEN` | Solo Telegram | Token del bot de Telegram |
+| `BOT_TRADING_PATH` | Solo trading | Carpeta raíz de **`bot_trading`**. Default en `app/config.py`; sobrescribible por `.env` |
+| `BOT_TRADING_PYTHON` | No | Intérprete del bot. Default: `<BOT_TRADING_PATH>/.venv/Scripts/python.exe` |
+| `BOT_TRADING_SCRIPT` | No | Script a ejecutar. Default: `<BOT_TRADING_PATH>/consulta_mercado.py` |
+| `BOT_TRADING_TIMEOUT` | No | Timeout duro del subprocess en segundos (default: `15`) |
+| `BINANCE_API_KEY` | Solo trading | Clave de API de Binance — vive en el `.env` de **`bot_trading`**, no en este repo |
+| `BINANCE_API_SECRET` | Solo trading | Secreto de API de Binance — ídem, nunca en `mi-agente` |
+
+Plantilla lista para copiar: [`.env.example`](.env.example) → `Copy-Item .env.example .env`.
+El `.env` real está en `.gitignore`; la plantilla no lleva secretos.
+
+> ⚠️ Las claves de Binance **no se configuran en `mi-agente`**. El subprocess hereda el
+> entorno del sistema y el bot lee su propio `.env`. Lautaro nunca lee ni loguea esas claves.
 
 Todas las demás opciones de configuración (modelos, rutas, umbrales) se encuentran en `app/config.py`.
 
@@ -302,6 +491,9 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 | [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
 | [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
 | [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
+| [ADR-009](docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
+| [ADR-010](docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
+| [Plan de retoma](analysis/retoma_plan.json) | Auditoría de documentación y próximas acciones (leíble con `tool_plan_retoma`) |
 | [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
 | [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
 | [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
@@ -315,8 +507,16 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 ✅ R2 — Dashboard de métricas con análisis de drift  
 ✅ R3 — Caché semántica + mejoras fidelity  
 ✅ R4 — Recuperación selectiva de memoria por tipo  
+✅ Integración `bot_trading` como tool externa (subprocess + JSON) — documentada en ADR-010  
+✅ Plan de retoma versionado (`analysis/retoma_plan.json`) + `tool_plan_retoma`  
 
-🔭 Próximo: pruebas integrales + definir siguiente dirección
+🔭 Próximo (consolidación antes de expandir):
+
+1. Mover rutas y timeout de `tools_trading.py` a `config.py` / `.env` (hoy son rutas absolutas de Windows)
+2. Exponer la antigüedad del dato cuando la respuesta viene de caché
+3. Métricas del carril `tool_analizar_mercado` (latencia + tasa de error)
+4. Definir el contrato de confirmación humana **antes** de cualquier tool que opere en el mercado
+5. Actualizar `docs/vision-agente.md` con el estado post-integración (ver `analysis/retoma_plan.json`)
 
 ---
 

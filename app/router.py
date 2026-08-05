@@ -51,6 +51,7 @@ from app.router_config import (
     _COMPLETE_TASK_PATTERN,
     TOOL_UPDATE_WORK_STATE_KEYWORDS,
     TOOL_SET_SESSION_GOAL_KEYWORDS,
+    TOOL_PLAN_RETOMA_KEYWORDS,
     TOOL_ANALIZAR_MERCADO_KEYWORDS,
     TOOL_UNSUPPORTED_KEYWORDS,
     MATH_KEYWORDS,
@@ -126,6 +127,9 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):         return "tool_set_session_goal"
     if any(k in q for k in TOOL_UPDATE_WORK_STATE_KEYWORDS):        return "tool_update_work_state"
     if any(k in q for k in TOOL_UNSUPPORTED_KEYWORDS):              return "unsupported"
+
+    # Antes de memoria: "plan de retoma" es más específico que "cual es el plan".
+    if any(k in q for k in TOOL_PLAN_RETOMA_KEYWORDS):              return "tool_plan_retoma"
 
     if extract_file_path(question) is not None and _has_read_verb(q):
         return "tool_read_file"

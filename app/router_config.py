@@ -197,6 +197,27 @@ TOOL_SET_SESSION_GOAL_KEYWORDS = [
     "mi meta hoy",
 ]
 
+# Carril tool_plan_retoma (lectura de analysis/retoma_plan.json).
+# Deliberadamente NO incluye "plan" ni "tareas" sueltos: esas palabras ya
+# pertenecen a memory:work_state ("cual es el plan") y memory:tasks ("tareas"),
+# y meterlas aquí le robaría consultas a carriles que ya funcionan.
+# Regla: frases específicas > palabras genéricas.
+TOOL_PLAN_RETOMA_KEYWORDS = [
+    "plan de retoma",
+    "plan retoma",
+    "plan_retoma",
+    "retoma del proyecto",
+    "retomar el proyecto",
+    "auditoria de documentacion",
+    "auditoria de la documentacion",
+    "estado de la documentacion",
+    "que me falta documentar",
+    "acciones del plan",
+    "proximas acciones del plan",
+    "recomendaciones del plan",
+    "secciones faltantes",
+]
+
 # Keywords para tool_analizar_mercado — detectan intent de consulta de mercado
 TOOL_ANALIZAR_MERCADO_KEYWORDS = [
     # Consultas directas de precio
@@ -226,6 +247,7 @@ TOOL_ANALIZAR_MERCADO_KEYWORDS = [
     "mercado cripto", "mercado crypto",
     "consulta mercado", "ver mercado",
 ]
+
 
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
@@ -304,7 +326,7 @@ MEMORY_REASONING_KEYWORDS = [
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
     "tool_create_task", "tool_complete_task", "tool_update_work_state",
-    "tool_set_session_goal", "tool_analizar_mercado",
+    "tool_set_session_goal", "tool_plan_retoma", "tool_analizar_mercado",
     "memory",
     "memory:profile", "memory:work_state", "memory:tasks",
     "memory:project_facts", "memory:episode",
@@ -338,6 +360,7 @@ __all__ = [
     "_COMPLETE_TASK_PATTERN",
     "TOOL_UPDATE_WORK_STATE_KEYWORDS",
     "TOOL_SET_SESSION_GOAL_KEYWORDS",
+    "TOOL_PLAN_RETOMA_KEYWORDS",
     "TOOL_ANALIZAR_MERCADO_KEYWORDS",
     "TOOL_UNSUPPORTED_KEYWORDS",
     "MATH_KEYWORDS",
