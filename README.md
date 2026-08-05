@@ -303,7 +303,7 @@ python -m app.tool_plan_retoma            # plan completo
 Lautaro puede consultar mercado de criptomonedas delegando en **`bot_trading`**, un
 proyecto externo con su propio repositorio y su propio `.venv`. La decisión completa
 (alternativas, riesgos y mitigaciones) está en
-[ADR-010](docs/adr/ADR-010-integracion-bot_trading.md).
+[ADR-010](data/docs/adr/ADR-010-integracion-bot_trading.md).
 
 > **Estado:** el código de la integración (`app/tools_trading.py`, carril
 > `tool_analizar_mercado`) vive hoy en la rama `feat/integracion-bot-trading`.
@@ -525,20 +525,20 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 
 | Documento | Contenido |
 |---|---|
-| [ADR-001](docs/adr/ADR-001-router-hibrido.md) | Router híbrido 3 capas |
-| [ADR-002](docs/adr/ADR-002-memoria-en-capas.md) | Memoria en capas y tipos formales |
-| [ADR-003](docs/adr/ADR-003-memory-manager.md) | memory_manager como guardián único |
-| [ADR-004](docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
-| [ADR-005](docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
-| [ADR-006](docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
-| [ADR-007](docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
-| [ADR-008](docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
-| [ADR-009](docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
-| [ADR-010](docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
+| [ADR-001](data/docs/adr/ADR-001-router-hibrido.md) | Router híbrido 3 capas |
+| [ADR-002](data/docs/adr/ADR-002-memoria-en-capas.md) | Memoria en capas y tipos formales |
+| [ADR-003](data/docs/adr/ADR-003-memory-manager.md) | memory_manager como guardián único |
+| [ADR-004](data/docs/adr/ADR-004-calidad-rag.md) | Calidad RAG: caché, fidelity y exclusiones |
+| [ADR-005](data/docs/adr/ADR-005-arquitectura-inteligencia.md) | Carriles de decisión e intelligence.py |
+| [ADR-006](data/docs/adr/ADR-006-experience-index.md) | Experience index y feedback loop |
+| [ADR-007](data/docs/adr/ADR-007-modelo-unico-vs-multi-modelo.md) | Modelo único vs multi-modelo |
+| [ADR-008](data/docs/adr/ADR-008-candidato-reemplazo-modelo.md) | Candidato de reemplazo de modelo |
+| [ADR-009](data/docs/adr/ADR-009-perplexity-sync.md) | Sincronización de documentación (feat/perplexity-sync) |
+| [ADR-010](data/docs/adr/ADR-010-integracion-bot_trading.md) | Integración de bot_trading como tool externa (subprocess + JSON) |
 | [Plan de retoma](analysis/retoma_plan.json) | Auditoría de documentación y próximas acciones (leíble con `tool_plan_retoma`) |
-| [Visión](docs/vision-agente.md) | Hoja de ruta del proyecto |
-| [Arquitectura de memoria](docs/arquitectura-memoria.md) | Detalle de las 4 capas |
-| [Hardware y modelos](docs/hardware-modelos.md) | Modelos compatibles con el hardware |
+| [Visión](data/docs/proyecto/vision-agente.md) | Hoja de ruta del proyecto |
+| [Arquitectura de memoria](data/docs/proyecto/arquitectura-memoria.md) | Detalle de las 4 capas |
+| [Hardware y modelos](data/docs/proyecto/hardware-modelos.md) | Modelos compatibles con el hardware |
 
 ---
 

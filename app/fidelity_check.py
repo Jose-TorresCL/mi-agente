@@ -29,6 +29,12 @@ Umbral dinámico:
 Contrato de retorno:
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones.
+
+  Rango normal del float: [0.0, 1.0] (similitud coseno o bypass seguro).
+  Valor sentinel especial: -1.0 significa "no se pudo verificar" (embeddings
+  agotaron reintentos). is_faithful sigue en True para no bloquear al usuario,
+  pero el caller (ver intelligence.py) debe tratarlo como advertencia, no
+  como éxito real de verificación.
 """
 from __future__ import annotations
 
@@ -62,7 +68,8 @@ _RE_YEAR = re.compile(r"^(19|20)\d{2}$")
 _RE_TASK_ID = re.compile(r"^\d{9,12}$")
 _RE_NUMBERS = re.compile(r"\b\d[\d.,]*\b")
 
-_EMBED_RETRY_SLEEP = 3
+_EMBED_RETRY_SLEEP = 6
+_EMBED_RETRY_ATTEMPTS = 2
 
 _TRIVIAL_QUESTION_PATTERNS = {
     "hola",
@@ -399,8 +406,13 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
-    if ans_embedding is None:
-        print(f"[fidelity:retry] embed devolvió None — reintentando en {_EMBED_RETRY_SLEEP}s")
+    attempt = 0
+    while ans_embedding is None and attempt < _EMBED_RETRY_ATTEMPTS:
+        attempt += 1
+        print(
+            f"[fidelity:retry] embed devolvió None — intento {attempt}/{_EMBED_RETRY_ATTEMPTS}, "
+            f"reintentando en {_EMBED_RETRY_SLEEP}s"
+        )
         time.sleep(_EMBED_RETRY_SLEEP)
         try:
             ans_embedding = get_embedding(answer)
@@ -408,10 +420,10 @@ def _validate_fidelity(
             ans_embedding = None
 
     if ans_embedding is None:
-        reason = "embed respuesta devolvió None tras retry (Ollama ocupado post-LLM)"
-        print(f"[fidelity:skip] {reason}")
+        reason = f"embed respuesta devolvió None tras {_EMBED_RETRY_ATTEMPTS} reintentos (Ollama ocupado post-LLM)"
+        print(f"[fidelity:unverified] {reason}")
         log_fidelity_uncertain(question or answer, reason)
-        return True, 1.0
+        return True, -1.0
 
     try:
         context_embedding = get_embedding(context_text)
