@@ -19,7 +19,12 @@ Qué hace:
        - Años (1900-2099): omitidos — el LLM los deduce del contexto de forma
          legítima y rara vez son el dato clave que se quiere verificar.
        - Números en la pregunta original: omitidos — son referencia del usuario,
-         no claims del LLM.
+         no claims del LLM. Fix: se extraen TODOS los números del enunciado
+         (incluyendo los que viajan en el historial concatenado) para evitar
+         que un número de una pregunta anterior bloquee la siguiente.
+       - IDs de tarea (T-NNNN, formato NNNNNNNNNN de 10 dígitos): omitidos —
+         son referencias de sistema generadas por el proyecto, no claims
+         factuales del LLM. Aparecen en memoria JSON, no en chunks RAG.
 
 Optimización perf:
   Similitud: 2 llamadas HTTP (embed respuesta + embed contexto concatenado).
@@ -34,22 +39,28 @@ Limitaciones conocidas:
   - Respuestas muy cortas (<7 palabras) con chunks: bypass de similitud.
   - Respuestas muy cortas (<7 palabras) SIN chunks: bloqueadas (fix 6C).
   - Si Ollama está caído: retorna (True, 1.0) para no bloquear al usuario
-    pero NO se loguea como éxito real (bypass de emergencia).
+    pero se loguea en fidelity_uncertain.jsonl como bypass de emergencia.
+
+Fix retry embed: cuando get_embedding() devuelve None post-LLM (CPU ocupada
+durante inferencia), se espera 3s y reintenta una vez antes de hacer skip.
+Esto resuelve el [fidelity:skip] sistemático en CPU sin GPU dedicada.
 
 Contrato de retorno:
   verify_fidelity SIEMPRE retorna tuple[bool, float].
   NUNCA lanza excepciones.
 
 Métricas disponibles:
-  log_fidelity_failure()  → storage/logs/fidelity_failures.jsonl
-  log_fidelity_success()  → storage/logs/fidelity_successes.jsonl
-  fidelity_stats()        → dict con total_ok, total_blocked, rejection_rate
+  log_fidelity_failure()   → storage/logs/fidelity_failures.jsonl
+  log_fidelity_success()   → storage/logs/fidelity_successes.jsonl
+  log_fidelity_uncertain() → storage/logs/fidelity_uncertain.jsonl
+  fidelity_stats()         → dict con total_ok, total_blocked, total_uncertain
 """
 from __future__ import annotations
 
 import json
 import math
 import re
+import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -76,13 +87,20 @@ _MAX_CONTEXT_CHARS = 4000
 # Números a ignorar en la verificación literal:
 #   - un solo dígito (0-9): demasiado comunes y ambiguos
 #   - años plausibles (1900-2099): el LLM los deduce legítimamente del contexto
+#   - IDs de tarea T-NNNN o timestamps de 10 dígitos generados por el proyecto:
+#     son referencias de sistema en memoria JSON, no claims factuales del LLM.
+#     No existen en chunks RAG → causarían falsos positivos si no se excluyen.
 _RE_SINGLE_DIGIT = re.compile(r'^\d$')
 _RE_YEAR         = re.compile(r'^(19|20)\d{2}$')
+_RE_TASK_ID      = re.compile(r'^\d{9,12}$')   # timestamps de 10 dígitos: 0612230517
 
 # Patrón para extraer números de texto libre:
 #   acepta enteros, decimales (con . o ,), porcentajes, miles con separador
 #   Ejemplos: 10456  10.456  10,456  98.3  0.86  55%
 _RE_NUMBERS = re.compile(r'\b\d[\d.,]*\b')
+
+# Segundos de espera antes de reintentar embed post-LLM
+_EMBED_RETRY_SLEEP = 3
 
 
 # ─────────────────────────────────────────────
@@ -110,24 +128,23 @@ def _dynamic_threshold(question: str) -> float:
 
 
 def _extract_numbers(text: str) -> set[str]:
-    """Extrae números significativos del texto, descartando dígitos solos y años."""
+    """Extrae números significativos del texto, descartando ruido."""
     raw = _RE_NUMBERS.findall(text)
     result: set[str] = set()
     for num in raw:
-        clean = num.rstrip('.,')  # quitar puntuación final
+        clean = num.rstrip('.,')
         if _RE_SINGLE_DIGIT.match(clean):
             continue
         if _RE_YEAR.match(clean):
+            continue
+        if _RE_TASK_ID.match(clean):
             continue
         result.add(clean)
     return result
 
 
 def _normalize_number_token(token: str) -> str | None:
-    """Normaliza un token numérico para comparación numérica.
-
-    Convierte variantes de miles/decimales, porcentajes y sufijos K/k a un valor canónico.
-    """
+    """Normaliza un token numérico para comparación numérica."""
     token = token.strip()
     if not token:
         return None
@@ -190,7 +207,7 @@ def _check_numeric_claims(
     chunks_texts: list[str],
     question: str = "",
 ) -> tuple[bool, str]:
-    """Verifica que los números de la respuesta aparezcan en los chunks mediante comparación numérica."""
+    """Verifica que los números de la respuesta aparezcan en los chunks."""
     answer_nums = _extract_numbers(answer)
     if not answer_nums:
         return True, ""
@@ -211,6 +228,8 @@ def _check_numeric_claims(
     }
 
     for num in answer_nums:
+        if question and num in question:
+            continue
         normalized = _normalize_number_token(num)
         if normalized is None:
             continue
@@ -246,21 +265,7 @@ def log_fidelity_success(
     threshold: float,
     method: str = "semantic",
 ) -> None:
-    """Registra una respuesta que pasó fidelidad en storage/logs/fidelity_successes.jsonl.
-
-    Args:
-        question:  Pregunta original (truncada a 120 chars).
-        score:     Similitud coseno alcanzada (1.0 para bypasses de respuesta corta).
-        threshold: Umbral dinámico que se aplicó para esta pregunta.
-        method:    Cómo pasó la verificación:
-                     'semantic'      → similitud coseno >= umbral (paso 4)
-                     'short_bypass'  → respuesta corta (<7 palabras) con chunks (paso 3)
-
-    Junto con log_fidelity_failure(), permite calcular la tasa de rechazo real:
-        tasa_rechazo = failures / (failures + successes)
-
-    Never raises.
-    """
+    """Registra una respuesta que pasó fidelidad en storage/logs/fidelity_successes.jsonl."""
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -292,25 +297,7 @@ def log_fidelity_uncertain(question: str, reason: str) -> None:
 
 
 def fidelity_stats() -> dict:
-    """Lee ambos logs y devuelve un resumen de fidelidad.
-
-    Returns:
-        dict con:
-          total_ok:       Número de respuestas que pasaron.
-          total_blocked:  Número de respuestas bloqueadas.
-          total:          total_ok + total_blocked.
-          rejection_rate: Tasa de rechazo (0.0–1.0). 0.0 si no hay datos.
-
-    Never raises.
-
-    Uso desde terminal:
-        python -c "from app.fidelity_check import fidelity_stats; print(fidelity_stats())"
-
-    Uso desde run_eval.py o !estado:
-        from app.fidelity_check import fidelity_stats
-        stats = fidelity_stats()
-        print(f"Tasa de rechazo: {stats['rejection_rate']:.1%}")
-    """
+    """Lee ambos logs y devuelve un resumen de fidelidad."""
     def _count_lines(path: Path) -> int:
         if not path.exists():
             return 0
@@ -319,47 +306,23 @@ def fidelity_stats() -> dict:
         except Exception:
             return 0
 
-    total_ok      = _count_lines(SUCCESSES_LOG)
-    total_blocked = _count_lines(FAILURES_LOG)
+    total_ok        = _count_lines(SUCCESSES_LOG)
+    total_blocked   = _count_lines(FAILURES_LOG)
     total_uncertain = _count_lines(UNCERTAIN_LOG)
-    total         = total_ok + total_blocked
-    rejection_rate = (total_blocked / total) if total > 0 else 0.0
+    total           = total_ok + total_blocked
+    rejection_rate  = (total_blocked / total) if total > 0 else 0.0
 
     return {
-        "total_ok":       total_ok,
-        "total_blocked":  total_blocked,
+        "total_ok":        total_ok,
+        "total_blocked":   total_blocked,
         "total_uncertain": total_uncertain,
-        "total":          total,
-        "rejection_rate": round(rejection_rate, 4),
+        "total":           total,
+        "rejection_rate":  round(rejection_rate, 4),
     }
 
 
 def verify_fidelity(answer: str, source_docs: list, question: str = "") -> tuple[bool, float]:
-    """Verifica si la respuesta está soportada por los chunks recuperados.
-
-    Pipeline de verificación (en orden):
-      1. Sin chunks → bloquear.
-      2. Verificación numérica literal (0 llamadas HTTP).
-         Si la respuesta contiene números que no aparecen en los chunks, bloquear.
-      3. Bypass de similitud para respuestas muy cortas (<7 palabras) CON chunks.
-         Fix 6C: si no hay chunks_texts, también se bloquea aquí.
-      4. Similitud semántica (2 llamadas HTTP): embed(respuesta) vs embed(contexto).
-
-    Args:
-        answer:      Texto generado por el LLM.
-        source_docs: Lista de Document devuelta por el retriever.
-        question:    Texto de la pregunta (para umbral dinámico y exclusión de números).
-
-    Returns:
-        tuple[bool, float]:
-          True  → respuesta fiel, mostrar al usuario.
-          False → respuesta sospechosa, reemplazar por NO_EVIDENCE_MSG.
-          float → similitud coseno (0.0 si bloquó antes del paso semántico).
-
-    Never raises.
-    """
-    threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
-
+    """Verifica si la respuesta está soportada por los chunks recuperados."""
     return _validate_fidelity(answer, source_docs, question, numeric_strict=True)
 
 
@@ -410,8 +373,20 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
+    # Retry único: si Ollama devuelve None post-LLM (CPU ocupada),
+    # esperar _EMBED_RETRY_SLEEP segundos y reintentar antes de hacer skip.
     if ans_embedding is None:
-        print("[fidelity:skip] Ollama no disponible, se pasa")
+        print(f"[fidelity:retry] embed devolvió None — reintentando en {_EMBED_RETRY_SLEEP}s")
+        time.sleep(_EMBED_RETRY_SLEEP)
+        try:
+            ans_embedding = get_embedding(answer)
+        except Exception:
+            ans_embedding = None
+
+    if ans_embedding is None:
+        reason = "embed respuesta devolvió None tras retry (Ollama ocupado post-LLM)"
+        print(f"[fidelity:skip] {reason}")
+        log_fidelity_uncertain(question or answer, reason)
         return True, 1.0
 
     chunk_embeddings = []
@@ -461,42 +436,7 @@ def fidelity_check(
     question: str = "",
     mode: str = "numeric",
 ) -> tuple[bool, float]:
-    """Punto de entrada alternativo a verify_fidelity con selección explícita de modo.
-
-    A diferencia de verify_fidelity() (que siempre usa mode='numeric'),
-    esta función permite elegir la estrategia de validación según el carril:
-
-    Modos disponibles:
-
-      mode='numeric'  (por defecto)
-        Usa numeric_validation() → _validate_fidelity(numeric_strict=True).
-        Además de similitud semántica, verifica que cada número de la respuesta
-        aparezca literalmente en los chunks fuente.
-        Cuándo usarlo: carriles técnicos o documentales ('rag') donde el LLM
-        podría inventar cifras precisas con alta similitud semántica.
-        Ejemplo: '¿Cuántas líneas tiene router.py?' — si el LLM dice '342 líneas'
-        pero el chunk no lo menciona, se bloquea aunque la similitud sea 0.80.
-
-      mode='semantic'
-        Usa semantic_validation() → _validate_fidelity(numeric_strict=False).
-        Solo verifica similitud coseno contra el umbral dinámico.
-        Cuándo usarlo: carriles donde los números son estimaciones o contexto
-        (memory, work_state, tasks) y un bloqueo numérico falso empeoraría la UX.
-        Ejemplo: 'tengo 3 tareas pendientes' — el 3 viene del JSON de memoria,
-        no de un chunk RAG, así que la verificación numérica literal no aplica.
-
-    Args:
-        answer:      Texto generado por el LLM.
-        source_docs: Lista de Document del retriever (puede ser [] para memoria).
-        question:    Pregunta original (para umbral dinámico).
-        mode:        'numeric' | 'semantic'. Lanza ValueError si es otro valor.
-
-    Returns:
-        tuple[bool, float]: mismo contrato que verify_fidelity().
-
-    Raises:
-        ValueError: si mode no es 'numeric' ni 'semantic'.
-    """
+    """Punto de entrada alternativo a verify_fidelity con selección explícita de modo."""
     if mode == "numeric":
         return numeric_validation(answer, source_docs, question)
     elif mode == "semantic":

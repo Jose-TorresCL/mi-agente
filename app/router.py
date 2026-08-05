@@ -45,14 +45,19 @@ from app.router_config import (
     MEMORY_EPISODE_KEYWORDS,
     AGENT_IDENTITY_KEYWORDS,
     TOOL_SAVE_FACT_KEYWORDS,
+    TOOL_SAVE_NOTE_KEYWORDS,
     TOOL_CREATE_TASK_KEYWORDS,
     TOOL_COMPLETE_TASK_KEYWORDS,
     _COMPLETE_TASK_PATTERN,
     TOOL_UPDATE_WORK_STATE_KEYWORDS,
     TOOL_SET_SESSION_GOAL_KEYWORDS,
     TOOL_PLAN_RETOMA_KEYWORDS,
+    TOOL_ANALIZAR_MERCADO_KEYWORDS,
     TOOL_UNSUPPORTED_KEYWORDS,
+    MATH_KEYWORDS,
+    _RE_MATH_EXPR,
     RAG_HINTS,
+    MEMORY_REASONING_KEYWORDS,
     VALID_LANES,
     RouterDebugInfo,
 )
@@ -133,9 +138,21 @@ def _route_by_keywords(question: str) -> str | None:
 
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):                return "identity"
 
+    # [A] Fix A: razonamiento personal antes de classify_memory_query.
+    if any(k in q for k in MEMORY_REASONING_KEYWORDS):              return "memory:work_state"
+
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
+
+    # Fix: notas libres → tool_save_fact (antes caían a RAG)
+    if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):                return "tool_save_fact"
+
+    # Fix: preguntas matemáticas → math
+    if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q): return "math"
+
+    # Consultas de mercado / trading → tool_analizar_mercado
+    if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):         return "tool_analizar_mercado"
 
     if any(k in q for k in RAG_HINTS):                              return "rag"
 

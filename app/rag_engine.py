@@ -1,32 +1,48 @@
 """Motor RAG — recuperación y generación de respuestas documentales.
 
 Responsabilidades:
-  - retrieve_context()  → busca chunks relevantes en Chroma y devuelve texto + docs
-  - build_chain()       → construye la cadena LangChain con prompt y LLM
-  - generate_raw()      → genera texto libre con el LLM sin cadena RAG
+- retrieve_context() → busca chunks relevantes en Chroma y devuelve texto + docs
+- build_chain() → construye la cadena LangChain con prompt y LLM
+- generate_raw() → genera texto libre con el LLM sin cadena RAG
 
 El módulo no gestiona memoria ni historial — eso es responsabilidad de
 intelligence.py y memory_manager.py. Solo accede a vectordb y al LLM.
 
 Fix C2: cliente LLM unificado con generate_raw() — elimina duplicación
 de lógica de HTTP entre build_chain y _decide_exit.
+
+Fix memory_context: build_chain ya no inyecta memory_context via
+concatenación de strings. El placeholder {memory_context} vive en
+QA_SYSTEM_PROMPT y se resuelve en chain.invoke() desde intelligence.py.
+Esto alinea el template con las 4 variables declaradas en prompts.py:
+{memory_context}, {chat_history}, {context}, {question}.
+
+Fix timeout: _LLM_TIMEOUT y _GENERATE_TIMEOUT subidos a 120s para alinear
+con llm_client.py y evitar fallback en síntesis de memoria bajo carga CPU.
+
+Fix think: qwen3:8b activa thinking mode por defecto, triplicando latencia
+en CPU. Se desactiva con reasoning=False en ChatOllama (capa LangChain).
+num_ctx limitado a 4096 para reducir uso de memoria.
+
+Fix singleton: build_chain() ya no instancia su propio ChatOllama.
+Usa get_llm() de llm_client.py para garantizar un único cliente LLM
+con keep_alive=-1, reasoning=False y todos los parámetros centralizados.
 """
 from __future__ import annotations
 
 import requests
 
-from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import MODEL_NAME, OLLAMA_URL
+from app.llm_client import get_llm
 from app.logger import get_logger
 
 log = get_logger(__name__)
 
-_RETRIEVER_K       = 4
-_LLM_TIMEOUT       = 60
-_GENERATE_TIMEOUT  = 40
+_RETRIEVER_K = 4
+_GENERATE_TIMEOUT = 120
 
 
 def retrieve_context(query: str, vectordb) -> tuple[str, list]:
@@ -43,10 +59,10 @@ def retrieve_context(query: str, vectordb) -> tuple[str, list]:
 
     Returns:
         Tuple (context_text, source_docs):
-          context_text → str con los chunks concatenados (separados por '\n\n').
-                         String vacío si no se recuperó nada.
-          source_docs  → list[Document] devuelto por el retriever.
-                         Lista vacía si falla o vectordb es None.
+        context_text → str con los chunks concatenados (separados por '\n\n').
+                       String vacío si no se recuperó nada.
+        source_docs  → list[Document] devuelto por el retriever.
+                       Lista vacía si falla o vectordb es None.
 
     Nunca lanza excepciones — los errores se loguean como WARNING.
     """
@@ -64,40 +80,37 @@ def retrieve_context(query: str, vectordb) -> tuple[str, list]:
         return "", []
 
 
-def build_chain(system_prompt: str, memory_context: str = ""):
+def build_chain(system_prompt: str):
     """Construye la cadena LangChain (prompt + LLM + parser) para respuestas RAG.
 
-    La cadena espera un dict con las claves:
-      - 'question'     → pregunta del usuario
-      - 'context'      → texto de chunks recuperados
-      - 'chat_history' → historial de conversación comprimido
+    Usa el singleton get_llm() de llm_client.py como cliente LLM.
+    Esto garantiza keep_alive=-1, reasoning=False y num_ctx=4096
+    sin duplicar configuración.
+
+    La cadena espera un dict con exactamente las claves declaradas en
+    QA_SYSTEM_PROMPT (app/prompts.py):
+    - 'memory_context' → contexto de memoria selectiva (puede ser string vacío)
+    - 'chat_history'   → historial de conversación comprimido
+    - 'context'        → texto de chunks recuperados de Chroma
+    - 'question'       → pregunta del usuario
+
+    IMPORTANTE: memory_context NO se inyecta aquí via concatenación. Vive
+    como variable {memory_context} en el template para que chain.invoke()
+    lo resuelva correctamente desde intelligence.py.
 
     Args:
-        system_prompt:   Prompt de sistema (desde app.prompts.QA_SYSTEM_PROMPT).
-        memory_context:  Contexto de memoria selectiva a inyectar como
-                         sección adicional en el system prompt. Por defecto ''.
+        system_prompt: Prompt de sistema (desde app.prompts.QA_SYSTEM_PROMPT).
+                       Debe contener los 4 placeholders mencionados arriba.
 
     Returns:
         Cadena LangChain invocable (.invoke(dict)) que devuelve el texto
         generado como string.
-
-    El MODEL_NAME y OLLAMA_URL se leen de app.config.
-    Timeout de generación: _LLM_TIMEOUT (60s por defecto).
     """
-    full_system = system_prompt
-    if memory_context:
-        full_system = system_prompt + "\n\nContexto de memoria del usuario:\n" + memory_context
-
     prompt = ChatPromptTemplate.from_messages([
-        ("system", full_system),
-        ("human",  "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
+        ("system", system_prompt),
+        ("human", "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
     ])
-    llm = ChatOllama(
-        model=MODEL_NAME,
-        base_url=OLLAMA_URL,
-        timeout=_LLM_TIMEOUT,
-    )
-    return prompt | llm | StrOutputParser()
+    return prompt | get_llm() | StrOutputParser()
 
 
 def generate_raw(
@@ -118,24 +131,27 @@ def generate_raw(
                      Por defecto 0.3 para respuestas equilibradas.
         num_predict: Límite de tokens a generar. Por defecto 150.
                      Bajar a 45 para resúmenes de sesión (D4-B).
-        timeout:     Timeout HTTP en segundos. Por defecto 40s.
+        timeout:     Timeout HTTP en segundos. Por defecto 120s.
 
     Returns:
         String con la respuesta generada, sin espacios sobrantes.
         None si la llamada HTTP falla o Ollama no está disponible.
 
     Nunca lanza excepciones — los errores se loguean como WARNING.
+    reasoning=False desactiva el reasoning mode de qwen3 para reducir latencia.
     """
     try:
         resp = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={
-                "model":       MODEL_NAME,
-                "prompt":      prompt,
-                "stream":      False,
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
                 "options": {
                     "temperature": temperature,
                     "num_predict": num_predict,
+                    "num_ctx": 4096,
+                    "reasoning": False,
                 },
             },
             timeout=timeout,

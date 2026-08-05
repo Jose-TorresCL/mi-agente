@@ -101,6 +101,19 @@
   { "text": "qué tal va el proyecto",                              "lane": "memory:work_state" },
   { "text": "dame un update del proyecto",                         "lane": "memory:work_state" },
   { "text": "dame una actualización del proyecto",                 "lane": "memory:work_state" },
+  // [B] Fix B: razonamiento personal → memory:work_state
+  // Frases donde el usuario pide priorizar, decidir o planificar sobre su trabajo.
+  // No son preguntas técnicas — tienen pronombre personal o contexto de decisión propia.
+  { "text": "qué me conviene hacer primero",                       "lane": "memory:work_state" },
+  { "text": "qué debería atacar primero",                          "lane": "memory:work_state" },
+  { "text": "por dónde empiezo hoy",                               "lane": "memory:work_state" },
+  { "text": "qué me recomendas hacer ahora",                       "lane": "memory:work_state" },
+  { "text": "cuál es lo más importante para mí ahora",             "lane": "memory:work_state" },
+  { "text": "cómo priorizo mis tareas",                            "lane": "memory:work_state" },
+  { "text": "qué hago primero hoy",                                "lane": "memory:work_state" },
+  { "text": "por dónde arranco esta sesión",                       "lane": "memory:work_state" },
+  { "text": "cuál es mi prioridad ahora",                          "lane": "memory:work_state" },
+  { "text": "qué debería hacer hoy según el estado del proyecto",  "lane": "memory:work_state" },
 
   // ── memory:tasks ──────────────────────────────────────────────────
   // Frases sobre tareas pendientes, abiertas o completadas.

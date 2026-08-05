@@ -14,6 +14,7 @@ Funciones públicas:
   tool_complete_task()      — marca tarea como completada
   tool_update_work_state()  — actualiza work_state.json
   tool_set_session_goal()   — guarda objetivo de la sesión actual
+  tool_analizar_mercado()   — consulta bot_trading vía subprocess (SYSTEM, solo lectura)
   suggest_next_step()       — sugerencia post-actualización (retorna str, helper interno)
 
 Re-exporta desde tool_helpers para compatibilidad con imports existentes:
@@ -24,11 +25,14 @@ Nota de arquitectura:
   Todas las operaciones de memoria pasan por memory_manager,
   no por memory_store directamente. memory_manager es el
   guardián de la capa de memoria.
+
+  tool_analizar_mercado usa import lazy de tools_trading para aislar
+  el subprocess. Si el módulo no está disponible, retorna ToolResult(ok=False)
+  sin crashear el módulo completo.
 """
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from datetime import datetime
 
 from app.memory_manager import (
@@ -36,7 +40,9 @@ from app.memory_manager import (
     create_task as _mm_create_task,
     complete_task as _mm_complete_task,
     get_tasks as _mm_get_tasks,
+    get_work_state as _mm_get_work_state,
     set_session_goal as _mm_set_session_goal,
+    update_state as _mm_update_state,
 )
 from app.schemas import ToolResult
 
@@ -53,9 +59,9 @@ from app.tool_helpers import (  # noqa: F401
 )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: guardar hecho
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_save_fact(content) -> ToolResult:
     """Guarda un hecho en project_facts.json.
@@ -115,9 +121,9 @@ def tool_save_fact(content) -> ToolResult:
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: crear tarea
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> ToolResult:
     """R6-A: retorna ToolResult."""
@@ -150,9 +156,9 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> T
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: completar tarea
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_complete_task(task_id: str) -> ToolResult:
     """R6-A: retorna ToolResult."""
@@ -173,7 +179,7 @@ def tool_complete_task(task_id: str) -> ToolResult:
             if task.get("status") == "completed":
                 return ToolResult(
                     ok=True,
-                    message=f"ℹ️  La tarea {task_id} ya estaba marcada como completada.",
+                    message=f"ℹ️   La tarea {task_id} ya estaba marcada como completada.",
                     data={"task_id": task_id, "was_already_completed": True},
                     tool_name="tool_complete_task",
                 )
@@ -200,9 +206,9 @@ def tool_complete_task(task_id: str) -> ToolResult:
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: actualizar work_state
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_update_work_state(
     texto: str = "",
@@ -211,37 +217,26 @@ def tool_update_work_state(
     next_step: str | None = None,
     last_completed_step: str | None = None,
 ) -> ToolResult:
-    """Actualiza work_state.json desde conversación libre o desde kwargs directos.
-
-    R6-A: retorna ToolResult.
-    """
-    import json
-
-    path = Path("storage/work_state.json")
-    try:
-        state: dict = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        state = {}
-
+    """Actualiza work_state.json desde conversación libre o desde kwargs directos."""
     cambios: list[str] = []
 
     if current_focus is not None:
         val = current_focus.strip()
         if val:
-            state["current_focus"] = val
+            _mm_update_state("current_focus", val)
             cambios.append(f"current_focus → '{val}'")
 
     if next_step is not None:
         val = next_step.strip()
         if val:
-            state["next_step"] = val
+            _mm_update_state("next_step", val)
             cambios.append(f"next_step → '{val}'")
 
     if last_completed_step is not None:
         val = last_completed_step.strip()
         if val:
             fecha = datetime.now().strftime("%d/%m/%Y")
-            state["last_completed"] = f"{val} — {fecha}"
+            _mm_update_state("last_completed", f"{val} — {fecha}")
             cambios.append(f"last_completed → '{val}'")
 
     if texto:
@@ -254,7 +249,7 @@ def tool_update_work_state(
                 if m:
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
-                        state["current_focus"] = valor
+                        _mm_update_state("current_focus", valor)
                         cambios.append(f"current_focus → '{valor}'")
                     break
 
@@ -268,7 +263,7 @@ def tool_update_work_state(
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
                         fecha = datetime.now().strftime("%d/%m/%Y")
-                        state["last_completed"] = f"{valor} — {fecha}"
+                        _mm_update_state("last_completed", f"{valor} — {fecha}")
                         cambios.append(f"last_completed → '{valor}'")
                     break
 
@@ -281,7 +276,7 @@ def tool_update_work_state(
                 if m:
                     valor = m.group(1).strip().rstrip(".,'")
                     if valor:
-                        state["next_step"] = valor
+                        _mm_update_state("next_step", valor)
                         cambios.append(f"next_step → '{valor}'")
                     break
 
@@ -293,17 +288,7 @@ def tool_update_work_state(
             tool_name="tool_update_work_state",
         )
 
-    state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    try:
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        return ToolResult(
-            ok=False,
-            message=f"⚠️ Cambios detectados pero no pude escribir work_state.json: {e}",
-            error_code="WRITE_ERROR",
-            data={"cambios_intentados": cambios},
-            tool_name="tool_update_work_state",
-        )
+    _mm_update_state("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
     return ToolResult(
@@ -315,19 +300,12 @@ def tool_update_work_state(
     )
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Tool: definir objetivo de sesión
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def tool_set_session_goal(content: str) -> ToolResult:
-    """Guarda el objetivo específico para la sesión actual.
-
-    A diferencia de tool_update_work_state (que actualiza el foco permanente),
-    esta tool guarda un objetivo concreto para hoy que aparecerá en el
-    session briefing al arranque de la próxima sesión.
-
-    R6-A: retorna ToolResult.
-    """
+    """Guarda el objetivo específico para la sesión actual."""
     content = str(content).strip()
     if not content:
         return ToolResult(
@@ -358,6 +336,7 @@ def tool_set_session_goal(content: str) -> ToolResult:
         tool_name="tool_set_session_goal",
     )
 
+
 def toolresult_to_str(result: ToolResult) -> str:
     """Convierte ToolResult en texto plano seguro para AIMessage."""
     if not isinstance(result, ToolResult):
@@ -371,23 +350,19 @@ def toolresult_to_str(result: ToolResult) -> str:
     return msg
 
 
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # Sugerencia automática post-actualización
-# (retorna str — helper interno, no es tool pública)
-# ─────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def suggest_next_step() -> str:
-    """Lee work_state.json y tasks.json y devuelve una sugerencia del siguiente paso."""
-    import json
-
-    ws_path = Path("storage/work_state.json")
-    state = json.loads(ws_path.read_text(encoding="utf-8")) if ws_path.exists() else {}
+    """Lee work_state y tasks vía memory_manager y devuelve una sugerencia."""
+    state   = _mm_get_work_state()
+    tasks_data = _mm_get_tasks()
 
     next_step     = state.get("next_step", "")
     current_focus = state.get("current_focus", "")
     last_done     = state.get("last_completed", "")
 
-    tasks_data = _mm_get_tasks()
     pending = [
         t for t in tasks_data.get("tasks", [])
         if t.get("status") not in ("done", "completed")
@@ -414,3 +389,41 @@ def suggest_next_step() -> str:
 
     return "\n".join(lines)
 
+
+# ───────────────────────────────────────────────
+# Tool: analizar mercado (bot_trading)
+# Risk: SYSTEM — bloqueada en dispatch hasta habilitar confirmación
+# Ver tool_registry.py para habilitación.
+# ───────────────────────────────────────────────
+
+def tool_analizar_mercado(symbol: str = "BTCUSDT") -> ToolResult:
+    """Consulta precio, indicadores y señal del bot_trading vía subprocess.
+
+    Usa import lazy de tools_trading para aislar el módulo de integración.
+    Si tools_trading no está disponible o el bot no responde, falla
+    silenciosamente retornando ToolResult(ok=False) sin crashear Lautaro.
+
+    Garantías:
+      - Never raises.
+      - Timeout duro de 15 segundos.
+      - Si el bot no está instalado, devuelve mensaje claro al usuario.
+
+    Args:
+        symbol: Ticker normalizado (ej. 'BTCUSDT'). Viene ya normalizado
+                desde _handle_analizar_mercado en tool_registry.
+
+    Returns:
+        ToolResult(ok=True, message=texto_formateado, data=dict_json)
+        ToolResult(ok=False, error_code=...) si el bot no está disponible.
+    """
+    try:
+        from app.tools_trading import _llamar_bot_trading
+    except ImportError as exc:
+        return ToolResult(
+            ok=False,
+            message=f"⚠️  Módulo tools_trading no disponible: {exc}",
+            error_code="MODULE_NOT_FOUND",
+            tool_name="tool_analizar_mercado",
+        )
+
+    return _llamar_bot_trading(symbol=symbol, modo="full")

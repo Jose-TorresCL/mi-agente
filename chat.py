@@ -7,25 +7,34 @@ Auto-reindex: al arrancar detecta si hay docs más nuevos que el índice
 y re-indexa automáticamente antes de abrir el chat.
 
 8C: al cerrar sesión (exit normal o Ctrl+C) llama a
-episode_store.close_session_episode() para preguntar al usuario si
-la sesión fue productiva y marcar el episodio en experience_index.
+    episode_store.close_session_episode() para preguntar al usuario si
+    la sesión fue productiva y marcar el episodio en experience_index.
 
 Session Intelligence (Pasos A-D):
-Tras el banner y antes del primer input, construye y muestra
-el session briefing con estado clasificado, tareas y episodio anterior.
-Sin LLM — solo lectura de JSON. Objetivo: < 200ms adicionales.
+    Tras el banner y antes del primer input, construye y muestra
+    el session briefing con estado clasificado, tareas y episodio anterior.
+    Sin LLM — solo JSON. Si falla, no bloquea el arranque.
+    Objetivo: < 200ms adicionales.
+
+Cierre limpio:
+    _session_close() guarda el episodio y libera el modelo LLM de RAM
+    via 'ollama stop'. Esto complementa keep_alive=-1 en llm_client.py:
+    el modelo vive en RAM durante la sesión y se descarga al salir.
 """
 from __future__ import annotations
 
-from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
+import subprocess
 
-from app.chat_core import handle_turn
-from app.chat_ui import format_answer, mostrar_briefing, print_welcome
-from app.config import CHROMA_DIR, OLLAMA_URL
+from langchain_ollama import OllamaEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.messages import BaseMessage
+
+from app.config import CHROMA_DIR, OLLAMA_URL, MODEL_NAME
 from app.indexing_core import needs_reindex, run_full_index
-from app.logger import get_logger
+from app.chat_core import handle_turn
+from app.chat_ui import print_welcome, format_answer, mostrar_briefing
 from app.memory_manager import get_session_briefing
+from app.logger import get_logger
 
 log = get_logger(__name__)
 
@@ -46,15 +55,35 @@ def _boot_vectorstore() -> Chroma:
     should_reindex, reason = needs_reindex()
 
     if should_reindex:
-        print(f"\n🔄 Detectados cambios en data/docs/ ({reason})")
-        print("   Actualizando el índice automáticamente...\n")
+        print(f"\n🔄  Detectados cambios en data/docs/ ({reason})")
+        print("    Actualizando el índice automáticamente...\n")
         db = run_full_index()
-        print("✅ Índice actualizado. Iniciando chat...\n")
+        print("✅  Índice actualizado. Iniciando chat...\n")
     else:
         log.info("[boot] %s — cargando índice existente", reason)
         db = _load_vectorstore()
 
     return db
+
+
+def _stop_llm_model() -> None:
+    """Descarga el modelo LLM de RAM al cerrar la sesión.
+
+    Complementa keep_alive=-1: el modelo vive en RAM durante la sesión
+    y se libera explícitamente aquí para no ocupar ~5.5 GB en segundo
+    plano cuando Lautaro no está en uso.
+
+    Falla silenciosamente — nunca bloquea el cierre del programa.
+    """
+    try:
+        subprocess.run(
+            ["ollama", "stop", MODEL_NAME],
+            capture_output=True,
+            timeout=5,
+        )
+        log.info("[chat] modelo %s descargado de RAM", MODEL_NAME)
+    except Exception as exc:
+        log.debug("[chat] ollama stop falló (no crítico): %s", exc)
 
 
 def _session_close() -> None:
@@ -65,18 +94,22 @@ def _session_close() -> None:
     except Exception as exc:
         log.debug("[chat] _session_close: %s", exc)
 
+    _stop_llm_model()
+
 
 def main() -> None:
     print_welcome()
 
+    # Session Intelligence: mostrar briefing antes del primer input
+    # Sin LLM — solo JSON. Si falla, no bloquea el arranque.
     try:
         briefing = get_session_briefing()
         mostrar_briefing(briefing)
     except Exception as exc:
         log.debug("[chat] session briefing no disponible: %s", exc)
 
-    vectordb = _boot_vectorstore()
-    chat_history: list = []
+    vectordb: Chroma = _boot_vectorstore()
+    chat_history: list[BaseMessage] = []
 
     while True:
         try:
@@ -89,10 +122,10 @@ def main() -> None:
         if not user_input:
             continue
 
-        answer, should_exit = handle_turn(
-            user_input=user_input,
-            chat_history=chat_history,
-            vectordb=vectordb,
+        response, should_exit = handle_turn(
+            user_input,
+            chat_history,
+            vectordb,
             channel="cli",
         )
 
@@ -101,7 +134,8 @@ def main() -> None:
             print("\n👋 ¡Hasta luego!")
             break
 
-        print(format_answer(answer))
+        if response:
+            print(format_answer(response))
 
 
 if __name__ == "__main__":
