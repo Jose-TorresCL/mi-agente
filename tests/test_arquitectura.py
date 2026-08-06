@@ -232,28 +232,28 @@ class TestFidelityCheckAPI:
 
 
 # ---------------------------------------------------------------------------
-# 5. API de chat_core: handle_query y build_memory
+# 5. API de chat_core: handle_turn y build_memory_context
 # ---------------------------------------------------------------------------
 
 class TestChatCoreAPI:
     """chat_core expone las funciones públicas esperadas."""
 
-    def test_handle_query_existe(self):
-        from app.chat_core import handle_query
-        assert callable(handle_query)
+    def test_handle_turn_existe(self):
+        from app.chat_core import handle_turn
+        assert callable(handle_turn)
 
-    def test_handle_query_firma(self):
-        """handle_query acepta (user_input, vectordb, chat_history)."""
-        from app.chat_core import handle_query
-        sig = inspect.signature(handle_query)
+    def test_handle_turn_firma(self):
+        """handle_turn acepta (user_input, chat_history, vectordb)."""
+        from app.chat_core import handle_turn
+        sig = inspect.signature(handle_turn)
         params = list(sig.parameters)
-        assert "user_input"   in params, "handle_query falta 'user_input'"
-        assert "vectordb"     in params, "handle_query falta 'vectordb'"
-        assert "chat_history" in params, "handle_query falta 'chat_history'"
+        assert "user_input"   in params, "handle_turn falta 'user_input'"
+        assert "vectordb"     in params, "handle_turn falta 'vectordb'"
+        assert "chat_history" in params, "handle_turn falta 'chat_history'"
 
-    def test_build_memory_importable(self):
-        from app.chat_core import build_memory
-        assert callable(build_memory)
+    def test_build_memory_context_importable(self):
+        from app.memory_context import build_memory_context
+        assert callable(build_memory_context)
 
 
 # ---------------------------------------------------------------------------

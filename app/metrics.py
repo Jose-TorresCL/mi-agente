@@ -70,6 +70,7 @@ def record_turn(
         "channel":      channel,
         "retrieval_ms": retrieval_ms,
         "llm_ms":       llm_ms,
+        "total_ms":     retrieval_ms + llm_ms,
         "tokens_est":   tokens_est,
         "cached":       cached,
         "num_docs":     num_docs,

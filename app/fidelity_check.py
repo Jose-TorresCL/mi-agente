@@ -45,7 +45,7 @@ import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-
+from app.logger import get_logger
 
 FIDELITY_THRESHOLD = 0.55
 SHORT_ANSWER_WORDS = 7
@@ -70,8 +70,8 @@ _RE_YEAR = re.compile(r"^(19|20)\d{2}$")
 _RE_TASK_ID = re.compile(r"^\d{9,12}$")
 _RE_NUMBERS = re.compile(r"\b\d[\d.,]*\b")
 
-_EMBED_RETRY_SLEEP = 6
-_EMBED_RETRY_ATTEMPTS = 2
+EMBED_RETRY_SLEEP = 6
+EMBED_RETRY_ATTEMPTS = 2
 
 _TRIVIAL_QUESTION_PATTERNS = {
     "hola",
@@ -230,6 +230,21 @@ def _prepare_text_for_embedding(text: str, max_chars: int = _FIDELITY_EMBED_MAX_
         return clean
     return clean[:max_chars].rstrip()
 
+def _try_embed_with_short_backoff(text: str):
+    """Intenta obtener un embedding con backoff corto [0.0, 0.5, 1.0] segundos."""
+    prepared_text = _prepare_text_for_embedding(text)
+    delays = [0.0, 0.5, 1.0]
+    for delay in delays:
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            embedding = get_embedding(prepared_text, timeout=_FIDELITY_EMBED_TIMEOUT)
+        except Exception:
+            embedding = None
+        if embedding is not None:
+            return embedding
+    return None
+
 
 def _check_numeric_claims(
     answer: str,
@@ -259,12 +274,15 @@ def _check_numeric_claims(
     for num in answer_nums:
         normalized = _normalize_number_token(num)
         if normalized is None:
-            continue
-        if normalized not in normalized_chunks:
+            if num in corpus:
+                continue
             return False, f"número '{num}' no encontrado en los chunks"
 
-    return True, ""
+        if normalized in normalized_chunks:
+            continue
+        return False, f"número '{num}' no encontrado en los chunks"
 
+    return True, ""
 
 # ─────────────────────────────────────────────
 # API pública
@@ -405,41 +423,14 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
-    answer_for_embed = _prepare_text_for_embedding(answer)
-    try:
-        ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-    except Exception:
-        reason = "error embed respuesta"
-        print(f"[fidelity:uncertain] {reason}")
-        if FIDELITY_EMERGENCY_MODE == "bypass":
-            return True, 1.0
-        log_fidelity_uncertain(question or answer, reason)
-        return False, 0.0
-
-    attempt = 0
-    while ans_embedding is None and attempt < _EMBED_RETRY_ATTEMPTS:
-        attempt += 1
-        print(
-            f"[fidelity:retry] embed devolvió None — intento {attempt}/{_EMBED_RETRY_ATTEMPTS}, "
-            f"reintentando en {_EMBED_RETRY_SLEEP}s"
-        )
-        time.sleep(_EMBED_RETRY_SLEEP)
-        try:
-            ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-        except Exception:
-            ans_embedding = None
-
+    ans_embedding = _try_embed_with_short_backoff(answer)
     if ans_embedding is None:
-        reason = f"embed respuesta devolvió None tras {_EMBED_RETRY_ATTEMPTS} reintentos (Ollama ocupado post-LLM)"
+        reason = "embed respuesta devolvió None tras 3 intentos con backoff corto (Ollama ocupado post-LLM)"
         print(f"[fidelity:unverified] {reason}")
         log_fidelity_uncertain(question or answer, reason)
         return True, -1.0
 
-    context_for_embed = _prepare_text_for_embedding(context_text)
-    try:
-        context_embedding = get_embedding(context_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-    except Exception:
-        context_embedding = None
+    context_embedding = _try_embed_with_short_backoff(context_text)
 
     if context_embedding is None:
         reason = "no se obtuvo embedding del contexto concatenado"
