@@ -231,18 +231,41 @@ def _prepare_text_for_embedding(text: str, max_chars: int = _FIDELITY_EMBED_MAX_
     return clean[:max_chars].rstrip()
 
 def _try_embed_with_short_backoff(text: str):
-    """Intenta obtener un embedding con backoff corto [0.0, 0.5, 1.0] segundos."""
+    """Intenta obtener un embedding con backoff corto [0.0, 0.5, 1.0] segundos.
+
+    fidelity_check es el dueño del backoff corto. get_embedding() recibe un solo
+    intento interno por cada intento externo para evitar retries duplicados.
+    """
     prepared_text = _prepare_text_for_embedding(text)
     delays = [0.0, 0.5, 1.0]
-    for delay in delays:
+    for attempt, delay in enumerate(delays, start=1):
+        start = time.perf_counter()
         if delay > 0:
             time.sleep(delay)
         try:
-            embedding = get_embedding(prepared_text, timeout=_FIDELITY_EMBED_TIMEOUT)
-        except Exception:
+            embedding = get_embedding(
+                prepared_text,
+                timeout=_FIDELITY_EMBED_TIMEOUT,
+                retry_delays=[0.0],
+                max_attempts=1,
+            )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            if embedding is not None:
+                print(
+                    f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=ok dim={len(embedding)}"
+                )
+                return embedding
+            print(
+                f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=None"
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            print(
+                f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=exception type={type(exc).__name__} msg={exc}"
+            )
             embedding = None
-        if embedding is not None:
-            return embedding
+        if attempt < len(delays):
+            continue
     return None
 
 
@@ -343,7 +366,7 @@ def log_fidelity_uncertain(question: str, reason: str) -> None:
 
 
 def fidelity_stats() -> dict:
-    """Lee logs y devuelve un resumen de fidelidad."""
+    """Lee logs y devuelve un resumen de fidelidad con desglose por método."""
     def _count_lines(path: Path) -> int:
         if not path.exists():
             return 0
@@ -358,12 +381,51 @@ def fidelity_stats() -> dict:
     total = total_ok + total_blocked
     rejection_rate = (total_blocked / total) if total > 0 else 0.0
 
+    # Desglose mínimo recomendado para Fase 7 de observabilidad.
+    by_method = {
+        "short_bypass": 0,
+        "semantic_ok": 0,
+        "semantic_fail": 0,
+        "unverified": 0,
+        "blocked_no_docs": 0,
+    }
+
+    try:
+        for log_path in [SUCCESSES_LOG, FAILURES_LOG, UNCERTAIN_LOG]:
+            if not log_path.exists():
+                continue
+            for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                method = entry.get("method")
+                if method == "short_bypass":
+                    by_method["short_bypass"] += 1
+                elif method == "semantic":
+                    by_method["semantic_ok"] += 1
+                elif method == "semantic_flexible":
+                    by_method["semantic_ok"] += 1
+                elif method == "trivial_bypass":
+                    by_method["short_bypass"] += 1
+                elif entry.get("reason") and "sin chunks" in str(entry.get("reason", "")).lower():
+                    by_method["blocked_no_docs"] += 1
+                elif entry.get("reason") and "embed" in str(entry.get("reason", "")).lower():
+                    by_method["unverified"] += 1
+                elif method is None and log_path == FAILURES_LOG:
+                    by_method["semantic_fail"] += 1
+    except Exception:
+        pass
+
     return {
         "total_ok": total_ok,
         "total_blocked": total_blocked,
         "total_uncertain": total_uncertain,
         "total": total,
         "rejection_rate": round(rejection_rate, 4),
+        "by_method": by_method,
     }
 
 

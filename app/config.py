@@ -37,11 +37,12 @@ try:  # pragma: no cover — depende del entorno
 except Exception:  # pragma: no cover
     pass
 
-MODEL_NAME  = "llama3.2:latest"
-OLLAMA_URL  = "http://localhost:11434"
-MAX_TURNS   = 8
-CHROMA_DIR  = "storage/chroma"
-STORAGE_DIR = "storage"
+MODEL_NAME       = "llama3.2:latest"
+EMBEDDING_MODEL  = "nomic-embed-text:latest"
+OLLAMA_URL       = "http://localhost:11434"
+MAX_TURNS        = 8
+CHROMA_DIR       = "storage/chroma"
+STORAGE_DIR      = "storage"
 
 # ─────────────────────────────────────────────
 # Integración con bot_trading (ADR-010)

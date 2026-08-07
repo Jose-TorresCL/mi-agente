@@ -28,7 +28,7 @@ from pathlib import Path
 
 import requests
 
-from app.config import MODEL_NAME, OLLAMA_URL
+from app.config import EMBEDDING_MODEL, OLLAMA_URL
 from app.logger import get_logger
 
 log = get_logger(__name__)
@@ -83,52 +83,82 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def get_embedding(text: str, timeout: float | None = None) -> list[float] | None:
-    """Obtiene el embedding de un texto desde Ollama, con reintentos.
+def get_embedding(
+    text: str,
+    timeout: float | None = None,
+    retry_delays: list[float] | tuple[float, ...] | None = None,
+    max_attempts: int | None = None,
+) -> list[float] | None:
+    """Obtiene un embedding desde Ollama usando la API actual /api/embed.
 
-    Bajo carga CPU (el LLM genera en paralelo), Ollama puede tardar más de
-    los 10s originales. Por eso el timeout por defecto sube a 90s y se hacen hasta
-    _EMBED_RETRIES reintentos con _EMBED_RETRY_WAIT segundos de espera.
+    Mantiene el contrato público de devolver list[float] o None, pero permite
+    al llamador controlar el reintento para evitar duplicación con fidelity_check.
 
-    El campo 'embedding' ausente en la respuesta (HTTP 200 sin contenido útil,
-    típico de Ollama post-LLM liberando recursos) se trata como fallo
-    recuperable y dispara el mismo mecanismo de retry+wait.
-
-    Peor caso: 3 × 90s + 2 × 40s = 350s antes de devolver None.
-
-    Args:
-        text: Texto a embeber. No se trunca — el llamador es responsable de
-              limitar la longitud si es necesario (ver _MAX_CONTEXT_CHARS en fidelity_check).
-        timeout: Timeout en segundos para esta llamada concreta. Si es None,
-                 se usa el valor por defecto _EMBED_TIMEOUT.
-
-    Returns:
-        Lista de floats con el vector de embedding, o None si todos los
-        intentos fallaron. Nunca lanza excepciones.
+    Defaults razonables: 3 intentos con espera corta para consumidores que no
+    pasen un control explícito. fidelity_check llama con retry_delays=[0.0] y
+    max_attempts=1 para ser el único dueño del backoff corto externo.
     """
     last_exc: Exception | None = None
+    if retry_delays is None:
+        if max_attempts is None:
+            retry_delays = [0.0, _EMBED_RETRY_WAIT, _EMBED_RETRY_WAIT]
+        else:
+            retry_delays = [0.0] * max(0, max_attempts - 1)
+    if max_attempts is None:
+        max_attempts = len(retry_delays) + 1 if retry_delays else 1
+
     timeout = _EMBED_TIMEOUT if timeout is None else timeout
-    for attempt in range(1 + _EMBED_RETRIES):
+    text_len = len(text)
+    total_attempts = max_attempts
+    for attempt in range(total_attempts):
+        delay = retry_delays[attempt] if attempt < len(retry_delays) else 0.0
+        start = time.perf_counter()
         try:
+            if delay > 0:
+                time.sleep(delay)
             resp = requests.post(
-                f"{OLLAMA_URL}/api/embeddings",
-                json={"model": MODEL_NAME, "prompt": text},
+                f"{OLLAMA_URL}/api/embed",
+                json={"model": EMBEDDING_MODEL, "input": text},
                 timeout=timeout,
             )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
             resp.raise_for_status()
-            embedding = resp.json().get("embedding")
-            if embedding is None:
-                raise ValueError("Ollama respondió sin campo 'embedding' (ocupado post-LLM)")
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise ValueError(f"Respuesta de /api/embed no es JSON object: {type(payload).__name__}")
+            embeddings = payload.get("embeddings")
+            if not isinstance(embeddings, list) or not embeddings or not isinstance(embeddings[0], list):
+                raise ValueError(f"Ollama respondió sin embeddings útiles; keys={sorted(payload.keys())}")
+            embedding = embeddings[0]
+            if not embedding:
+                raise ValueError("Ollama devolvió embeddings vacíos")
+            log.info(
+                "[embedding] attempt=%d delay=%.1fs chars=%d elapsed_ms=%d result=ok dim=%d",
+                attempt + 1,
+                delay,
+                text_len,
+                elapsed_ms,
+                len(embedding),
+            )
             return embedding
         except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
             last_exc = exc
-            if attempt < _EMBED_RETRIES:
-                log.debug(
-                    "get_embedding intento %d falló, reintentando en %ds: %s",
-                    attempt + 1, _EMBED_RETRY_WAIT, exc,
-                )
-                time.sleep(_EMBED_RETRY_WAIT)
-    log.debug("get_embedding falló tras %d intentos: %s", 1 + _EMBED_RETRIES, last_exc)
+            log.warning(
+                "[embedding] attempt=%d delay=%.1fs chars=%d elapsed_ms=%d result=error type=%s msg=%s",
+                attempt + 1,
+                delay,
+                text_len,
+                elapsed_ms,
+                type(exc).__name__,
+                str(exc),
+            )
+    log.debug(
+        "get_embedding falló tras %d intentos: %s (%s)",
+        total_attempts,
+        type(last_exc).__name__ if last_exc else "unknown",
+        last_exc,
+    )
     return None
 
 
