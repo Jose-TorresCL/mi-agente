@@ -211,7 +211,7 @@ def main() -> None:
     Si TOKEN es None el arranque fallará con InvalidToken de la librería.
     """
     if not TOKEN:
-        raise RuntimeError(
+        raise ValueError(
             "TELEGRAM_TOKEN no está definido. "
             "Agrega TELEGRAM_TOKEN=<tu_token> en el archivo .env"
         )
