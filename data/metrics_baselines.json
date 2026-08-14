@@ -1,0 +1,12 @@
+﻿{
+  "active_baseline": "r7-fidelity-v2",
+  "baselines": [
+    {
+      "id": "r7-fidelity-v2",
+      "started_at": "2026-08-14T15:25:00",
+      "reason": "Fidelity check verificable y métricas reconectadas",
+      "metric_schema_version": 2,
+      "notes": "Las métricas de fidelity y latencia son comparables desde este baseline. Los registros anteriores se conservan como historial legacy."
+    }
+  ]
+}

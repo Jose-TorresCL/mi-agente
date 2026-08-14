@@ -24,8 +24,25 @@ log = get_logger(__name__)
 
 _METRICS_DIR  = Path("storage") / "logs"
 _METRICS_FILE = _METRICS_DIR / "metrics.jsonl"
+_BASELINES_FILE = Path("data") / "metrics_baselines.json"
 
 # Acumulador en memoria para get_metrics_summary() dentro de la sesión
+def _get_active_baseline() -> tuple[str, int]:
+    """Lee baseline activo. Devuelve ('legacy', 1) si no existe o falla."""
+    try:
+        with _BASELINES_FILE.open(encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+
+        baseline_id = data.get("active_baseline", "legacy")
+        for baseline in data.get("baselines", []):
+            if baseline.get("id") == baseline_id:
+                return baseline_id, baseline.get("metric_schema_version", 1)
+
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("No se pudo leer metrics_baselines.json: %s", exc)
+
+    return "legacy", 1
+
 _SESSION_METRICS: dict[str, int | float] = {
     "turns":        0,
     "total_llm_ms": 0,
@@ -44,6 +61,7 @@ def record_turn(
     tokens_est: int = 0,
     cached: bool = False,
     num_docs: int = 0,
+
 ) -> None:
     """Registra las métricas de un turno completado en metrics.jsonl.
 
@@ -63,7 +81,11 @@ def record_turn(
 
     Nunca lanza excepciones — los errores de escritura se loguean como WARNING.
     """
+    baseline_id, metric_schema_version = _get_active_baseline()
+
     entry = {
+        "baseline_id": baseline_id,
+        "metric_schema_version": metric_schema_version,
         "timestamp":    datetime.now().isoformat(timespec="seconds"),
         "route":        route,
         "intent_type":  intent_type,

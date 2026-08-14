@@ -545,7 +545,13 @@ def _build_suggestion(state: str, ws: dict, task_classes: dict) -> str:
 
 def get_profile() -> dict:             return load_profile()
 def get_project_facts() -> dict:       return load_project_facts()
-def get_tasks() -> dict:               return load_tasks() or {"tasks": []}
+def get_tasks() -> dict:
+    """Carga todas las tareas pendientes del proyecto."""
+    data = load_tasks()
+    if data is None:
+        log.error("No se pudieron cargar las tareas.")
+        return {"tasks": []}
+    return data
 def get_work_state() -> dict:          return load_work_state()
 def get_last_episode() -> dict | None: return load_last_episode()
 
@@ -555,6 +561,18 @@ def get_last_episode() -> dict | None: return load_last_episode()
 # ─────────────────────────────────────────────
 
 def save_fact(key: str, value: str) -> bool:
+    """
+    Guarda un nuevo hecho en la memoria del proyecto.
+
+    Implementa lógica para evitar guardar hechos duplicados o con valores idénticos.
+
+    Args:
+        key (str): La clave única del hecho (ej: "Cliente Principal").
+        value (str): El valor asociado al hecho.
+
+    Returns:
+        bool: True si el hecho fue guardado exitosamente, False en caso contrario.
+    """
     if not key.strip() or not value.strip():
         log.warning("save_fact rechazado: key=%r value=%r", key, value)
         return False
@@ -605,8 +623,16 @@ def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
         return ""
 
     valid_priorities = {"low", "medium", "high"}
-    if priority not in valid_priorities:
+    normalized_priority = priority.strip().lower()
+
+    if normalized_priority not in valid_priorities:
+        log.warning(
+            "Prioridad '%s' no válida. Usando 'medium' por defecto.",
+            priority,
+        )
         priority = "medium"
+    else:
+        priority = normalized_priority
 
     existing_tasks   = load_tasks()
     title_normalized = title.lower()
@@ -679,11 +705,25 @@ def suggest_new_tasks(episodes: list[dict]) -> list[dict]:
     return new_tasks
 
 
-def add_task_to_memory(task: dict | str) -> str:
+def add_task_to_memory(task: Union[dict, str]) -> str:
+    """
+    Convierte una tarea (ya sea un string o un diccionario) en un ID de tarea guardado.
+
+    Args:
+        task (Union[dict, str]): El objeto tarea a registrar. Si es string, se usa como título.
+                                  Si es dict, debe contener 'title', 'priority' y 'notes'.
+
+    Returns:
+        str: El ID único de la tarea creada, o "" si falla.
+    """
     if isinstance(task, str):
         return create_task(task)
+
+    # Validación más estricta para diccionarios
     if not isinstance(task, dict):
+        log.error("add_task_to_memory recibió un tipo de dato no soportado.")
         return ""
+
     return create_task(
         title=task.get("title", ""),
         priority=task.get("priority", "medium"),
