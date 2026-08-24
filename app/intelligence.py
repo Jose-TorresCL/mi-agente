@@ -318,7 +318,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         f = get_project_facts()
         if not f:
             return MemoryContext(context_text="", fallback="No encontré hechos del proyecto.",
-                                 sources=["project_facts"], needs_llm=False)
+                                 sources=["project_facts"], needs_llm=True)
         context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
         return MemoryContext(context_text=context_text,
                              fallback="**Hechos del proyecto:**\n" + context_text,
@@ -343,7 +343,7 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         context_text = "\n".join(context_lines)
         return MemoryContext(context_text=context_text,
                              fallback="**Estado de trabajo:**\n" + context_text,
-                             sources=["work_state"], needs_llm=True)
+                             sources=["work_state"], needs_llm=False)
 
     if kind == "episode":
         episodes: list[dict] = []
@@ -487,7 +487,7 @@ def _generate_rag_answer(
     user_input: str,
     rag_ctx: RagContext,
     chat_history: list,
-) -> tuple[str, list, int, bool, float]:
+) -> tuple[str, list, int, bool, float, int, str]:
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
@@ -503,7 +503,10 @@ def _generate_rag_answer(
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
+    t_fid_start = time.perf_counter()
+
     is_faithful, score = verify_fidelity(answer, rag_ctx["source_docs"], question=user_input)
+    fidelity_ms = int((time.perf_counter() - t_fid_start) * 1000)
 
     if score == -1.0:
         # Respuesta no verificada: se antepone advertencia explícita.
@@ -512,12 +515,14 @@ def _generate_rag_answer(
         warning = "⚠️ No pude verificar esta respuesta contra los documentos (embeddings ocupados). Tómala con cautela:\n\n"
         answer = warning + answer
         is_faithful = True  # score=-1.0 ya quedó registrado en logs vía log_fidelity_uncertain
+        fidelity_status = "uncertain"
     elif not is_faithful:
         log.warning("[R6-RAG] Respuesta bloqueada por fidelidad (score=%.3f): %s",
                     score, user_input[:60])
-        return NO_EVIDENCE_MSG, rag_ctx["source_docs"], llm_ms, False, score
-
-    return answer, rag_ctx["source_docs"], llm_ms, True, score
+        return NO_EVIDENCE_MSG, rag_ctx["source_docs"], llm_ms, False, score, fidelity_ms, "blocked"
+    else:
+            fidelity_status = "ok"
+    return answer, rag_ctx["source_docs"], llm_ms, True, score, fidelity_ms, fidelity_status
 
 
 def _decide_rag(
@@ -525,16 +530,16 @@ def _decide_rag(
     vectordb: Any,
     chat_history: list,
     route: str,
-) -> tuple[str, list, int, int, bool]:
+) -> tuple[str, list, int, int, bool, int, str]:
     is_identity = any(kw in user_input.lower() for kw in _IDENTITY_KEYWORDS)
 
     hit = _lookup_rag_cache(user_input, is_identity)
     if hit is not None:
-        return hit, [], 0, 0, True
+        return hit, [], 0, 0, True, 0, "not_run"
 
     rag_ctx = _retrieve_rag_context(user_input, vectordb, route)
 
-    answer, source_docs, llm_ms, is_faithful, score = _generate_rag_answer(
+    (answer, source_docs, llm_ms, is_faithful, score,fidelity_ms, fidelity_status) = _generate_rag_answer(
         user_input, rag_ctx, chat_history
     )
 
@@ -555,8 +560,7 @@ def _decide_rag(
         if reasons:
             log.debug("[R6-RAG] No cacheado (%s)", ", ".join(reasons))
 
-    return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False
-
+    return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False, fidelity_ms, fidelity_status
 
 # ──────────────────────────────────────────────
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
@@ -678,7 +682,7 @@ def process_turn(
             log.debug("[memory] intents detectados: %s", intents)
         answer = _decide_memory(user_input, intents, chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
-        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
+        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel, tokens_est=int(len(answer.split()) * 1.3))
         return DecisionResult(
             route="memory", response=answer, cached=False, source="memory",
             source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
@@ -686,7 +690,7 @@ def process_turn(
 
     if route == "math":
         answer = _decide_math(user_input)
-        _record_metric(route="math", intent_type="math", channel=channel)
+        _record_metric(route="math", intent_type="math", channel=channel, tokens_est=int(len(answer.split()) * 1.3))
         return DecisionResult(
             route="math", response=answer, cached=False, source="direct",
             source_docs=[], retrieval_ms=0, llm_ms=0, tokens_est=0,
@@ -703,14 +707,14 @@ def process_turn(
             source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
-    answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
-        user_input, vectordb, chat_history, route
-    )
+    (answer, source_docs, retrieval_ms, llm_ms, cached, fidelity_ms, fidelity_status) = _decide_rag(user_input, vectordb, chat_history, route)
     _record_metric(
         route="rag", intent_type="rag",
         num_docs=len(source_docs), retrieval_ms=retrieval_ms,
         llm_ms=llm_ms, channel=channel,
-    )
+        cached=cached,tokens_est=int(len(answer.split()) * 1.3),
+        fidelity_ms=fidelity_ms, fidelity_status=fidelity_status,)
+    
     return DecisionResult(
         route="rag", response=answer, cached=cached, source="rag",
         source_docs=source_docs, retrieval_ms=retrieval_ms,
