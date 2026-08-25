@@ -199,6 +199,12 @@ saber qué caso se agregó y documentarlo.
 | R4-C | Test: composición de capas no excede límite de tokens | `tests/test_memory_layer.py` | Bajo |
 | R4-D | Alinear `ProfileData` en `schemas.py` con claves reales de `profile.json` (`user_name`, `user_level`, `project_type`) | `app/schemas.py` | Bajo |
 
+### Ajuste verificado — 19/08/2026
+
+- `work_state` responde directamente desde memoria estructurada, sin síntesis LLM.
+- Caso cubierto por `test_work_state_responde_directo_sin_llm`.
+- Validación: 48 tests de memoria/composición en verde y prueba manual correcta.
+
 ### Nota operativa 03/08/2026
 
 R4 sigue siendo relevante porque el fallo práctico actual del carril `memory`
