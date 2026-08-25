@@ -134,9 +134,14 @@ def _retrieval_time_from_row(row: dict) -> float:
 
 
 def _fidelity_time_from_row(row: dict) -> float:
+    """Devuelve el tiempo de fidelity en segundos."""
+    if row.get("fidelity_ms") is not None:
+        return _safe_float(row.get("fidelity_ms")) / 1000
+
     for key in ("fidelity_time_s", "fidelity_s"):
         if row.get(key) is not None:
             return _safe_float(row.get(key))
+
     return 0.0
 
 

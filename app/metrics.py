@@ -61,7 +61,8 @@ def record_turn(
     tokens_est: int = 0,
     cached: bool = False,
     num_docs: int = 0,
-
+    fidelity_ms: int = 0,
+    fidelity_status: str = "not_run",
 ) -> None:
     """Registra las métricas de un turno completado en metrics.jsonl.
 
@@ -96,6 +97,8 @@ def record_turn(
         "tokens_est":   tokens_est,
         "cached":       cached,
         "num_docs":     num_docs,
+        "fidelity_ms": fidelity_ms,
+        "fidelity_status": fidelity_status,
     }
     try:
         _METRICS_DIR.mkdir(parents=True, exist_ok=True)

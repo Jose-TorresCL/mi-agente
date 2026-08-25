@@ -159,3 +159,16 @@ def test_get_metrics_summary_y_reset(metrics_tmp):
     summary_after = m.get_metrics_summary()
     assert summary_after["turns"] == 0
     assert summary_after["total_tokens_est"] == 0
+
+def test_persiste_metricas_fidelity(metrics_tmp):
+    import app.metrics as m
+
+    m.record_turn(
+        route="rag",
+        fidelity_ms=125,
+        fidelity_status="ok",
+    )
+    entry = _read_single_entry(metrics_tmp)
+
+    assert entry["fidelity_ms"] == 125
+    assert entry["fidelity_status"] == "ok"
