@@ -535,7 +535,7 @@ def _decide_rag(
 
     hit = _lookup_rag_cache(user_input, is_identity)
     if hit is not None:
-        return hit, [], 0, 0, True, 0, "not_run"
+        return hit, [], 0, 0, True, 0, "skipped_cache"
 
     rag_ctx = _retrieve_rag_context(user_input, vectordb, route)
 
