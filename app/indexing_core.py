@@ -61,7 +61,13 @@ EXCLUDED_FILENAMES: set[str] = {
     "estado_proyecto.md",
     "roadmap.md",
 }
+EXCLUDED_DIRS: set[str] = {"historico", "borradores", ".pytest_cache"}
 
+def _is_excluded(path: Path) -> bool:
+    """True si el archivo está excluido por nombre de archivo o por carpeta."""
+    if path.name in EXCLUDED_FILENAMES:
+        return True
+    return any(part.lower() in EXCLUDED_DIRS for part in path.parts)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-reindex — detección de docs nuevos
@@ -91,7 +97,7 @@ def needs_reindex() -> tuple[bool, str]:
         p for p in DOCS_DIR.rglob("*")
         if p.is_file()
         and p.suffix.lower() in {".md", ".txt", ".pdf"}
-        and p.name not in EXCLUDED_FILENAMES
+        and not _is_excluded(p)
     ]
     if not doc_files:
         return False, "no hay docs en data/docs/"
@@ -238,8 +244,8 @@ def load_documents() -> list[Document]:
             continue
 
         # ── Exclusiones explícitas ──────────────────────────────────────────
-        if path.name in EXCLUDED_FILENAMES:
-            log.info("[indexing] EXCLUIDO: %s (en lista de exclusión)", path.name)
+        if _is_excluded(path):
+            log.info("[indexing] EXCLUIDO: %s (nombre o carpeta)", path.name)
             continue
 
         suffix = path.suffix.lower()
