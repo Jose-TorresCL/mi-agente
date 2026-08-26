@@ -118,7 +118,7 @@ def get_embedding(
                 time.sleep(delay)
             resp = requests.post(
                 f"{OLLAMA_URL}/api/embed",
-                json={"model": EMBEDDING_MODEL, "input": text},
+                json={"model": EMBEDDING_MODEL, "input": text, "keep_alive": -1},
                 timeout=timeout,
             )
             elapsed_ms = int((time.perf_counter() - start) * 1000)

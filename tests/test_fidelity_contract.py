@@ -109,7 +109,7 @@ def test_get_embedding_uses_api_embed_and_embeddings_array(monkeypatch):
     result = semantic_cache.get_embedding("hola", timeout=1.0, retry_delays=[0.0], max_attempts=1)
     assert result == [0.1, 0.2]
     assert calls[0]["url"].endswith("/api/embed")
-    assert calls[0]["json"] == {"model": semantic_cache.EMBEDDING_MODEL, "input": "hola"}
+    assert calls[0]["json"] == {"model": semantic_cache.EMBEDDING_MODEL, "input": "hola", "keep_alive": -1,}
 
 
 def test_embedding_model_constants_are_distinct():

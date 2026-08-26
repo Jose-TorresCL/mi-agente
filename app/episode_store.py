@@ -95,7 +95,7 @@ def _get_collection():
         from langchain_ollama import OllamaEmbeddings
         from langchain_chroma import Chroma
 
-        embeddings = OllamaEmbeddings(model="nomic-embed-text")
+        embeddings = OllamaEmbeddings(model="nomic-embed-text", keep_alive=-1,)
         _collection = Chroma(
             collection_name=EPISODE_COLLECTION,
             persist_directory=str(CHROMA_DIR),

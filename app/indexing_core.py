@@ -334,7 +334,7 @@ def split_documents(docs: list[Document]) -> list[Document]:
 def build_vectorstore(chunks: list[Document]) -> Chroma:
     embeddings = OllamaEmbeddings(
         model="nomic-embed-text",
-        base_url=OLLAMA_URL,
+        base_url=OLLAMA_URL,  keep_alive=-1,
     )
 
     vectordb = Chroma.from_documents(
