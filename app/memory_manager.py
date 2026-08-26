@@ -608,34 +608,35 @@ def _is_meaningful_next_step(value: str) -> bool:
     return len(words) >= 2 or len(v) >= 12
 
 
-def update_state(field: str, value: str) -> None:
+def update_state(field: str, value: str) -> bool:
+    """Actualiza un campo del work_state. Devuelve True si escribió.
+
+    Rechaza (False) valores vacíos y next_step triviales — el caller
+    usa el retorno para no mentir en su mensaje al usuario.
+    """
     if not field.strip() or not value.strip():
         log.warning("update_state ignorado: field=%r value=%r", field, value)
-        return
+        return False
     if field.strip() == "next_step" and not _is_meaningful_next_step(value):
         log.warning("update_state: next_step trivial rechazado: %r", value)
-        return
+        return False
     update_work_state(field.strip(), value.strip())
     log.debug("work_state actualizado: %s = %s", field, value)
-
+    return True
 # ─────────────────────────────────────────────
 # Higiene de escritura — limpieza de texto crudo del router
 # ─────────────────────────────────────────────
 
 _GOAL_TRIGGER_PREFIXES = [
-    "mi objetivo para hoy es",
-    "mi objetivo de hoy es",
-    "mi objetivo hoy es",
-    "objetivo de esta sesión es",
-    "objetivo de esta sesion es",
-    "objetivo de esta sesión",
-    "objetivo de esta sesion",
-    "objetivo de hoy es",
-    "objetivo de hoy",
-    "quiero lograr esta sesión",
-    "quiero lograr esta sesion",
-    "quiero lograr hoy",
-    "meta de hoy es",
+    "mi objetivo para hoy es", "mi objetivo de hoy es", "mi objetivo hoy es",
+    "objetivo de esta sesión es", "objetivo de esta sesion es",
+    "objetivo de esta sesión", "objetivo de esta sesion",
+    "objetivo de hoy es", "objetivo de hoy",
+    "quiero lograr esta sesión", "quiero lograr esta sesion", "quiero lograr hoy",
+    "meta de esta sesión es", "meta de esta sesion es", "meta de hoy es",
+    "hoy quiero", "en esta sesión quiero", "en esta sesion quiero",
+    "define mi objetivo", "guarda mi objetivo",
+    "mi meta hoy es", "mi meta hoy", "mi objetivo hoy",
 ]
 
 
@@ -656,13 +657,15 @@ def _clean_goal_text(goal: str) -> str:
  
 
 
-def set_session_goal(goal: str) -> None:
+def set_session_goal(goal: str) -> str | None:
+    """Limpia el prefijo trigger y guarda. Devuelve el texto guardado o None."""
     goal = _clean_goal_text(goal)
     if not goal:
         log.warning("set_session_goal ignorado: goal vacío tras limpieza")
-        return
+        return None
     update_session_goal(goal)
     log.debug("session_goal actualizado: %s", goal)
+    return goal
 
 _TASK_COMMAND_PREFIXES = [
     "nueva tarea", "crea tarea", "crear tarea",

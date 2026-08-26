@@ -177,7 +177,9 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "foco a ", "foco en ",
     "mi foco es", "mi foco sera", "mi foco ahora es",
     "cambio de foco", "cambio el foco",
-    "ahora me enfoco en", "me enfoco en",
+    "ahora me enfoco en", "me enfoco en", "siguiente paso:", "siguiente paso es", "pon en siguiente paso",
+    "proximo paso:", "próximo paso:", "actualiza el siguiente paso",
+    "cambia el siguiente paso",
     "quiero enfocarme en", "voy a enfocarme en",
 ]
 

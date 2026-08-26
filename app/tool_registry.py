@@ -267,46 +267,14 @@ def _handle_read_file(user_input: str) -> str:
 
 
 def _handle_set_session_goal(user_input: str) -> str:
-    prefixes = [
-        "mi objetivo hoy es",
-        "mi objetivo para hoy es",
-        "objetivo de esta sesion es",
-        "objetivo de esta sesión es",
-        "objetivo de hoy es",
-        "objetivo de hoy:",
-        "quiero lograr hoy",
-        "quiero lograr esta sesion",
-        "quiero lograr esta sesión",
-        "meta de hoy es",
-        "meta de esta sesion es",
-        "meta de esta sesión es",
-        "hoy quiero",
-        "en esta sesion quiero",
-        "en esta sesión quiero",
-        "define mi objetivo:",
-        "define mi objetivo",
-        "guarda mi objetivo:",
-        "guarda mi objetivo",
-        "mi meta hoy es",
-        "mi meta hoy",
-        "mi objetivo hoy",
-        "objetivo de hoy",
-    ]
-    content = user_input.strip()
-    content_lower = content.lower()
-    for prefix in sorted(prefixes, key=len, reverse=True):
-        if content_lower.startswith(prefix):
-            content = content[len(prefix):].strip().lstrip(":").strip()
-            break
-
-    if not content:
+    """Pasa el texto crudo al manager y reporta lo que realmente se guardó."""
+    saved = memory_manager.set_session_goal(user_input)
+    if saved is None:
         return (
             "No entendí cuál es tu objetivo. "
             "Prueba con: 'mi objetivo hoy es cerrar el Eje 1'."
         )
-
-    memory_manager.set_session_goal(content)
-    return f"✅ Objetivo de sesión guardado: '{content}'"
+    return f"✅ Objetivo de sesión guardado: '{saved}'"
 
 
 def _handle_plan_retoma(user_input: str) -> str:

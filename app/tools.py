@@ -147,10 +147,20 @@ def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> T
             error_code="EMPTY_TITLE",
             tool_name="tool_create_task",
         )
+
+    # Read-after-write: el mensaje muestra lo que quedó guardado,
+    # no el texto crudo del usuario.
+    saved = next(
+        (t for t in _mm_get_tasks().get("tasks", []) if t.get("id") == task_id),
+        None,
+    )
+    shown_title = saved.get("title", title) if saved else title
+    shown_priority = saved.get("priority", priority) if saved else priority
+
     return ToolResult(
         ok=True,
-        message=f"✓ Tarea creada: [{task_id}] {title} (prioridad: {priority})",
-        data={"task_id": task_id, "title": title, "priority": priority},
+        message=f"✓ Tarea creada: [{task_id}] {shown_title} (prioridad: {shown_priority})",
+        data={"task_id": task_id, "title": shown_title, "priority": shown_priority},
         side_effect=f"creado {task_id} en tasks.json",
         tool_name="tool_create_task",
     )
@@ -219,7 +229,7 @@ def tool_update_work_state(
 ) -> ToolResult:
     """Actualiza work_state.json desde conversación libre o desde kwargs directos."""
     cambios: list[str] = []
-
+    rechazos: list[str] = []
     if current_focus is not None:
         val = current_focus.strip()
         if val:
@@ -231,7 +241,9 @@ def tool_update_work_state(
         if val:
             _mm_update_state("next_step", val)
             cambios.append(f"next_step → '{val}'")
-
+        else:
+            rechazos.append(f"next_step '{val}' es muy corto o trivial — dame algo más específico")
+            
     if last_completed_step is not None:
         val = last_completed_step.strip()
         if val:
@@ -280,7 +292,7 @@ def tool_update_work_state(
                         cambios.append(f"next_step → '{valor}'")
                     break
 
-    if not cambios:
+    if not cambios and not rechazos:
         return ToolResult(
             ok=False,
             message="⚠️ No entendí qué campo actualizar. Usa: 'foco a X', 'completé X' o 'siguiente paso es X'.",
@@ -288,14 +300,20 @@ def tool_update_work_state(
             tool_name="tool_update_work_state",
         )
 
-    _mm_update_state("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    if cambios:
+        _mm_update_state("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-    msg = "✅ work_state actualizado:\n" + "\n".join(f"  • {c}" for c in cambios)
+    partes = []
+    if cambios:
+        partes.append("✅ work_state actualizado:\n" + "\n".join(f" • {c}" for c in cambios))
+    if rechazos:
+        partes.append("⚠️ No guardado:\n" + "\n".join(f" • {r}" for r in rechazos))
+
     return ToolResult(
-        ok=True,
-        message=msg,
-        data={"cambios": cambios},
-        side_effect="escrito work_state.json",
+        ok=bool(cambios),
+        message="\n".join(partes),
+        data={"cambios": cambios, "rechazos": rechazos},
+        side_effect="escrito work_state.json" if cambios else "",
         tool_name="tool_update_work_state",
     )
 
