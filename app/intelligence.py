@@ -629,6 +629,9 @@ def process_turn(
         route = route_or_ctx
         channel = "cli"
 
+    if user_input is None:
+        user_input = ""
+
     if chat_history is None:
         chat_history = []
 

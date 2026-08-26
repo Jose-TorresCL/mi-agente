@@ -98,7 +98,7 @@ Detección de sesión retomada:
   chat_ui.py active el modo compacto sin duplicar lógica de fechas.
 """
 from __future__ import annotations
-
+import re
 from datetime import datetime
 from app.logger import get_logger
 from app.text_utils import _normalize
@@ -595,26 +595,130 @@ def save_fact(key: str, value: str) -> bool:
     log.debug("Hecho guardado: %s = %s", key, value)
     return True
 
+_NEXT_STEP_STOPWORDS = {
+    "test", "hola", "nada", "prueba", "ok", "vale",
+    "no se", "no sé", "chao", "adios", "adiós",
+}
+def _is_meaningful_next_step(value: str) -> bool:
+    """True si el valor es un siguiente paso accionable, no ruido."""
+    v = value.strip().lower().strip("'\"")
+    if not v or v in _NEXT_STEP_STOPWORDS:
+        return False
+    words = [w for w in v.split() if len(w) > 2]
+    return len(words) >= 2 or len(v) >= 12
+
 
 def update_state(field: str, value: str) -> None:
     if not field.strip() or not value.strip():
         log.warning("update_state ignorado: field=%r value=%r", field, value)
         return
+    if field.strip() == "next_step" and not _is_meaningful_next_step(value):
+        log.warning("update_state: next_step trivial rechazado: %r", value)
+        return
     update_work_state(field.strip(), value.strip())
     log.debug("work_state actualizado: %s = %s", field, value)
 
+# ─────────────────────────────────────────────
+# Higiene de escritura — limpieza de texto crudo del router
+# ─────────────────────────────────────────────
+
+_GOAL_TRIGGER_PREFIXES = [
+    "mi objetivo para hoy es",
+    "mi objetivo de hoy es",
+    "mi objetivo hoy es",
+    "objetivo de esta sesión es",
+    "objetivo de esta sesion es",
+    "objetivo de esta sesión",
+    "objetivo de esta sesion",
+    "objetivo de hoy es",
+    "objetivo de hoy",
+    "quiero lograr esta sesión",
+    "quiero lograr esta sesion",
+    "quiero lograr hoy",
+    "meta de hoy es",
+]
+
+
+def _clean_goal_text(goal: str) -> str:
+    """Quita el prefijo trigger ('mi objetivo de hoy es:') y separadores.
+
+    El router detecta la intención y pasa el texto casi crudo;
+    aquí se guarda solo el contenido. Never raises.
+    """
+    cleaned = goal.strip()
+    lowered = cleaned.lower()
+    for prefix in sorted(_GOAL_TRIGGER_PREFIXES, key=len, reverse=True):
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+    return cleaned.lstrip(" :-–—").strip().strip("'\"")
+
+ 
+
 
 def set_session_goal(goal: str) -> None:
-    goal = goal.strip()
+    goal = _clean_goal_text(goal)
     if not goal:
-        log.warning("set_session_goal ignorado: goal vacío")
+        log.warning("set_session_goal ignorado: goal vacío tras limpieza")
         return
     update_session_goal(goal)
     log.debug("session_goal actualizado: %s", goal)
 
+_TASK_COMMAND_PREFIXES = [
+    "nueva tarea", "crea tarea", "crear tarea",
+    "agrega tarea", "agregar tarea",
+    "añade tarea", "añadir tarea",
+    "registra tarea", "registrar tarea",
+]
+
+# Ambiguos: solo se cortan si vienen seguidos de ":" — así un título
+# legítimo como "nueva funcionalidad de X" no se daña.
+_TASK_AMBIGUOUS_PREFIXES = ["nueva", "tarea"]
+
+_TASK_PRIORITY_SUFFIX_RE = re.compile(
+    r"[,;\s]+prioridad\s*(alta|media|baja|high|medium|low)?\s*[.,;]?\s*$",
+    re.IGNORECASE,
+)
+
+_PRIORITY_ALIASES = {"alta": "high", "media": "medium", "baja": "low"}
+
+
+def _clean_task_title(title: str) -> tuple[str, str | None]:
+    """Limpia el título crudo de una tarea creada por lenguaje natural.
+
+    Quita prefijos de comando ('crea tarea:', 'nueva:') y extrae la
+    prioridad embebida al final (', prioridad alta').
+
+    Returns: (título_limpio, prioridad_embebida o None). Never raises.
+    """
+    cleaned = title.strip().strip("'\"")
+    lowered = cleaned.lower()
+    for prefix in _TASK_COMMAND_PREFIXES:
+        if lowered.startswith(prefix):
+            rest = cleaned[len(prefix):]
+            if rest.startswith((" ", ":")):
+                cleaned = rest.lstrip(" :").strip().strip("'\"")
+                lowered = cleaned.lower()
+            break
+    else:
+        for prefix in _TASK_AMBIGUOUS_PREFIXES:
+            if lowered.startswith(prefix + ":"):
+                cleaned = cleaned[len(prefix):].lstrip(" :").strip().strip("'\"")
+                break
+
+    embedded = None
+    m = _TASK_PRIORITY_SUFFIX_RE.search(cleaned)
+    if m:   
+        if m.group(1):
+            embedded = _PRIORITY_ALIASES.get(m.group(1).lower(), m.group(1).lower())
+        cleaned = cleaned[:m.start()].rstrip(" ,;:'\"").strip()
+    return cleaned, embedded
 
 def create_task(title: str, priority: str = "medium", notes: str = "") -> str:
     title    = title.strip()
+    title, embedded_priority = _clean_task_title(title)
+    if embedded_priority:
+        priority = embedded_priority
     priority = priority.strip().lower()
     notes    = notes.strip()
 
