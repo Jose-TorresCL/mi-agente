@@ -90,6 +90,11 @@ _STRUCTURED_TASKS_SIGNALS = {
     "mas importante", "más importante", "mayor prioridad",
     "pendientes", "abiertas",
 }
+_STRUCTURED_FACTS_SIGNALS = {
+    "fase", "version", "stack", "tecnologias",
+    "hechos", "datos del proyecto", "nombre del proyecto",
+    "lista", "listar", "listame", "muestrame",
+}
 
 def _is_structured_tasks_query(question: str) -> bool:
     """True si la consulta sobre tareas es mecánica (listar/contar/ordenar
@@ -97,6 +102,15 @@ def _is_structured_tasks_query(question: str) -> bool:
     q = _normalize(question)
     return any(sig in q for sig in _STRUCTURED_TASKS_SIGNALS)
 
+
+def _is_structured_facts_query(question: str) -> bool:
+    """True si la consulta sobre facts es mecánica (leer/listar campos).
+    A diferencia de tasks, aquí la señal de razonamiento gana:
+    'por qué estamos en esta fase' debe ir al LLM."""
+    if _has_reasoning_signal(question):
+        return False
+    q = _normalize(question)
+    return any(sig in q for sig in _STRUCTURED_FACTS_SIGNALS)
 
 def _is_personal_reasoning(question: str) -> bool:
     q_lower = question.lower()
@@ -351,11 +365,16 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         f = get_project_facts()
         if not f:
             return MemoryContext(context_text="", fallback="No encontré hechos del proyecto.",
-                                 sources=["project_facts"], needs_llm=True)
+                                 sources=["project_facts"], needs_llm=False)
+        is_structured = _is_structured_facts_query(question)
         context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
-        return MemoryContext(context_text=context_text,
-                             fallback="**Hechos del proyecto:**\n" + context_text,
-                             sources=["project_facts"], needs_llm=True)
+        formatted = f"Hechos del proyecto:\n{context_text}"
+        return MemoryContext(
+            context_text=context_text,
+            fallback=formatted,
+            sources=["project_facts:list"] if is_structured else ["project_facts"],
+            needs_llm=not is_structured,
+        )
 
     if kind == "work_state":
         w = get_work_state()
@@ -476,8 +495,11 @@ def _decide_memory(
 
     if intents == ["tasks"] and _is_structured_tasks_query(question):
         return mem_ctx["fallback"]
-
-    if _has_reasoning_signal(question) and "tasks:list" not in mem_ctx["sources"]:
+    
+    if any(s.endswith(":list") for s in mem_ctx["sources"]):
+        return mem_ctx["fallback"]  
+    
+    if _has_reasoning_signal(question):
         context_for_llm = mem_ctx["context_text"] or mem_ctx["fallback"]
         if context_for_llm.strip():
             log.debug("[Fix3] señal de razonamiento detectada — forzando síntesis LLM")
