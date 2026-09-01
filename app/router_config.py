@@ -111,7 +111,8 @@ MEMORY_EPISODE_KEYWORDS = [
     "que hicimos antes", "que trabajamos",
     "historial de sesiones", "episodios anteriores",
     "que avance", "que avanzamos",
-    "ultima vez que",
+    "ultima vez que","alguna vez", "hablamos de", "hablamos sobre",
+    "hemos hablado", "ya habiamos",
     "briefing", "dame un briefing",
     "retomar el trabajo", "retomar trabajo", "retomar la sesion",
     "desde el ultimo episodio", "desde el ultimo episodio sugiere",
@@ -307,7 +308,9 @@ RAG_HINTS = [
 
 MEMORY_REASONING_KEYWORDS = [
     "que me conviene hacer",
-    "que me conviene atacar",
+    "que me conviene atacar","que me recomiendas hacer", "que me recomiendas atacar",
+    "que me recomiendas primero", "que me sugieres",
+    "que me aconsejas", "que me recomendarias",
     "que me conviene primero",
     "que deberia hacer primero",
     "que deberia atacar primero",
