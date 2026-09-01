@@ -52,8 +52,7 @@ Para liberar la RAM si hiciera falta: `ollama stop nomic-embed-text`.
 
 ## Datos medidos
 
-- Latencia de embedding antes de keep_alive: no medido
-- Latencia después: no medido
+- Scores de verificación: max_similitud=0.784 (umbral=0.55) — medido 01/09/2026, post-fix confirmado en producción local.
 
 ## Resumen ejecutivo
 
