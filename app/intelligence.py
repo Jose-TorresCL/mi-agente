@@ -644,7 +644,7 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     return "\n".join(lines)
 
 
-def _decide_exit(chat_history: list) -> DecisionResult:
+def _decide_exit(chat_history: list, channel: str = "cli") -> DecisionResult:
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -665,7 +665,7 @@ def _decide_exit(chat_history: list) -> DecisionResult:
         else:
             log.warning("No se pudo generar resumen de sesión")
 
-    record_episode(summary=summary, turns=turns)
+    record_episode(summary=summary, turns=turns, channel=channel)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
     return DecisionResult(
         route="exit",
@@ -707,7 +707,7 @@ def process_turn(
         chat_history = []
 
     if route == "exit":
-        result = _decide_exit(chat_history)
+        result = _decide_exit(chat_history, channel=channel)
         _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 

@@ -135,6 +135,7 @@ def _episode_to_doc(episode: dict) -> tuple[str, dict, str]:
         "time":               time_,
         "turns":              turns,
         "source":             "episode",
+        "channel":            episode.get("channel", "unknown"),
         "carril_dominante":   carril_dominante,
         "tareas_completadas": tareas_completadas,
         "exitoso":            exitoso_str,

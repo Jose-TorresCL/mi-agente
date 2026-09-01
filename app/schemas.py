@@ -365,6 +365,7 @@ class EpisodeItemRequired(TypedDict, total=True):
 
 class EpisodeItem(EpisodeItemRequired, total=False):
     """Schema completo de cada episodio en episodic_memory.json."""
+    channel: str
     carril_dominante:   str
     tareas_completadas: int
     exitoso:            str   # "true" | "false" | "unmarked"
@@ -377,6 +378,7 @@ class EpisodicMemory(TypedDict):
 
 _EP_KNOWN_KEYS = {
     "date", "time", "turns", "summary",
+    "channel",
     "carril_dominante", "tareas_completadas", "exitoso",
 }
 

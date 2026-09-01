@@ -379,17 +379,18 @@ def update_session_goal(goal: str) -> None:
 MAX_EPISODES = 10
 
 
-def save_episode(summary: str, turns: int) -> None:
+def save_episode(summary: str, turns: int, channel: str = "cli") -> None:
     """Guarda un resumen de sesión en episodic_memory.json e indexa en Chroma."""
     data: EpisodicMemory = _read_json(EPISODIC_MEMORY_FILE, {"episodes": []})  # type: ignore[assignment]
     episodes = data.get("episodes", [])
-
+ 
     now = datetime.now()
     new_episode: dict = {
         "date":    now.strftime("%Y-%m-%d"),
         "time":    now.strftime("%H:%M"),
         "turns":   turns,
         "summary": summary.strip(),
+        "channel": channel,
     }
     episodes.append(new_episode)
 

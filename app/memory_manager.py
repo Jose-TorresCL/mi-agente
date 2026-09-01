@@ -764,11 +764,11 @@ def complete_task(task_id: str) -> None:
     log.debug("Tarea completada: %s", task_id)
 
 
-def record_episode(summary: str, turns: int) -> None:
+def record_episode(summary: str, turns: int, channel: str = "cli") -> None:
     if not summary.strip():
         log.warning("record_episode ignorado: summary vacío")
         return
-    save_episode(summary=summary.strip(), turns=turns)
+    save_episode(summary=summary.strip(), turns=turns, channel=channel)
     log.debug("Episodio registrado: %d turnos", turns)
 
 
