@@ -98,6 +98,12 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "que sprint", "sprint actual",
 ]
 
+_RE_RECENT_EPISODE = re.compile(
+    r"ultimas?\s+(\d+\s+)?(sesiones|conversaciones|veces)",
+    re.IGNORECASE,
+)
+
+
 MEMORY_EPISODE_KEYWORDS = [
     "que aprendi", "que aprendimos",
     "sesion anterior", "ultima sesion",
@@ -114,6 +120,8 @@ MEMORY_EPISODE_KEYWORDS = [
     "que paso en la sesion anterior", "que hicimos en la sesion anterior",
     "acciones concretas que deberia hacer hoy",
     "sugerencias desde el ultimo episodio",
+    "ultimas sesiones", "sesiones recientes", "sesiones pasadas",
+    "ultimas conversaciones", "conversaciones recientes",
 ]
 
 AGENT_IDENTITY_KEYWORDS = [
@@ -354,6 +362,7 @@ __all__ = [
     "_TASK_SUGGESTION_SIGNALS",
     "MEMORY_PROJECT_FACTS_KEYWORDS",
     "MEMORY_EPISODE_KEYWORDS",
+    "_RE_RECENT_EPISODE",
     "AGENT_IDENTITY_KEYWORDS",
     "TOOL_SAVE_FACT_KEYWORDS",
     "TOOL_SAVE_NOTE_KEYWORDS",

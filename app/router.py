@@ -43,6 +43,7 @@ from app.router_config import (
     _TASK_SUGGESTION_SIGNALS,
     MEMORY_PROJECT_FACTS_KEYWORDS,
     MEMORY_EPISODE_KEYWORDS,
+    _RE_RECENT_EPISODE,
     AGENT_IDENTITY_KEYWORDS,
     TOOL_SAVE_FACT_KEYWORDS,
     TOOL_SAVE_NOTE_KEYWORDS,
@@ -111,6 +112,8 @@ def _is_greeting_or_trivial(question: str) -> bool:
 
 def classify_memory_query(question: str) -> str | None:
     q = _normalize(question)
+    if _RE_RECENT_EPISODE.search(q):
+        return "episode"
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):
         return "profile"
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):
