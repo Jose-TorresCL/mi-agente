@@ -61,6 +61,7 @@ from app.formatters import (
 )
 from app.schemas import TurnContext, DecisionResult
 import re
+from app.text_utils import _normalize
 
 log = get_logger(__name__)
 
@@ -79,8 +80,29 @@ _RE_ULTIMAS_N = re.compile(r'\b(\d+)\b')
 _RECENT_EPISODE_SIGNALS = {"ultima", "ultimas", "reciente", "recientes", "pasadas"}
 
 def _is_recent_episode_query(question: str) -> bool:
-    q_lower = question.lower()
+    q_lower = _normalize(question)
     return any(sig in q_lower for sig in _RECENT_EPISODE_SIGNALS)
+
+
+_STRUCTURED_TASKS_SIGNALS = {
+    "lista", "listar", "listame", "muéstrame", "muestrame",
+    "cuantas", "cuántas", "cuantos", "cuántos",
+    "mas importante", "más importante", "mayor prioridad",
+    "pendientes", "abiertas",
+}
+
+def _is_structured_tasks_query(question: str) -> bool:
+    """True si la consulta sobre tareas es mecánica (listar/contar/ordenar
+    por campo), no de juicio. Mismo patrón que _is_recent_episode_query."""
+    q = _normalize(question)
+    return any(sig in q for sig in _STRUCTURED_TASKS_SIGNALS)
+
+
+def _is_personal_reasoning(question: str) -> bool:
+    q_lower = question.lower()
+    has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
+    has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
+    return has_signal and has_pronoun
 
 
 _REASONING_SIGNALS = {
@@ -316,10 +338,12 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         if not t:
             return MemoryContext(context_text="", fallback="No encontré tareas registradas.",
                                  sources=["tasks"], needs_llm=False)
+        is_structured = _is_structured_tasks_query(question)
+        answer = format_tasks_answer(t, question=question)
         return MemoryContext(
-            context_text=format_tasks_answer(t, question=question),
-            fallback=format_tasks_answer(t, question=question),
-            sources=["tasks"],
+            context_text=answer,
+            fallback=answer,
+            sources=["tasks:list"] if is_structured else ["tasks"],
             needs_llm=False,
         )
 
@@ -431,34 +455,29 @@ def _has_reasoning_signal(question: str) -> bool:
     return any(signal in q_lower for signal in _REASONING_SIGNALS)
 
 
-def _is_personal_reasoning(question: str) -> bool:
-    q_lower = question.lower()
-    has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
-    has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
-    return has_signal and has_pronoun
-
-
 def _decide_memory(
     question: str,
     intents: list[str],
     chat_history: list | None = None,
 ) -> str:
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
-
     if not intents:
         return MEMORY_NOT_FOUND_MSG
 
     mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
     log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
               mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]))
-
+    
     if mem_ctx["needs_llm"]:
         return _synthesize_memory_answer(
             question, mem_ctx["context_text"], mem_ctx["fallback"],
             chat_history=chat_history,
         )
 
-    if _has_reasoning_signal(question):
+    if intents == ["tasks"] and _is_structured_tasks_query(question):
+        return mem_ctx["fallback"]
+
+    if _has_reasoning_signal(question) and "tasks:list" not in mem_ctx["sources"]:
         context_for_llm = mem_ctx["context_text"] or mem_ctx["fallback"]
         if context_for_llm.strip():
             log.debug("[Fix3] señal de razonamiento detectada — forzando síntesis LLM")
