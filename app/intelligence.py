@@ -60,6 +60,7 @@ from app.formatters import (
     format_episodes_context,
 )
 from app.schemas import TurnContext, DecisionResult
+import re
 
 log = get_logger(__name__)
 
@@ -73,6 +74,14 @@ _IDENTITY_KEYWORDS         = {"quién eres", "quien eres", "cómo te llamas", "c
                                "cuál es tu nombre", "cual es tu nombre", "quién soy", "quien soy"}
 _MEMORY_HISTORY_TURNS      = 3
 _MIN_EXPERIENCE_SCORE      = 0.70
+
+_RE_ULTIMAS_N = re.compile(r'\b(\d+)\b')
+_RECENT_EPISODE_SIGNALS = {"ultima", "ultimas", "reciente", "recientes", "pasadas"}
+
+def _is_recent_episode_query(question: str) -> bool:
+    q_lower = question.lower()
+    return any(sig in q_lower for sig in _RECENT_EPISODE_SIGNALS)
+
 
 _REASONING_SIGNALS = {
     "recomendar", "recomendas", "recomiendas", "recomendarías",
@@ -344,32 +353,53 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         return MemoryContext(context_text=context_text,
                              fallback="**Estado de trabajo:**\n" + context_text,
                              sources=["work_state"], needs_llm=False)
-
     if kind == "episode":
+
+        _EMPTY_MARKER = "Resumen no disponible"
+
+        if _is_recent_episode_query(question):
+            n_match = _RE_ULTIMAS_N.search(question)
+            n = int(n_match.group(1)) if n_match else 3
+            try:
+                from app.episode_store import get_recent_episodes
+                recent = get_recent_episodes(n)
+            except Exception as exc:
+                log.warning("[episode:recent] get_recent_episodes falló: %s", exc)
+                recent = []
+
+            recent_with_content = [ep for ep in recent
+                                    if _EMPTY_MARKER not in ep.get("summary", "")]
+            if recent_with_content:
+                context_text = format_episodes_context(recent_with_content)
+                return MemoryContext(context_text="", fallback=context_text,
+                                      sources=["episode:recent"], needs_llm=False)
+            return MemoryContext(context_text="",
+                                  fallback="No hay sesiones anteriores registradas.",
+                                  sources=["episode:recent"], needs_llm=False)
+
         episodes: list[dict] = []
         try:
             from app.episode_store import search_episodes
             episodes = search_episodes(question, k=3)
         except Exception as exc:
-            log.warning("[episode] search_episodes falló: %s", exc)
+            log.warning("[episode:semantic] search_episodes falló: %s", exc)
 
-        _EMPTY_MARKER = "Resumen no disponible"
         episodes_with_content = [ep for ep in episodes
                                   if _EMPTY_MARKER not in ep.get("summary", "")]
         if episodes_with_content:
             context_text = format_episodes_context(episodes_with_content)
             return MemoryContext(context_text=context_text,
-                                 fallback=f"Sesiones encontradas:\n{context_text}",
-                                 sources=["episode"], needs_llm=True)
+                                  fallback=f"Sesiones encontradas:\n{context_text}",
+                                  sources=["episode:semantic"], needs_llm=True)
 
         json_context = get_context_for("episode")
         if json_context:
             return MemoryContext(context_text="", fallback=json_context,
-                                 sources=["episode"], needs_llm=False)
+                                 sources=["episode:semantic"], needs_llm=False)
         return MemoryContext(
             context_text="",
             fallback="No encontré sesiones anteriores registradas con información relevante.",
-            sources=["episode"], needs_llm=False)
+            sources=["episode:semantic"], needs_llm=False)
 
     log.debug("_retrieve_memory_context: tipo no reconocido '%s'", kind)
     return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,

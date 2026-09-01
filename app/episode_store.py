@@ -528,6 +528,31 @@ def reindex_all() -> int:
         log.warning("[episode_store] reindex_all error: %s", exc)
         return 0
 
+def get_recent_episodes(n: int = 3) -> list[dict]:
+    """Devuelve los N episodios más recientes por fecha, sin búsqueda semántica.
+
+    A diferencia de search_episodes(), no usa embeddings ni similitud —
+    lee episodic_memory.json directamente y ordena por (date, time) descendente.
+    Usado para preguntas mecánicas tipo 'últimas N sesiones', donde el orden
+    correcto es cronológico, no semántico.
+
+    Never raises.
+    """
+    try:
+        if not EPISODIC_MEMORY_FILE.exists():
+            return []
+        with open(EPISODIC_MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        episodes = data.get("episodes", [])
+        episodes_sorted = sorted(
+            episodes,
+            key=lambda ep: (ep.get("date", ""), ep.get("time", "")),
+            reverse=True,
+        )
+        return episodes_sorted[:n]
+    except Exception as exc:
+        log.warning(f"[episode_store] get_recent_episodes error: {exc}")
+        return []
 
 def episode_index_stats() -> dict:
     """Devuelve estadísticas del índice episódico."""
