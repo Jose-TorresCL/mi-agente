@@ -32,7 +32,7 @@ Comandos disponibles:
   /reset  — borra el historial en RAM del usuario actual.
 
 Prerequisitos para arrancar:
-  - Ollama corriendo en localhost:11434 con el modelo configurado en app/config.py.
+  - Ollama corriendo en localhost:11434 con el modelo configurado en app/config.py.|
   - ChromaDB indexado (ejecutar python indexacion.py si es la primera vez).
   - .env con TELEGRAM_TOKEN definido.
 
