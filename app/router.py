@@ -43,7 +43,8 @@ from app.router_config import (
     _TASK_SUGGESTION_SIGNALS,
     MEMORY_PROJECT_FACTS_KEYWORDS,
     MEMORY_EPISODE_KEYWORDS,
-    _RE_RECENT_EPISODE,
+    matches_recent_episode_query,
+    is_market_pattern_query,
     AGENT_IDENTITY_KEYWORDS,
     TOOL_SAVE_FACT_KEYWORDS,
     TOOL_SAVE_NOTE_KEYWORDS,
@@ -112,7 +113,7 @@ def _is_greeting_or_trivial(question: str) -> bool:
 
 def classify_memory_query(question: str) -> str | None:
     q = _normalize(question)
-    if _RE_RECENT_EPISODE.search(q):
+    if matches_recent_episode_query(q):
         return "episode"
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):
         return "profile"
@@ -193,6 +194,9 @@ def _route_by_keywords(question: str) -> str | None:
 
     if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q):
         return "math"
+
+    if is_market_pattern_query(q):
+        return "tool_analizar_mercado"
 
     if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):
         return "tool_analizar_mercado"

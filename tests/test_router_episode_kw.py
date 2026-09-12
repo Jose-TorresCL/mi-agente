@@ -20,7 +20,13 @@ def test_historial_por_contenido_va_a_episode():
 
 def test_consultas_juicio_van_a_work_state():
     for frase in ["qué me recomiendas atacar primero",
-                  "¿qué me sugieres hacer hoy?",
-                  "que me recomendas atacar"]:
+                  "¿qué me sugieres hacer hoy?"]:
+        info = debug_route_layers(frase)
+        assert info == {"layer": "kw", "lane": "memory:work_state"}, frase
+
+def test_variantes_juicio_tareas_van_a_work_state():
+    from app.router import debug_route_layers
+    for frase in ["por cual tarea me recomiendas empezar",
+                  "con cual tarea me conviene partir"]:
         info = debug_route_layers(frase)
         assert info == {"layer": "kw", "lane": "memory:work_state"}, frase

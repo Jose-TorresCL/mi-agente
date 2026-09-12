@@ -103,6 +103,24 @@ _RE_RECENT_EPISODE = re.compile(
     re.IGNORECASE,
 )
 
+def matches_recent_episode_query(q: str) -> bool:
+    """True si la consulta pregunta por las últimas N sesiones/conversaciones."""
+    return bool(_RE_RECENT_EPISODE.search(q))
+
+def is_market_pattern_query(q: str) -> bool:
+    """Detecta consultas de mercado por patrón composicional (precio/indicador + crypto)."""
+    q_lower = q.lower()
+    price_signals = ["precio", "cuanto vale", "cuanto esta", "valor de"]
+    indicator_signals = ["rsi", "ema", "atr", "macd", "bollinger"]
+    crypto_signals = ["btc", "eth", "bitcoin", "ethereum", "cripto", "crypto", "bnb", "sol"]
+    market_signals = ["mercado", "trading", "senal", "señal"]
+    
+    has_price = any(p in q_lower for p in price_signals)
+    has_indicator = any(i in q_lower for i in indicator_signals)
+    has_crypto = any(c in q_lower for c in crypto_signals)
+    has_market = any(m in q_lower for m in market_signals)
+    
+    return (has_price or has_indicator) and (has_crypto or has_market)
 
 MEMORY_EPISODE_KEYWORDS = [
     "que aprendi", "que aprendimos",
@@ -259,7 +277,6 @@ TOOL_ANALIZAR_MERCADO_KEYWORDS = [
     "consulta mercado", "ver mercado",
 ]
 
-
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
@@ -308,7 +325,13 @@ RAG_HINTS = [
 
 MEMORY_REASONING_KEYWORDS = [
     "que me conviene hacer",
-    "que me conviene atacar","que me recomiendas hacer", "que me recomiendas atacar",
+    "que me conviene atacar",
+    "que me recomiendas hacer", "que me recomiendas atacar",
+    "que me recomiendas hacer",
+    "que me recomiendas atacar",
+    "por cual tarea",
+    "con cual tarea",
+    "cual tarea me conviene",
     "que me recomiendas primero", "que me sugieres",
     "que me aconsejas", "que me recomendarias",
     "que me conviene primero",
@@ -321,9 +344,6 @@ MEMORY_REASONING_KEYWORDS = [
     "por donde empezamos",
     "por donde arranco",
     "por donde arrancamos",
-    "que me recomendas hacer",
-    "que me recomendas atacar",
-    "que me recomiendarías",
     "que es lo mas importante para mi",
     "cual es lo mas importante para mi",
     "que es lo primero que debo hacer",
@@ -383,4 +403,6 @@ __all__ = [
     "MEMORY_REASONING_KEYWORDS",
     "VALID_LANES",
     "RouterDebugInfo",
+    "matches_recent_episode_query",
+    "is_market_pattern_query",
 ]
