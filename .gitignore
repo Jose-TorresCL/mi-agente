@@ -19,3 +19,4 @@ data/backtesting/
 baseline_*.json
 
 storage/project_facts.json
+.kilo/
