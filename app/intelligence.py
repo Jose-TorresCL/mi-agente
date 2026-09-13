@@ -51,6 +51,7 @@ from app.prompts import (
     IDENTITY_MSG,
     UNSUPPORTED_MSG,
     MEMORY_NOT_FOUND_MSG,
+    build_memory_not_found_msg,
 )
 from app.tool_helpers import list_project_files, handle_list_files
 from app.formatters import (
@@ -331,11 +332,11 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
     if len(intents) > 1:
         composed = get_composed_context(intents)
         if not composed.strip():
-            return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
-                                 sources=intents, needs_llm=False)
+            return MemoryContext(context_text="", fallback=build_memory_not_found_msg(question, intent="memory"),
+                                  sources=intents, needs_llm=False)
         return MemoryContext(context_text=composed,
-                             fallback=f"Información de memoria:\n{composed}",
-                             sources=intents, needs_llm=True)
+                              fallback=f"Información de memoria:\n{composed}",
+                              sources=intents, needs_llm=True)
 
     kind = intents[0]
 
@@ -445,8 +446,8 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
             sources=["episode:semantic"], needs_llm=False)
 
     log.debug("_retrieve_memory_context: tipo no reconocido '%s'", kind)
-    return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
-                         sources=[kind], needs_llm=False)
+    return MemoryContext(context_text="", fallback=build_memory_not_found_msg(question, intent=kind),
+                          sources=[kind], needs_llm=False)
 
 
 def _synthesize_memory_answer(
@@ -481,7 +482,7 @@ def _decide_memory(
 ) -> str:
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
     if not intents:
-        return MEMORY_NOT_FOUND_MSG
+        return build_memory_not_found_msg(question, intent="memory")
 
     mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
     log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
