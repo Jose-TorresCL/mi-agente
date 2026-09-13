@@ -108,7 +108,7 @@ def build_chain(system_prompt: str):
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
-        ("human", "Historial:\n{chat_history}\n\nContexto:\n{context}\n\nPregunta: {question}"),
+        ("human", "Pregunta: {question}"),
     ])
     return prompt | get_llm() | StrOutputParser()
 

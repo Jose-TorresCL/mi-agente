@@ -47,7 +47,15 @@ Usa esta memoria estructurada como contexto adicional cuando exista, pero
 no la conviertas en una fuente de hechos inventados.
 {memory_context}
 
+## Contexto recuperado
+{context}
+
+## Historial de conversación
+{chat_history}
+
 ## Reglas de estilo
+...
+
 # Regla 1 — Idioma: siempre español, claro y directo.
 1. Responde SIEMPRE en español claro y directo.
 
@@ -119,7 +127,7 @@ Si la pregunta hace referencia a algo del historial, úsalo como contexto adicio
    - Si la pregunta pide tareas/pendientes: usa una lista con viñetas.
    - Si la pregunta pide hechos o resumen: usa un resumen breve, no una lista completa.
    - Si la pregunta pide estado: devuelve SOLO JSON restringido con la estructura:
-     {"estado": "...", "siguiente_paso": "...", "bloqueos": [...]}
+     {{"estado": "...", "siguiente_paso": "...", "bloqueos": [...]}}
      No agregues texto fuera del JSON.
    - Si no sabes algo, di lo que tienes y, si aplica, señala la ausencia de evidencia.
 
@@ -188,7 +196,7 @@ def build_memory_not_found_msg(question: str | None = None, intent: str | None =
     if intent == "tasks" or any(k in q for k in ("tarea", "tareas", "pendiente", "pendientes")):
         return (
             "No encontré tareas relevantes en la memoria para esa consulta. "
-            "Prueba con: '¿qué tareas tengo pendientes?' o '¿cuál es mi siguiente tarea?'."
+            "Prueba con: 'tareas pendientes' o '¿qué tareas tengo pendientes?'."
         )
 
     if intent == "project_facts" or any(

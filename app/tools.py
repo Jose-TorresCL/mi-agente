@@ -58,6 +58,13 @@ from app.tool_helpers import (  # noqa: F401
     _VALUE_PREFIXES,
 )
 
+_PREFIXES_TO_STRIP = [
+    "crea una tarea: ",
+    "agregar tarea: ",
+    "importante: ",
+    "router de follow-up trading: ",
+    "para mañana: ",
+]
 
 # ───────────────────────────────────────────────
 # Tool: guardar hecho
@@ -120,6 +127,12 @@ def tool_save_fact(content) -> ToolResult:
         tool_name="tool_save_fact",
     )
 
+def _clean_task_title(title: str) -> str:
+    title_lower = title.lower()
+    for prefix in _PREFIXES_TO_STRIP:
+        if title_lower.startswith(prefix):
+            return title[len(prefix):].strip()
+    return title.strip()
 
 # ───────────────────────────────────────────────
 # Tool: crear tarea
@@ -127,7 +140,7 @@ def tool_save_fact(content) -> ToolResult:
 
 def tool_create_task(title: str, priority: str = "medium", notes: str = "") -> ToolResult:
     """R6-A: retorna ToolResult."""
-    title    = title.strip()
+    title = _clean_task_title(title)
     priority = priority.strip().lower()
     notes    = notes.strip()
 

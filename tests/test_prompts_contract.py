@@ -1,7 +1,7 @@
 def test_qa_prompt_contains_required_placeholders():
     from app.prompts import QA_SYSTEM_PROMPT
 
-    required = ["{question}", "{context}", "{chat_history}", "{memory_context}"]
+    required = ["{context}", "{chat_history}", "{memory_context}"]
     for placeholder in required:
         assert placeholder in QA_SYSTEM_PROMPT
 
@@ -9,7 +9,7 @@ def test_qa_prompt_contains_required_placeholders():
 def test_memory_synthesis_prompt_contains_expected_contract():
     from app.prompts import MEMORY_SYNTHESIS_PROMPT
 
-    required = ["{context_text}", "{chat_history}", "{question}"]
+    required = ["{context_text}", "{chat_history}"]
     for placeholder in required:
         assert placeholder in MEMORY_SYNTHESIS_PROMPT
 

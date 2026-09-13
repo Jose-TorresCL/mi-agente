@@ -122,7 +122,7 @@ def _is_personal_reasoning(question: str) -> bool:
 
 _REASONING_SIGNALS = {
     "recomendar", "recomendas", "recomiendas", "recomendarías",
-    "mejor", "primero", "atacar", "prioridad", "priorizar",
+    "mejor", "primero", "prioridad", "priorizar",
     "empezar", "empezaría", "debería", "deberíamos", "deberia", "deberiamos",
     "conviene", "convendría",
     "importante", "más importante",
@@ -155,6 +155,18 @@ _SAFE_MATH_OPS: dict = {
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
 }
+
+_JUDGMENT_SIGNALS = {
+    "recomendar", "recomendas", "recomiendas", "recomendarías",
+    "mejor", "primero", "prioridad", "priorizar",
+    "empezar", "empezaría", "debería", "deberíamos",
+    "conviene", "convendría",
+    "importante", "más importante",
+}
+
+def _has_judgment_signal(question: str) -> bool:
+    q_lower = question.lower()
+    return any(sig in q_lower for sig in _JUDGMENT_SIGNALS)
 
 
 # ──────────────────────────────────────────────
@@ -487,16 +499,28 @@ def _decide_memory(
     mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
     log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
               mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]))
-    
+
+    if intents == ["tasks"] and _has_judgment_signal(question) and not _has_reasoning_signal(question):
+        t = get_tasks()
+        if t:
+            high = [task for task in t.get("tasks", []) if task.get("priority") == "high"]
+            if high:
+                titles = [task.get("title", "") for task in high]
+                fallback = f"Tenés {len(high)} tarea(s) de alta prioridad: {'; '.join(titles)}. No tengo un criterio automático para decidir cuál es mejor empezar — ¿alguna depende de la otra?"
+                return fallback
+            medium = [task for task in t.get("tasks", []) if task.get("priority") == "medium"]
+            if medium:
+                titles = [task.get("title", "") for task in medium[:5]]
+                fallback = f"No tenés tareas de alta prioridad. Las de prioridad media son: {'; '.join(titles)}..."
+                return fallback
+        return mem_ctx["fallback"]
+
     if mem_ctx["needs_llm"]:
         return _synthesize_memory_answer(
             question, mem_ctx["context_text"], mem_ctx["fallback"],
             chat_history=chat_history,
         )
 
-    if intents == ["tasks"] and _is_structured_tasks_query(question):
-        return mem_ctx["fallback"]
-    
     if any(s.endswith(":list") for s in mem_ctx["sources"]):
         return mem_ctx["fallback"]  
     
