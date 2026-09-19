@@ -156,18 +156,55 @@ _SAFE_MATH_OPS: dict = {
     ast.UAdd: operator.pos,
 }
 
-_JUDGMENT_SIGNALS = {
-    "recomendar", "recomendas", "recomiendas", "recomendarías",
-    "mejor", "primero", "prioridad", "priorizar",
-    "empezar", "empezaría", "debería", "deberíamos",
-    "conviene", "convendría",
-    "importante", "más importante",
+# Subtipos de consultas sobre tareas.
+#
+# Las frases deben estar normalizadas porque _normalize() elimina tildes,
+# normaliza mayúsculas/minúsculas y unifica espacios.
+_TASK_PRIORITY_FACT_SIGNALS = {
+    "cual es la de mas alta prioridad",
+    "cual tiene mayor prioridad",
+    "cuales son las tareas mas importantes",
+    "que tarea es mas importante",
+    "hay tareas de alta prioridad",
+    "tengo tareas de alta prioridad",
 }
 
-def _has_judgment_signal(question: str) -> bool:
-    q_lower = question.lower()
-    return any(sig in q_lower for sig in _JUDGMENT_SIGNALS)
+_TASK_RECOMMENDATION_SIGNALS = {
+    "por cual empiezo",
+    "por cual tarea empiezo",
+    "que ataco primero",
+    "cual ataco primero",
+    "que me recomendas",
+    "que me recomiendas",
+    "cual me conviene",
+    "que deberia hacer primero",
+}
 
+_TASK_ID_REQUEST_SIGNALS = {
+    "id de las tareas",
+    "ids de las tareas",
+    "identificador de las tareas",
+    "identificadores de las tareas",
+    "codigo de las tareas",
+    "codigos de las tareas",
+}
+
+
+def _contains_any_phrase(question: str, phrases: set[str]) -> bool:
+    q = _normalize(question)
+    return any(phrase in q for phrase in phrases)
+
+
+def _is_task_priority_fact_query(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_PRIORITY_FACT_SIGNALS)
+
+
+def _is_task_recommendation_query(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_RECOMMENDATION_SIGNALS)
+
+
+def _is_task_id_request(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_ID_REQUEST_SIGNALS)
 
 # ──────────────────────────────────────────────
 class MemoryContext(TypedDict):
@@ -486,56 +523,181 @@ def _has_reasoning_signal(question: str) -> bool:
     q_lower = question.lower()
     return any(signal in q_lower for signal in _REASONING_SIGNALS)
 
+def _pending_tasks(tasks_data: dict) -> list[dict]:
+    """Devuelve solo tareas abiertas de la memoria operacional."""
+    return [
+        task
+        for task in tasks_data.get("tasks", [])
+        if task.get("status") == "pending"
+    ]
+
+
+def _tasks_with_priority(tasks_data: dict, priority: str) -> list[dict]:
+    """Filtra tareas abiertas según la prioridad persistida."""
+    return [
+        task
+        for task in _pending_tasks(tasks_data)
+        if task.get("priority") == priority
+    ]
+
+
+def _format_task_lines(tasks: list[dict], *, include_id: bool = False) -> str:
+    """Formatea tareas estructuradas sin usar el LLM."""
+    lines: list[str] = []
+
+    for task in tasks:
+        title = str(task.get("title", "")).strip()
+        task_id = str(task.get("id", "")).strip()
+
+        if not title:
+            continue
+
+        prefix = f"{task_id} — " if include_id and task_id else ""
+        lines.append(f"· {prefix}{title}")
+
+    return "\n".join(lines)
+
+
+def _format_task_priority_answer(tasks_data: dict) -> str:
+    """Devuelve las tareas pendientes con mayor prioridad registrada."""
+    high = _tasks_with_priority(tasks_data, "high")
+
+    if high:
+        return (
+            f"Tenés {len(high)} tarea(s) abierta(s) de alta prioridad:\n"
+            f"{_format_task_lines(high, include_id=True)}"
+        )
+
+    medium = _tasks_with_priority(tasks_data, "medium")
+
+    if medium:
+        return (
+            "No tenés tareas abiertas de alta prioridad. "
+            f"Tenés {len(medium)} de prioridad media:\n"
+            f"{_format_task_lines(medium, include_id=True)}"
+        )
+
+    return "No encontré tareas abiertas con prioridad alta o media."
+
+
+def _format_task_ids_answer(tasks_data: dict) -> str:
+    """Lista pendientes con sus IDs para permitir acciones posteriores."""
+    pending = _pending_tasks(tasks_data)
+
+    if not pending:
+        return "No tenés tareas pendientes."
+
+    return (
+        f"Tenés {len(pending)} tarea(s) pendiente(s):\n"
+        f"{_format_task_lines(pending, include_id=True)}"
+    )
+
+
+def _format_task_recommendation_answer(tasks_data: dict) -> str:
+    """Recomienda condicionalmente o explica los criterios que faltan."""
+    high = _tasks_with_priority(tasks_data, "high")
+    priority_summary = _format_task_priority_answer(tasks_data)
+
+    if len(high) == 1:
+        task = high[0]
+        title = str(task.get("title", "")).strip()
+        task_id = str(task.get("id", "")).strip()
+        label = f"{task_id} — {title}" if task_id else title
+
+        return (
+            "Por prioridad registrada, la candidata para empezar es:\n"
+            f"· {label}\n\n"
+            "No puedo asegurar que sea la mejor decisión sin conocer "
+            "dependencias, urgencia, esfuerzo e impacto. Si no está bloqueada "
+            "por otra tarea, es un buen punto de partida."
+        )
+
+    if len(high) > 1:
+        return (
+            f"{priority_summary}\n\n"
+            "No elijo una automáticamente porque hay varias tareas de alta "
+            "prioridad y no tengo registrados impacto, urgencia, esfuerzo ni "
+            "dependencias. Decime si una bloquea a otra o cuál tiene más "
+            "impacto, y las ordenamos."
+        )
+
+    return (
+        f"{priority_summary}\n\n"
+        "Para recomendar por cuál empezar necesito al menos una señal extra: "
+        "impacto, urgencia, bloqueo, dependencia o esfuerzo estimado."
+    )
+
 
 def _decide_memory(
     question: str,
     intents: list[str],
     chat_history: list | None = None,
 ) -> str:
+    """Resuelve una consulta de memoria sin cruzar al carril RAG."""
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
+
     if not intents:
         return build_memory_not_found_msg(question, intent="memory")
 
-    mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
-    log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
-              mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]))
+    # Consultas especiales sobre tareas: se resuelven usando una única
+    # lectura de tasks.json y nunca pasan por síntesis LLM.
+    #
+    # Para una lista normal ("qué tareas tengo pendientes"), no llamamos
+    # get_tasks aquí: _retrieve_memory_context() lo hará una sola vez.
+    is_task_special_query = (
+        intents == ["tasks"]
+        and (
+            _is_task_id_request(question)
+            or _is_task_priority_fact_query(question)
+            or _is_task_recommendation_query(question)
+        )
+    )
 
-    if intents == ["tasks"] and _has_judgment_signal(question) and not _has_reasoning_signal(question):
-        t = get_tasks()
-        if t:
-            high = [task for task in t.get("tasks", []) if task.get("priority") == "high"]
-            if high:
-                titles = [task.get("title", "") for task in high]
-                fallback = f"Tenés {len(high)} tarea(s) de alta prioridad: {'; '.join(titles)}. No tengo un criterio automático para decidir cuál es mejor empezar — ¿alguna depende de la otra?"
-                return fallback
-            medium = [task for task in t.get("tasks", []) if task.get("priority") == "medium"]
-            if medium:
-                titles = [task.get("title", "") for task in medium[:5]]
-                fallback = f"No tenés tareas de alta prioridad. Las de prioridad media son: {'; '.join(titles)}..."
-                return fallback
-        return mem_ctx["fallback"]
+    if is_task_special_query:
+        tasks_data = get_tasks()
+
+        if _is_task_id_request(question):
+            return _format_task_ids_answer(tasks_data)
+
+        if _is_task_priority_fact_query(question):
+            return _format_task_priority_answer(tasks_data)
+
+        return _format_task_recommendation_answer(tasks_data)
+
+    mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
+    log.debug(
+        "R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
+        mem_ctx["sources"],
+        mem_ctx["needs_llm"],
+        len(mem_ctx["context_text"]),
+    )
 
     if mem_ctx["needs_llm"]:
         return _synthesize_memory_answer(
-            question, mem_ctx["context_text"], mem_ctx["fallback"],
+            question,
+            mem_ctx["context_text"],
+            mem_ctx["fallback"],
             chat_history=chat_history,
         )
 
-    if any(s.endswith(":list") for s in mem_ctx["sources"]):
-        return mem_ctx["fallback"]  
-    
+    if any(source.endswith(":list") for source in mem_ctx["sources"]):
+        return mem_ctx["fallback"]
+
     if _has_reasoning_signal(question):
         context_for_llm = mem_ctx["context_text"] or mem_ctx["fallback"]
+
         if context_for_llm.strip():
-            log.debug("[Fix3] señal de razonamiento detectada — forzando síntesis LLM")
+            log.debug(
+                "[memory] señal de razonamiento detectada — usando síntesis LLM"
+            )
             return _synthesize_memory_answer(
-                question, context_for_llm, mem_ctx["fallback"],
+                question,
+                context_for_llm,
+                mem_ctx["fallback"],
                 chat_history=chat_history,
             )
 
     return mem_ctx["fallback"]
-
-
 # ──────────────────────────────────────────────
 # R6-RAG
 # ──────────────────────────────────────────────
