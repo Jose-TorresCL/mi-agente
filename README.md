@@ -1,8 +1,9 @@
 # 🤖 mi-agente
 
 Asistente de IA local con arquitectura modular: RAG, memoria en capas,
-router híbrido de intenciones y sistema de métricas. Funciona 100% offline
-usando modelos locales a través de Ollama.
+router híbrido de intenciones y sistema de métricas. El razonamiento, la
+memoria y el RAG funcionan localmente mediante Ollama; la consulta de mercado
+es una integración externa opcional, aislada y bloqueada por defecto.
 
 ---
 
@@ -10,11 +11,14 @@ usando modelos locales a través de Ollama.
 
 - Clasifica cada consulta por intención (16 carriles) antes de responder
 - Recupera documentos relevantes con RAG + caché semántica anti-repetición
-- Mantiene memoria en 4 capas: trabajo, episódica, semántica y larga duración
+- Mantiene memoria estructurada y selectiva: estado de trabajo y tareas, perfil
+  y hechos del proyecto, episodios de sesiones anteriores y reglas operativas
 - Verifica calidad de respuesta antes de entregarla (fidelity check, 2 modos)
 - Ejecuta herramientas propias: guardar hechos, crear tareas, consultar estado
 - Registra métricas por turno: latencia, carril usado, tokens, calidad RAG, canal de acceso
-- Funciona 100% local: sin APIs externas, sin costos, sin internet
+- Mantiene un núcleo local: razonamiento, memoria, RAG e índices no requieren
+  APIs externas; la consulta de mercado es una excepción opcional mediante una
+  tool `SYSTEM` controlada
 - Mantiene memoria episódica entre sesiones y sugiere tareas automáticamente al arranque
 
 ---
@@ -43,7 +47,7 @@ mi-agente/
 │
 ├── app/                        # Módulos del asistente (26 módulos)
 │   ├── __init__.py             # Inicialización del paquete
-│   ├── intelligence.py         # Orquestador principal (16 carriles)
+│   ├── intelligence.py         # Orquestador principal por carriles
 │   ├── router.py               # Router híbrido 3 capas
 │   ├── rag_engine.py           # Motor RAG
 │   ├── memory_manager.py       # Guardián único de lectura/escritura de memoria
@@ -53,8 +57,8 @@ mi-agente/
 │   ├── fidelity_check.py       # Verificación de calidad de respuesta (2 modos)
 │   ├── semantic_cache.py       # Caché semántica de consultas
 │   ├── llm_client.py           # Cliente Ollama unificado
-│   ├── tools.py                # Herramientas ejecutables (5)
-│   ├── tools_trading.py        # Wrapper de bot_trading (rama feat/integracion-bot-trading)
+│   ├── tools.py                # Implementación base de herramientas
+│   ├── tools_trading.py        # Wrapper aislado de consulta bot_trading
 │   ├── tool_plan_retoma.py     # Lectura de analysis/retoma_plan.json (solo lectura)
 │   ├── tool_registry.py        # Registro de herramientas disponibles
 │   ├── tool_helpers.py         # Utilidades para herramientas
@@ -71,16 +75,14 @@ mi-agente/
 │   ├── indexing_core.py        # Core de indexación de documentos
 │   └── config.py               # Configuración centralizada
 │
-├── docs/                       # Documentación del proyecto
-│   ├── adr/                    # Decisiones de arquitectura (ADR-001 a ADR-010)
-│   ├── vision-agente.md        # Visión y hoja de ruta
-│   ├── arquitectura-memoria.md # Detalle de las 4 capas de memoria
-│   └── hardware-modelos.md     # Hardware y modelos recomendados
+├── data/
+│   └── docs/                   # Documentación del proyecto
+│       ├── adr/                # ADR-001 a ADR-010 y documentos complementarios
+│       └── proyecto/           # Visión, arquitectura, memoria, hardware e integración
 │
 ├── analysis/                   # Planes y auditorías en JSON
 │   └── retoma_plan.json        # Plan de retoma / auditoría de documentación
 │
-├── data/                       # Documentos a indexar
 └── tests/                      # Tests del proyecto
 ```
 
@@ -183,12 +185,12 @@ $env:TELEGRAM_TOKEN = "tu_token_aqui"
 python chat.py --telegram
 ```
 
-El canal de acceso se registra en cada turno como campo `channel` dentro de `storage/metrics/*.jsonl`.
+El canal de acceso se registra en cada turno como campo `channel` dentro de
+`storage/logs/metrics.jsonl`.
 Esto permite filtrar métricas por canal (CLI vs Telegram) en `show_metrics.py`.
 
 > **Aislamiento de sesiones**: cada sesión de Telegram genera su propio `session_id`
 > y no interfiere con sesiones CLI activas. La memoria es compartida entre canales.
-
 ---
 
 ## Carriles de Enrutamiento (Router Híbrido — 16 carriles)
@@ -228,7 +230,7 @@ El agente clasifica cada consulta en uno de estos 16 carriles antes de procesar:
 ### Integración con bot_trading (mercado cripto)
 
 Lautaro se integra con el proyecto externo `bot_trading` para consultar precio,
-indicadores y señal de mercado de criptomonedas de forma segura. [docs/integracion_bot_trading.md]
+indicadores y señal de mercado de criptomonedas de forma segura. [data/docs/proyecto/integracion_bot_trading.md]
 
 **Características:**
 
@@ -239,9 +241,9 @@ indicadores y señal de mercado de criptomonedas de forma segura. [docs/integrac
   evitando conflictos de dependencias.
 - Devuelve un snapshot técnico completo: símbolo, timeframe, precio, señal
   (BUY/SELL/HOLD), RSI, ATR y EMAs, más alertas simples de contexto alcista/bajista.
-- Se enruta mediante el carril `tool_analizar_mercado` en `app/tool_registry.py`,
-  activado por keywords como `mercado`, `precio`, `btc`, `bitcoin`, `eth`,
-  `trading`, `binance`, `cripto`.
+- El router detecta consultas de mercado mediante patrones y frases definidas en
+  `TOOL_ANALIZAR_MERCADO_KEYWORDS` de `app/router_config.py`, por ejemplo
+  “precio de BTC”, “analiza el mercado” o “RSI de BTC”.
 
 **Ejemplo de uso (CLI):**
 
@@ -263,9 +265,12 @@ EMA lenta: 63,796.01
 Alertas:
 📉 EMA rápida < EMA lenta — contexto bajista
 ```
+> ⚠️ Este ejemplo asume que `tool_analizar_mercado` fue habilitada
+> explícitamente. Por defecto es una tool `RiskLevel.SYSTEM` y el resultado
+> esperado sin habilitación es `SYSTEM_TOOL_BLOCKED`.
 
 > Detalles completos de esta integración (paths, manejo de errores, pruebas
-> manuales) están documentados en `docs/integracion_bot_trading.md`.
+> manuales) están documentados en `data/docs/proyecto/integracion_bot_trading.md`.
 El agente puede ejecutar estas herramientas sin pasar por el LLM:
 
 - `tool_save_fact(content)` — Guarda hecho en `project_facts.json`
@@ -305,9 +310,11 @@ proyecto externo con su propio repositorio y su propio `.venv`. La decisión com
 (alternativas, riesgos y mitigaciones) está en
 [ADR-010](data/docs/adr/ADR-010-integracion-bot_trading.md).
 
-> **Estado:** el código de la integración (`app/tools_trading.py`, carril
-> `tool_analizar_mercado`) vive hoy en la rama `feat/integracion-bot-trading`.
-> Esta sección y ADR-010 documentan esa decisión desde `feat/perplexity-sync`.
+> **Estado:** la integración está incorporada al proyecto como
+> `app/tools_trading.py` y carril `tool_analizar_mercado`. Está clasificada como
+> `RiskLevel.SYSTEM`: por defecto, `dispatch_tool()` la bloquea con
+> `SYSTEM_TOOL_BLOCKED` hasta que se habilite explícitamente. Su alcance es solo
+> consulta de mercado; no ejecuta órdenes ni modifica balances.
 
 ### Qué hace
 
@@ -346,6 +353,9 @@ Agente: 📊 BTCUSDT — 1m
         RSI: 48.3 · ATR: 112.40 · EMA rápida/lenta
         Alertas: 📈 EMA rápida > EMA lenta — contexto alcista
 ```
+> ⚠️ El ejemplo requiere que la tool `SYSTEM` haya sido habilitada explícitamente.
+> Sin habilitación, el resultado esperado es `SYSTEM_TOOL_BLOCKED`, no un
+> snapshot de mercado.
 
 ### Riesgos y mitigaciones (resumen)
 
@@ -511,13 +521,21 @@ Agente: [consulta memory:tasks y responde desde JSON]
 
 ## Métricas
 
-Cada turno registra un JSON en `storage/metrics/`. Ver resumen:
+Cada turno agrega una línea JSON al archivo canónico
+`storage/logs/metrics.jsonl`. El esquema actual incluye `metric_schema_version`
+y `baseline_id`, lo que permite distinguir telemetría histórica de baselines
+operativos recientes.
 
 ```bash
 python show_metrics.py
 ```
 
-Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `latency_ms`, `tokens`, `rag_quality`, `fidelity_score`, `fidelity_mode`.
+Campos principales registrados por turno: `timestamp`, `route`, `intent_type`,
+`channel`, `retrieval_ms`, `llm_ms`, `total_ms`, `tokens_est`, `cached`,
+`num_docs`, `fidelity_ms` y `fidelity_status`.
+
+> Los registros históricos se conservan como evidencia evolutiva. Para comparar
+> cambios recientes, usa el `baseline_id` indicado en las filas modernas.
 
 ---
 
@@ -554,13 +572,13 @@ Campos registrados por turno: `session_id`, `timestamp`, `route`, `channel`, `la
 
 🔭 Próximo (consolidación antes de expandir):
 
-1. Mover rutas y timeout de `tools_trading.py` a `config.py` / `.env` (hoy son rutas absolutas de Windows)
-2. Exponer la antigüedad del dato cuando la respuesta viene de caché
-3. Métricas del carril `tool_analizar_mercado` (latencia + tasa de error)
-4. Definir el contrato de confirmación humana **antes** de cualquier tool que opere en el mercado
-5. Actualizar `docs/vision-agente.md` con el estado post-integración (ver `analysis/retoma_plan.json`)
-
----
+1. Exponer la antigüedad del dato cuando la respuesta viene de caché.
+2. Registrar y revisar métricas del carril `tool_analizar_mercado`
+   (latencia y tasa de error).
+3. Definir el contrato de confirmación humana antes de cualquier tool que
+   pudiera operar en el mercado.
+4. Mantener README, visión, índice de ADRs y plan de retoma alineados con el
+   código.
 
 ## Autor
 
