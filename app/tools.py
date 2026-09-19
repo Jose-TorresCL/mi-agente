@@ -268,7 +268,10 @@ def tool_update_work_state(
         texto_lower = texto.lower()
 
         if current_focus is None:
-            patrones_foco = [r"(?:actualiza el foco a|foco(?:\s+es)?(?:\s*:)?|enf[oó]cate en)\s+(.+)"]
+            patrones_foco = [
+                r"\bfoco\s+(?:actual\s+)?a\s+(.+?)(?=(?:\s+y\s+|[.!?]|$))",
+                r"(?:actualiza\s+el\s+foco\s*[:=]\s*|cambia\s+el\s+foco\s*[:=]\s*|enf[oó]cate\s+en)\s+(.+?)(?=(?:\s+y\s+|[.!?]|$))",
+            ]
             for pat in patrones_foco:
                 m = re.search(pat, texto_lower)
                 if m:
@@ -294,7 +297,8 @@ def tool_update_work_state(
 
         if next_step is None:
             patrones_siguiente = [
-                r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|pr[oó]ximo paso[:\s]+)\s+(.+)"
+                r"(?:el siguiente paso es|siguiente paso[:\s]+|sigue[:\s]+|pr[oó]ximo paso[:\s]+)\s+(.+)",
+                r"\b(?:el\s+)?siguiente\s+paso\s+a\s+(.+?)(?=(?:\s+y\s+|[.!?]|$))",
             ]
             for pat in patrones_siguiente:
                 m = re.search(pat, texto_lower)

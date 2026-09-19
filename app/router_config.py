@@ -69,6 +69,12 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "que frena", "que frena el avance", "que esta frenando el avance",
     "por que no avanzamos", "por que no avanzo",
     "que me detiene", "que nos detiene",
+    "que me recomiendas atacar primero",
+    "que me sugieres hacer hoy",
+    "por cual tarea me recomiendas empezar",
+    "con cual tarea me conviene partir",
+    "cual tarea me conviene partir",
+    "cual tarea me conviene empezar",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
@@ -103,25 +109,6 @@ _RE_RECENT_EPISODE = re.compile(
     re.IGNORECASE,
 )
 
-def matches_recent_episode_query(q: str) -> bool:
-    """True si la consulta pregunta por las últimas N sesiones/conversaciones."""
-    return bool(_RE_RECENT_EPISODE.search(q))
-
-def is_market_pattern_query(q: str) -> bool:
-    """Detecta consultas de mercado por patrón composicional (precio/indicador + crypto)."""
-    q_lower = q.lower()
-    price_signals = ["precio", "cuanto vale", "cuanto esta", "valor de"]
-    indicator_signals = ["rsi", "ema", "atr", "macd", "bollinger"]
-    crypto_signals = ["btc", "eth", "bitcoin", "ethereum", "cripto", "crypto", "bnb", "sol"]
-    market_signals = ["mercado", "trading", "senal", "señal"]
-    
-    has_price = any(p in q_lower for p in price_signals)
-    has_indicator = any(i in q_lower for i in indicator_signals)
-    has_crypto = any(c in q_lower for c in crypto_signals)
-    has_market = any(m in q_lower for m in market_signals)
-    
-    return (has_price or has_indicator) and (has_crypto or has_market)
-
 MEMORY_EPISODE_KEYWORDS = [
     "que aprendi", "que aprendimos",
     "sesion anterior", "ultima sesion",
@@ -141,6 +128,24 @@ MEMORY_EPISODE_KEYWORDS = [
     "sugerencias desde el ultimo episodio",
     "ultimas sesiones", "sesiones recientes", "sesiones pasadas",
     "ultimas conversaciones", "conversaciones recientes",
+]
+
+TRIVIAL_CONVERSATIONAL_KEYWORDS = [
+    "hola",
+    "holi",
+    "buenas",
+    "buenos dias",
+    "buen día",
+    "buen dia",
+    "buenas tardes",
+    "buenas noches",
+    "gracias",
+    "muchas gracias",
+    "ok",
+    "oki",
+    "dale",
+    "listo",
+    "perfecto",
 ]
 
 AGENT_IDENTITY_KEYWORDS = [
@@ -191,8 +196,22 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completada", "como completado",
 ]
 
+# Patrón estricto para cierre de tareas:
+# cubre frases explícitas de cierre con variantes reales del usuario
+# ("marca la tarea como completada", "cierra la tarea t-3",
+# "complete la tarea del logger", "marca t-5").
+# La lógica de uso de este patrón vive en router.py; aquí solo queda la
+# constante regex para que router_config.py se mantenga como módulo de datos.
 _COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|complete)\s+(t-\d+|la tarea|el issue|el paso)",
+    r"^(?:"
+    r"(?:marca(?:r)?(?:\s+(?:la\s+)?tarea)?(?:\s+(?:t[- ]?\d+|.+?))?\s+como\s+completad[oa](?:\s+.*)?)"
+    r"|(?:marca(?:r)?\s+t[- ]?\d+(?:\s+.*)?)"
+    r"|(?:cerrar(?:\s+la)?\s+tarea(?:\s+pendiente)?(?:\s+.*)?)"
+    r"|(?:cierra(?:r)?\s+(?:la\s+)?tarea(?:\s+.*)?)"
+    r"|(?:completar(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:complete(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:marcar\s+como\s+completad[oa](?:\s+.*)?)"
+    r")$",
     re.IGNORECASE,
 )
 
@@ -324,37 +343,29 @@ RAG_HINTS = [
 ]
 
 MEMORY_REASONING_KEYWORDS = [
+    # Carril separado para recomendaciones de inicio/prioridad de tareas.
+    # Distingue "estado actual" (memory:work_state) de "juicio/prioridad"
+    # (memory:reasoning), evitando mezclar ambos tipos de consulta.
     "que me conviene hacer",
     "que me conviene atacar",
-    "que me recomiendas hacer", "que me recomiendas atacar",
+    "que me conviene hacer ahora",
     "que me recomiendas hacer",
     "que me recomiendas atacar",
-    "por cual tarea",
-    "con cual tarea",
+    "que me recomiendas empezar",
+    "por cual me recomiendas empezar",
+    "por cual tarea me recomiendas empezar",
+    "cual tarea deberia empezar",
     "cual tarea me conviene",
-    "que me recomiendas primero", "que me sugieres",
-    "que me aconsejas", "que me recomendarias",
-    "que me conviene primero",
-    "que deberia hacer primero",
-    "que deberia atacar primero",
-    "que deberia hacer hoy",
-    "que deberiamos hacer primero",
-    "que deberiamos atacar",
-    "por donde empiezo",
-    "por donde empezamos",
-    "por donde arranco",
-    "por donde arrancamos",
-    "que es lo mas importante para mi",
-    "cual es lo mas importante para mi",
-    "que es lo primero que debo hacer",
-    "como priorizo mis tareas",
-    "como priorizamos",
-    "como ordeno mis tareas",
-    "que hago primero",
-    "que hacemos primero",
-    "cual es mi prioridad ahora",
-    "cuales son mis prioridades",
+    "que tarea me conviene",
+    "que tarea deberia empezar",
+    "que tarea me conviene ahora",
+    "cual tarea deberia empezar ahora",
 ]
+
+_RE_TASK_RECOMMENDATION = re.compile(
+    r"(qué|cuál|por cuál).*(tarea|acción).*(empezar|hacer|conviene)",
+    re.IGNORECASE,
+)
 
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
@@ -362,7 +373,7 @@ VALID_LANES = {
     "tool_set_session_goal", "tool_plan_retoma", "tool_analizar_mercado",
     "memory",
     "memory:profile", "memory:work_state", "memory:tasks",
-    "memory:project_facts", "memory:episode",
+    "memory:project_facts", "memory:episode", "memory:reasoning",
     "rag", "identity",
     "unsupported",
     "math",
@@ -386,6 +397,7 @@ __all__ = [
     "MEMORY_PROJECT_FACTS_KEYWORDS",
     "MEMORY_EPISODE_KEYWORDS",
     "_RE_RECENT_EPISODE",
+    "TRIVIAL_CONVERSATIONAL_KEYWORDS",
     "AGENT_IDENTITY_KEYWORDS",
     "TOOL_SAVE_FACT_KEYWORDS",
     "TOOL_SAVE_NOTE_KEYWORDS",
@@ -403,6 +415,4 @@ __all__ = [
     "MEMORY_REASONING_KEYWORDS",
     "VALID_LANES",
     "RouterDebugInfo",
-    "matches_recent_episode_query",
-    "is_market_pattern_query",
 ]

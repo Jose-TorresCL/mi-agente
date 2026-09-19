@@ -124,6 +124,10 @@ class TestCompleteTask:
         """Regex t-N debe funcionar con y sin 'marca'."""
         assert kw("marca t-5") == "tool_complete_task"
 
+    def test_pattern_marca_tarea_con_id_y_completada(self):
+        """Frases explícitas con ID deben seguir siendo tool_complete_task."""
+        assert kw("marca la tarea T-003 como completada") == "tool_complete_task"
+
     def test_completar_tarea(self):
         assert kw("completar tarea t-2") == "tool_complete_task"
 

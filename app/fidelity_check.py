@@ -93,6 +93,11 @@ _TRIVIAL_QUESTION_PATTERNS = {
     "no",
 }
 
+_UNSUPPORTED_NARRATIVE_PATTERNS = (
+    re.compile(r"\b(mencionaste|mencionas|dijiste|como dijiste|como mencionaste|como ya habías dicho)\b", re.IGNORECASE),
+    re.compile(r"\b(según lo que me dijiste|según lo que mencionaste|según tu mensaje|según tu último mensaje)\b", re.IGNORECASE),
+)
+
 
 # ─────────────────────────────────────────────
 # Helpers internos
@@ -203,6 +208,18 @@ def _is_trivial_question(question: str) -> bool:
     if len(q.split()) <= 2 and q in _TRIVIAL_QUESTION_PATTERNS:
         return True
     return False
+
+
+def _contains_unsupported_narrative_frame(answer: str) -> tuple[bool, str]:
+    """Detecta marcos narrativos inventados no respaldados por el contexto."""
+    if not answer or not answer.strip():
+        return False, ""
+
+    for pattern in _UNSUPPORTED_NARRATIVE_PATTERNS:
+        if pattern.search(answer):
+            return True, pattern.pattern
+
+    return False, ""
 
 
 def _build_context_text(chunks_texts: list[str], max_chars: int = _MAX_CONTEXT_CHARS) -> str:
@@ -447,6 +464,14 @@ def _validate_fidelity(
         print("[fidelity:skip] pregunta trivial/saludo, se omite verificación")
         log_fidelity_success(question or answer, 1.0, threshold, method="trivial_bypass")
         return True, 1.0
+
+    narrative_ok, narrative_reason = _contains_unsupported_narrative_frame(answer)
+    if narrative_ok:
+        print(
+            f"[fidelity:block:narrative] marco narrativo no soportado detectado ({narrative_reason}) — bloqueando"
+        )
+        log_fidelity_failure(question or answer, 0.0, threshold)
+        return False, 0.0
 
     if not source_docs:
         print("[fidelity:block] sin chunks — bloqueando")

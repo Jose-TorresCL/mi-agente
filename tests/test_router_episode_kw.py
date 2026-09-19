@@ -27,6 +27,7 @@ def test_consultas_juicio_van_a_work_state():
 def test_variantes_juicio_tareas_van_a_work_state():
     from app.router import debug_route_layers
     for frase in ["por cual tarea me recomiendas empezar",
-                  "con cual tarea me conviene partir"]:
+                  "con cual tarea me conviene partir",
+                  "cuál tarea me conviene partir"]:
         info = debug_route_layers(frase)
         assert info == {"layer": "kw", "lane": "memory:work_state"}, frase

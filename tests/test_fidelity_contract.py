@@ -69,11 +69,34 @@ def test_fidelity_empty_chunks_content():
     """Caso chunks sin contenido real: debe retornar (False, 0.0)."""
     class MockDoc:
         page_content = ""
-    
+
     ok, score = verify_fidelity("Respuesta", [MockDoc()])
     assert ok is False
     assert score == 0.0
     print("✓ test_fidelity_empty_chunks_content: PASS")
+
+
+def test_fidelity_blocks_unsupported_narrative_frame(monkeypatch):
+    """Las frases que introducen un marco narrativo inventado deben bloquearse."""
+    from app import fidelity_check
+
+    def fake_get_embedding(text, timeout=None, retry_delays=None, max_attempts=None):
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(fidelity_check, "get_embedding", fake_get_embedding)
+
+    class MockDoc:
+        page_content = "El router usa keywords y embeddings."
+
+    ok, score = fidelity_check.verify_fidelity(
+        "Sí, mencionaste que el router usa keywords y embeddings, así que parece un enfoque híbrido.",
+        [MockDoc()],
+        question="",
+    )
+
+    assert ok is False
+    assert score == 0.0
+    print("✓ test_fidelity_blocks_unsupported_narrative_frame: PASS")
 
 
 def test_fidelity_stats_has_method_breakdown():
