@@ -70,9 +70,28 @@ def _resolve_baseline(value: str) -> tuple[str | None, dict | None]:
     return baseline_id, None
 
 
-def _filter_by_baseline(rows: list[dict], baseline_id: str) -> tuple[list[dict], int]:
-    """Filtra filas del baseline y devuelve también cuántas fueron excluidas."""
-    filtered = [row for row in rows if row.get("baseline_id") == baseline_id]
+def _filter_by_baseline(rows: list[dict], baseline: dict) -> tuple[list[dict], int]:
+    """Filtra filas por rango temporal del baseline, independientemente de que tengan baseline_id o no."""
+    started_at = baseline.get("started_at")
+    ended_at = baseline.get("ended_at")
+    start_ts = _parse_ts(started_at)
+    end_ts = _parse_ts(ended_at)
+
+    filtered: list[dict] = []
+    for row in rows:
+        row_ts = _parse_ts(_timestamp_from_row(row))
+
+        if row_ts is None:
+            continue
+
+        if start_ts is not None and row_ts < start_ts:
+            continue
+
+        if end_ts is not None and row_ts > end_ts:
+            continue
+
+        filtered.append(row)
+
     return filtered, len(rows) - len(filtered)
 
 def _format_seconds(seconds: float) -> str:
@@ -402,7 +421,7 @@ def main() -> None:
             print(f"Baseline no encontrado: {baseline_id or args.baseline}")
             return
 
-        rows, excluded = _filter_by_baseline(rows, baseline_id)
+        rows, excluded = _filter_by_baseline(rows, baseline)
 
     _show_table(rows, baseline_id, excluded)
 

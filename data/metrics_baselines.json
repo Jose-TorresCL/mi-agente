@@ -1,12 +1,29 @@
 ﻿{
-  "active_baseline": "r7-fidelity-v2",
+  "active_baseline": "septiembre-13",
   "baselines": [
     {
       "id": "r7-fidelity-v2",
       "started_at": "2026-08-14T15:25:00",
+      "ended_at": "2026-08-31T23:59:59",
       "reason": "Fidelity check verificable y métricas reconectadas",
       "metric_schema_version": 2,
-      "notes": "Las métricas de fidelity y latencia son comparables desde este baseline. Los registros anteriores se conservan como historial legacy."
+      "notes": "Este baseline cubre el período hasta el 31 de agosto de 2026. Los registros anteriores se conservan como historial legacy."
+    },
+    {
+      "id": "septiembre-1",
+      "started_at": "2026-09-01T00:00:00",
+      "ended_at": "2026-09-12T23:59:59",
+      "reason": "Corte de análisis desde el 1 de septiembre",
+      "metric_schema_version": 2,
+      "notes": "Este corte incluye métricas y resultados desde el 1 hasta el 12 de septiembre."
+    },
+    {
+      "id": "septiembre-13",
+      "started_at": "2026-09-13T00:00:00",
+      "ended_at": "2026-09-30T23:59:59",
+      "reason": "Corte desde el 13 de septiembre",
+      "metric_schema_version": 2,
+      "notes": "Incluye métricas posteriores al 13 de septiembre."
     }
   ]
 }
