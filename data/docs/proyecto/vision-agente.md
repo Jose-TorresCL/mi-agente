@@ -4,120 +4,197 @@
 > Cada etapa puede reordenarse, acelerarse o pausarse según lo que aprendas.
 > Lo que no cambia: la dirección.
 
-*Última actualización: 19/05/2026*
+*Última actualización: 19/09/2026*
 
 ---
 
 ## La idea central
 
-Un solo agente local que se separa por **modos o capas** según el tipo de tarea.
-No múltiples agentes paralelos — un router que construye el contexto correcto
-para cada situación y se lo entrega siempre al mismo modelo.
+Un solo asistente local que se organiza por **carriles y capas** según el tipo
+de tarea. No múltiples agentes paralelos: un router selecciona la fuente y el
+contexto adecuados, y el mismo modelo local responde o ejecuta una acción
+controlada.
 
-```
+```text
 Consulta del usuario
        ↓
-   [ROUTER]  ← 3 capas: keywords → embeddings → LLM fallback
+   [ROUTER] ← keywords → embeddings → fallback RAG
        ↓
-┌───────────────────────────────────────────┐
-│  CARRIL: rag       → Chroma + experience_lookup  │
-│  CARRIL: memory    → JSON estructurado (TERMINAL)  │
-│  CARRIL: episode   → experience_index Chroma       │
-│  CARRIL: tool_*    → acciones controladas          │
-│  CARRIL: unsupport → respuesta directa, sin LLM    │
-└───────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ rag         → documentos Chroma + experiencia episódica      │
+│ memory      → JSON estructurado y recuperación selectiva     │
+│ episode     → experience_index de sesiones                   │
+│ tool_*      → acciones controladas de lectura/escritura      │
+│ SYSTEM      → integración externa opcional, bloqueada         │
+│ especiales  → identity, math, unsupported, exit              │
+└─────────────────────────────────────────────────────────────┘
        ↓
-   [LLM]  ← llama3.2 vía Ollama
+ [LLM local vía Ollama] o respuesta/herramienta directa
        ↓
-   metrics.py → metrics.jsonl
+metrics.py → storage/logs/metrics.jsonl
 ```
 
-Esto es esencialmente lo que hacen MemGPT y Cursor AI.
-El router híbrido actual ya implementa esta arquitectura completamente.
+El diseño separa intención, recuperación, decisión y efectos laterales. La
+meta no es añadir autonomía sin control: es que Lautaro decida bien, actúe con
+seguridad, recuerde selectivamente y permita retomar trabajo entre sesiones.
+
+La integración `bot_trading` es una excepción controlada al núcleo local:
+consulta datos externos de mercado mediante `subprocess`, está clasificada como
+`RiskLevel.SYSTEM`, queda bloqueada por defecto y es estrictamente de solo
+lectura. No ejecuta órdenes ni modifica balances.
 
 ---
 
 ## Etapas
 
-### ✅ Etapa 1 — Base funcional (completada)
+### ✅ Etapa 1 — Base funcional y consolidación inicial
+
 **Nivel:** Fundamental
 
-- RAG con Chroma + LangChain (269 chunks, MMR, fidelity_check)
-- Router híbrido 3 capas (keywords → embeddings → LLM fallback)
-- Memoria en 5 capas (WORKING, SEMANTIC, EPISODIC ×2, RAM)
-- MemoryType enum formal en `schemas.py`
-- memory_manager como guardián único + get_context_for()
-- Caché semántica (solo carril rag, TERMINAL para memory)
-- 9 carriles de ejecución estables
-- 67+ tests pasando (incluye test_architecture.py)
-- Experience Index en Chroma + boost de calidad + señal s/n
-- Métricas por turno en `storage/metrics.jsonl`
+- RAG local con Chroma y LangChain.
+- Router híbrido: keywords → embeddings → fallback RAG.
+- Memoria estructurada: perfil, hechos, estado de trabajo, tareas y episodios.
+- Recuperación selectiva mediante `memory_manager` y `get_context_for()`.
+- Caché semántica limitada al carril RAG; memoria es un carril terminal.
+- Experience Index en Chroma para recuperar episodios relevantes.
+- `fidelity_check` para reducir respuestas RAG sin soporte documental.
+- Tools controladas para lectura de archivos y operaciones de memoria.
+- Métricas por turno en `storage/logs/metrics.jsonl`.
+- Suite automatizada para arquitectura, router, memoria, tools y evaluación.
 
 ---
 
-### ✅ Etapa 2 — Acceso al código propio (completada)
+### ✅ Etapa 2 — Acceso seguro al código propio
+
 **Nivel:** Intermedio
 
-El agente puede leer y listar archivos de su propio proyecto.
+El asistente puede inspeccionar su propio proyecto sin ejecutar acciones
+arbitrarias sobre el sistema.
 
-- `tool_list_files` — lista archivos del proyecto
-- `tool_read_file` — lee contenido de cualquier archivo por ruta
-- El router detecta preguntas sobre archivos y rutas
-- Carriles `tool_list_files` y `tool_read_file` operativos
-
-> **Nota:** La variante "proponer diffs" (auto-mejora) sigue siendo Etapa 3.
+- `tool_list_files` para listar archivos permitidos.
+- `tool_read_file` para leer archivos por ruta validada.
+- Router con detección específica de consultas sobre archivos.
+- Separación entre tools de lectura, escritura segura y herramientas `SYSTEM`.
+- `tool_plan_retoma` para consultar el plan de retoma documental sin modificarlo.
 
 ---
 
-### 🎯 Etapa 3 — Observabilidad y evaluación (en curso — Fase 7)
+### 🎯 Etapa 3 — Observabilidad y evaluación continua
+
 **Nivel:** Intermedio
 
-Tener números que digan si el sistema mejora o empeora con cada cambio.
+Tener evidencia para decidir si un cambio mejora o empeora el sistema.
 
-- **7A ✅** — Logger de métricas por turno (`metrics.jsonl`)
-- **7B 🔄** — `show_metrics.py`: tabla en terminal con tiempos y carriles
-- **7C 🔲** — Batería RAG ampliada de 9 a 20 preguntas
-- **7D 🔲** — Caché con aging: entradas > 7 días se recalculan
+- Logger de métricas por turno con versión de esquema y baseline.
+- Dashboard `show_metrics.py` para distribución de carriles, tiempos, caché y fidelity.
+- Evaluación repetible mediante `run_eval.py`.
+- Baseline operativo `septiembre-13` para comparar cambios recientes sin mezclar
+  telemetría histórica incompleta.
+- Las métricas históricas se conservan como registro evolutivo; los análisis de
+  calidad y rendimiento deben indicar qué baseline y qué registros usan.
 
----
-
-### 🔭 Etapa 4 — Auto-mejora con diffs
-**Nivel:** Avanzado
-
-El agente propone cambios concretos al código en formato diff.
-Tú revisas y apruebas. Se aplican con `git apply`.
-
-- El agente genera bloques `diff` o `patch` válidos
-- Flujo: propuesta → revisión humana → `git apply` → commit
-- Nunca auto-aplica sin aprobación explícita
-
-**Prerequisito:** Etapa 3 completa (métricas para validar que un diff mejora).
+**Objetivo actual:** medir antes y después de cada cambio de routing, memoria,
+RAG, prompt o tool. No cambiar de modelo solo porque “suena mejor”.
 
 ---
 
-### 🌌 Etapa 5 — Memoria reflexiva
+### 🧱 Etapa 4 — Consolidación de memoria, router y tools
+
+**Nivel:** Fundamental a Intermedio
+
+Antes de ampliar capacidades, Lautaro debe ser predecible en los flujos que ya
+usa todos los días.
+
+- Refinar respuestas de memoria para tareas, foco, episodios y recomendaciones.
+- Mantener el router robusto ante variantes de lenguaje y evitar que carriles
+  específicos caigan a RAG sin datos estructurados.
+- Definir y probar contratos claros para las tools.
+- Mejorar trazabilidad: canal de origen, efectos laterales y resultados de tool.
+- Mantener documentación, código y pruebas alineados.
+- Aplicar cambios pequeños, reversibles y medibles.
+
+---
+
+### 🔭 Etapa 5 — Auto-mejora asistida con diffs
+
 **Nivel:** Avanzado
 
-El agente consolida aprendizajes propios sobre sí mismo usando
-*self-editing memory* (concepto de MemGPT).
+Lautaro podrá proponer cambios concretos al código en formato diff, pero la
+persona usuaria conserva la decisión y la ejecución.
 
-- Detecta patrones en sus propias métricas
-- Registra observaciones como hechos semánticos
-- Requiere Etapa 4 como base
+- Flujo: observación → propuesta → revisión humana → diff → pruebas → commit.
+- Los cambios deben incluir criterio de terminado y prueba mínima.
+- Nunca auto-aplica cambios ni ejecuta acciones sensibles sin aprobación.
+- Las métricas y la batería de evaluación sirven para comprobar si un cambio
+  realmente mejora el comportamiento.
+
+**Prerequisito:** las etapas de observabilidad y consolidación deben estar
+suficientemente firmes.
+
+---
+
+### 🌌 Etapa 6 — Memoria reflexiva
+
+**Nivel:** Avanzado
+
+El asistente podrá extraer aprendizajes sobre su propio comportamiento a partir
+de episodios, evaluación y métricas, sin modificar el código de manera
+autónoma.
+
+- Detectar patrones de routing, latencia, abstención y errores evitados.
+- Proponer mejoras basadas en evidencia.
+- Registrar observaciones verificables en memoria o documentación.
+- Mantener revisión humana antes de convertir una observación en cambio de
+  código o política.
 
 ---
 
 ## Principios que no cambian
 
-1. **Local primero** — ningún dato sale del equipo
-2. **Aprobación humana siempre** — el agente propone, el humano decide
-3. **Progresivo y seguro** — cada etapa construye sobre la anterior, nada se tira
-4. **Simple antes que elegante** — si funciona con menos, no añadir más
+1. **Local primero** — el razonamiento, la memoria, los índices y el RAG se
+   ejecutan localmente con Ollama, Chroma y archivos del proyecto.
+
+2. **Fronteras externas explícitas** — una integración externa, como
+   `bot_trading`, debe estar aislada, documentada, con timeout, contrato de
+   retorno y nivel de riesgo claro. El acceso a datos externos no convierte a
+   Lautaro en un sistema de ejecución autónoma.
+
+3. **Aprobación humana siempre** — Lautaro propone; la persona usuaria revisa,
+   confirma y decide, especialmente ante escritura, rutas externas, credenciales
+   o herramientas `SYSTEM`.
+
+4. **Progresivo y seguro** — cada etapa construye sobre una base probada. Se
+   prefieren mejoras pequeñas, reversibles y con pruebas antes que migraciones
+   grandes.
+
+5. **Simple antes que elegante** — si una solución de reglas, datos
+   estructurados y tests resuelve el problema, no añadir complejidad de agentes,
+   modelos o automatizaciones.
+
+6. **Medir antes de concluir** — una mejora debe poder comprobarse mediante
+   prueba mínima, evaluación repetible, métrica o evidencia observada.
 
 ---
 
-## Hardware de referencia
+## Límites actuales
 
-ThinkPad · Intel Core i7 8th gen · 16 GB DDR4 · Sin GPU dedicada
+- Lautaro no ejecuta órdenes de trading ni modifica balances.
+- Las tools `SYSTEM` están bloqueadas hasta habilitación y confirmación
+  explícitas.
+- La memoria no sustituye documentación ni pruebas: recupera contexto, pero las
+  decisiones de arquitectura deben quedar documentadas.
+- El modelo local puede ser lento en consultas RAG largas; la arquitectura debe
+  reducir llamadas innecesarias antes de proponer un cambio de modelo.
+- La auto-mejora es asistida: generar propuestas no autoriza aplicarlas.
 
-Ver `docs/hardware-modelos.md` para la tabla de modelos compatibles.
+---
+
+## Documentos relacionados
+
+- [Arquitectura actual](arquitectura_actual.md)
+- [Arquitectura de memoria](arquitectura-memoria.md)
+- [Plan de robustecimiento](plan-robustecimiento.md)
+- [Integración con bot_trading](integracion_bot_trading.md)
+- [Índice de decisiones de arquitectura](decisiones_arquitectura.md)
+- [ADRs](../adr/README.md)
+- [Hardware y modelos](hardware-modelos.md)
