@@ -57,8 +57,8 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en que vamos", "que sigue",
     "en que estoy", "que estoy haciendo",
     "ultimo paso", "en que quedamos",
-    "que hago hoy", "cual es el plan",
-    "que hicimos", "en que estamos",
+    "que hicimos", "en que estamos", "que hago hoy",
+    "cual es el plan",
     "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
     "que bloquea", "que esta bloqueando", "que esta frenando",
@@ -69,12 +69,6 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "que frena", "que frena el avance", "que esta frenando el avance",
     "por que no avanzamos", "por que no avanzo",
     "que me detiene", "que nos detiene",
-    "que me recomiendas atacar primero",
-    "que me sugieres hacer hoy",
-    "por cual tarea me recomiendas empezar",
-    "con cual tarea me conviene partir",
-    "cual tarea me conviene partir",
-    "cual tarea me conviene empezar",
 ]
 
 MEMORY_TASKS_KEYWORDS = [
@@ -87,6 +81,35 @@ MEMORY_TASKS_KEYWORDS = [
     "tareas hechas", "tareas completadas", "tareas cerradas",
     "que tareas hice",
     "lista todas las tareas", "todas las tareas",
+]
+_TASK_PRIORITY_QUERY_PHRASES = [
+    "cual es la de mas alta prioridad",
+    "cual tiene mayor prioridad",
+    "cuales son las tareas mas importantes",
+    "que tarea es mas importante",
+    "hay tareas de alta prioridad",
+    "tengo tareas de alta prioridad",
+]
+
+_TASK_RECOMMENDATION_QUERY_PHRASES = [
+    # Consultas breves que ya implican elegir una tarea.
+    "por cual empiezo",
+    "por cual tarea empiezo",
+    "que ataco primero",
+    "cual ataco primero",
+    "que me recomendas atacar primero",
+    "que me recomiendas atacar primero",
+
+    # Variantes explícitas sobre una tarea.
+    "por cual tarea me recomiendas empezar",
+    "con cual tarea me conviene partir",
+    "cual tarea me conviene partir",
+    "cual tarea me conviene empezar",
+    "cual tarea deberia empezar",
+    "que tarea me conviene",
+    "que tarea deberia empezar",
+    "que tarea me conviene ahora",
+    "cual tarea deberia empezar ahora",
 ]
 
 _TASK_SUGGESTION_SIGNALS = [
@@ -196,21 +219,27 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completada", "como completado",
 ]
 
-# Patrón estricto para cierre de tareas:
-# cubre frases explícitas de cierre con variantes reales del usuario
-# ("marca la tarea como completada", "cierra la tarea t-3",
-# "complete la tarea del logger", "marca t-5").
-# La lógica de uso de este patrón vive en router.py; aquí solo queda la
-# constante regex para que router_config.py se mantenga como módulo de datos.
+# Patrón de cierre de tareas.
+#
+# Se evalúa en router.py antes de memoria/episodios. Acepta:
+# - formas de voseo: "marcá", "cerrá", "finalizá";
+# - formas neutras: "marca", "cerrar", "finalizar";
+# - estados equivalentes: completada, terminada y finalizada;
+# - referencias por ID, ordinal o título.
+#
+# La pregunta debe contener una acción de escritura; por eso no captura
+# consultas como "qué tareas están terminadas".
 _COMPLETE_TASK_PATTERN = re.compile(
     r"^(?:"
-    r"(?:marca(?:r)?(?:\s+(?:la\s+)?tarea)?(?:\s+(?:t[- ]?\d+|.+?))?\s+como\s+completad[oa](?:\s+.*)?)"
+    r"(?:marca(?:r)?(?:\s+(?:la\s+)?tarea)?(?:\s+(?:t[- ]?\d+|.+?))?\s+como\s+(?:completad[oa]|terminad[oa]|finalizad[oa])(?:\s+.*)?)"
     r"|(?:marca(?:r)?\s+t[- ]?\d+(?:\s+.*)?)"
     r"|(?:cerrar(?:\s+la)?\s+tarea(?:\s+pendiente)?(?:\s+.*)?)"
     r"|(?:cierra(?:r)?\s+(?:la\s+)?tarea(?:\s+.*)?)"
+    r"|(?:finalizar(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:finaliza(?:r)?\s+(?:la\s+)?tarea(?:\s+.*)?)"
     r"|(?:completar(?:\s+la)?\s+tarea(?:\s+.*)?)"
     r"|(?:complete(?:\s+la)?\s+tarea(?:\s+.*)?)"
-    r"|(?:marcar\s+como\s+completad[oa](?:\s+.*)?)"
+    r"|(?:marcar\s+como\s+(?:completad[oa]|terminad[oa]|finalizad[oa])(?:\s+.*)?)"
     r")$",
     re.IGNORECASE,
 )
@@ -343,23 +372,14 @@ RAG_HINTS = [
 ]
 
 MEMORY_REASONING_KEYWORDS = [
-    # Carril separado para recomendaciones de inicio/prioridad de tareas.
-    # Distingue "estado actual" (memory:work_state) de "juicio/prioridad"
-    # (memory:reasoning), evitando mezclar ambos tipos de consulta.
+    # Consultas de razonamiento sobre el estado de trabajo en general.
+    #
+    # Las consultas que mencionan elegir, priorizar o recomendar una tarea
+    # concreta se resuelven en memory:tasks, donde se usa tasks.json real.
     "que me conviene hacer",
-    "que me conviene atacar",
     "que me conviene hacer ahora",
     "que me recomiendas hacer",
-    "que me recomiendas atacar",
-    "que me recomiendas empezar",
-    "por cual me recomiendas empezar",
-    "por cual tarea me recomiendas empezar",
-    "cual tarea deberia empezar",
-    "cual tarea me conviene",
-    "que tarea me conviene",
-    "que tarea deberia empezar",
-    "que tarea me conviene ahora",
-    "cual tarea deberia empezar ahora",
+    "que me sugieres hacer hoy",
 ]
 
 _RE_TASK_RECOMMENDATION = re.compile(
@@ -388,15 +408,17 @@ __all__ = [
     "_EXIT_WORDS",
     "_WRITE_LANES",
     "_READ_VERBS",
+    "_RE_RECENT_EPISODE",
     "TOOL_LIST_KEYWORDS",
     "TOOL_READ_KEYWORDS",
     "MEMORY_PROFILE_KEYWORDS",
     "MEMORY_WORK_STATE_KEYWORDS",
     "MEMORY_TASKS_KEYWORDS",
+    "_TASK_PRIORITY_QUERY_PHRASES",
+    "_TASK_RECOMMENDATION_QUERY_PHRASES",
     "_TASK_SUGGESTION_SIGNALS",
     "MEMORY_PROJECT_FACTS_KEYWORDS",
     "MEMORY_EPISODE_KEYWORDS",
-    "_RE_RECENT_EPISODE",
     "TRIVIAL_CONVERSATIONAL_KEYWORDS",
     "AGENT_IDENTITY_KEYWORDS",
     "TOOL_SAVE_FACT_KEYWORDS",

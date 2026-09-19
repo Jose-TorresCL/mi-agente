@@ -18,16 +18,22 @@ def test_historial_por_contenido_va_a_episode():
         info = debug_route_layers(frase)
         assert info == {"layer": "kw", "lane": "memory:episode"}, frase
 
-def test_consultas_juicio_van_a_work_state():
-    for frase in ["qué me recomiendas atacar primero",
-                  "¿qué me sugieres hacer hoy?"]:
-        info = debug_route_layers(frase)
-        assert info == {"layer": "kw", "lane": "memory:work_state"}, frase
+def test_recomendacion_para_atacar_tarea_va_a_memory_tasks():
+    info = debug_route_layers("qué me recomiendas atacar primero")
 
-def test_variantes_juicio_tareas_van_a_work_state():
-    from app.router import debug_route_layers
-    for frase in ["por cual tarea me recomiendas empezar",
-                  "con cual tarea me conviene partir",
-                  "cuál tarea me conviene partir"]:
+    assert info == {"layer": "kw", "lane": "memory:tasks"}
+
+def test_sugerencia_general_para_hoy_va_a_memory_reasoning():
+    info = debug_route_layers("¿qué me sugieres hacer hoy?")
+
+    assert info == {"layer": "kw", "lane": "memory:reasoning"}
+
+def test_variantes_de_recomendacion_de_tareas_van_a_memory_tasks():
+    for frase in [
+        "por cual tarea me recomiendas empezar",
+        "con cual tarea me conviene partir",
+        "cuál tarea me conviene partir",
+    ]:
         info = debug_route_layers(frase)
-        assert info == {"layer": "kw", "lane": "memory:work_state"}, frase
+
+        assert info == {"layer": "kw", "lane": "memory:tasks"}, frase

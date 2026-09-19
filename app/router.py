@@ -41,6 +41,8 @@ from app.router_config import (
     MEMORY_PROFILE_KEYWORDS,
     MEMORY_WORK_STATE_KEYWORDS,
     MEMORY_TASKS_KEYWORDS,
+    _TASK_PRIORITY_QUERY_PHRASES,
+    _TASK_RECOMMENDATION_QUERY_PHRASES,
     _TASK_SUGGESTION_SIGNALS,
     MEMORY_PROJECT_FACTS_KEYWORDS,
     MEMORY_EPISODE_KEYWORDS,
@@ -114,19 +116,51 @@ def is_market_pattern_query(q: str) -> bool:
 
 
 def classify_memory_query(question: str) -> str | None:
+    """Clasifica consultas de memoria resueltas por keywords.
+
+    Orden de precedencia:
+    1. Episodios recientes.
+    2. Perfil y estado operativo.
+    3. Consultas explícitas sobre tareas actuales.
+    4. Hechos del proyecto y episodios históricos.
+
+    Las frases específicas de prioridad/recomendación de tareas se evalúan
+    antes de las señales generales de sugerencia. Esto evita que consultas
+    como "por cuál empiezo" o "cuál es la de más alta prioridad" caigan
+    en embeddings/RAG o en el carril general memory:reasoning.
+    """
     q = _normalize(question)
+
     if matches_recent_episode_query(q):
         return "episode"
+
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):
         return "profile"
+
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):
         return "work_state"
+
+    # Consultas operativas sobre tareas:
+    # prioridad factual y recomendación se resuelven desde tasks.json.
+    # Deben ganar antes de la exclusión para sugerencias abiertas.
+    if any(k in q for k in _TASK_PRIORITY_QUERY_PHRASES):
+        return "tasks"
+
+    if any(k in q for k in _TASK_RECOMMENDATION_QUERY_PHRASES):
+        return "tasks"
+
+    # Consultas mecánicas: listar, contar o mostrar tareas.
+    # La exclusión evita capturar frases abiertas como
+    # "qué más podríamos implementar".
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) and not _has_task_suggestion_signal(q):
         return "tasks"
+
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS):
         return "project_facts"
+
     if any(k in q for k in MEMORY_EPISODE_KEYWORDS):
         return "episode"
+
     return None
 
 
