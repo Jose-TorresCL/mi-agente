@@ -94,8 +94,39 @@ _TRIVIAL_QUESTION_PATTERNS = {
 }
 
 _UNSUPPORTED_NARRATIVE_PATTERNS = (
-    re.compile(r"\b(mencionaste|mencionas|dijiste|como dijiste|como mencionaste|como ya habías dicho)\b", re.IGNORECASE),
-    re.compile(r"\b(según lo que me dijiste|según lo que mencionaste|según tu mensaje|según tu último mensaje)\b", re.IGNORECASE),
+    re.compile(
+        r"\b("
+        r"mencionaste|mencionas|dijiste|"
+        r"como dijiste|como mencionaste|"
+        r"como ya habías dicho"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b("
+        r"según lo que me dijiste|"
+        r"según lo que mencionaste|"
+        r"según tu mensaje|"
+        r"según tu último mensaje"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bsegún tu experiencia\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\btuviste problemas\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bacordamos que\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcomo hablamos antes\b",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -460,13 +491,21 @@ def _validate_fidelity(
     """Valida la fidelidad utilizando el flujo actual con opción numérica o semántica."""
     threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
 
+    if not answer or not answer.strip():
+        print("[fidelity:block] respuesta vacía — bloqueando")
+        log_fidelity_failure(question or answer, 0.0, threshold)
+        return False, 0.0
+
     if _is_trivial_question(question):
         print("[fidelity:skip] pregunta trivial/saludo, se omite verificación")
         log_fidelity_success(question or answer, 1.0, threshold, method="trivial_bypass")
         return True, 1.0
 
-    narrative_ok, narrative_reason = _contains_unsupported_narrative_frame(answer)
-    if narrative_ok:
+    has_unsupported_narrative, narrative_reason = (
+        _contains_unsupported_narrative_frame(answer)
+    )
+
+    if has_unsupported_narrative:
         print(
             f"[fidelity:block:narrative] marco narrativo no soportado detectado ({narrative_reason}) — bloqueando"
         )
