@@ -163,6 +163,26 @@ def _fidelity_time_from_row(row: dict) -> float:
 
     return 0.0
 
+def _fidelity_status_from_row(row: dict) -> str:
+    value = (
+        row.get("fidelity_status")
+        or row.get("fidelity")
+        or row.get("verification_status")
+        or "not_applicable"
+    )
+    normalized = str(value).strip().lower()
+
+    mapping = {
+        "verified": "verified",
+        "unverified": "unverified",
+        "not_applicable": "not_applicable",
+        "not-applicable": "not_applicable",
+        "notrun": "not_applicable",
+        "verificado": "verified",
+        "no_verificado": "unverified",
+        "no_aplicable": "not_applicable",
+    }
+    return mapping.get(normalized, "not_applicable")
 
 def _estimated_tokens_from_row(row: dict) -> int:
     for key in ("tokens_est", "tokens_total", "estimated_tokens", "tokens_estimated", "total_tokens"):

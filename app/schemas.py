@@ -27,9 +27,12 @@ Archivos JSON y sus schemas:
   storage/episodic_memory.json →  EpisodicMemory  (contiene lista de EpisodeItem)
 
 Contratos de retorno internos (R1-A):
-  process_turn()    →  tuple[str, list]  (ver DecisionResult para estructura semántica)
-  _decide_rag()     →  RagResult
-  DecisionResult    →  TypedDict con los campos semánticos de cada respuesta interna
+process_turn() → DecisionResult
+_decide_rag() → RagResult
+DecisionResult → TypedDict con los campos semánticos de cada respuesta interna
+
+Contrato externo de salida:
+chat_core.handle_turn() → TurnResult
 
 Contrato de retorno de tools (R6-A):
   ToolResult        →  TypedDict estructurado que reemplaza el str crudo de tools.py.
@@ -53,8 +56,8 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypedDict
-
+from typing import Any, TypedDict, Literal
+from dataclasses import dataclass, field
 
 # ───────────────────────────────────────────────
 # MemoryType — clasificación de capas de memoria (8D)
@@ -203,6 +206,42 @@ class DecisionResult(TypedDict, total=False):
     tokens_est:   int
     metadata:     dict[str, Any]
 
+TurnSeverity = Literal["normal", "warning", "error"]
+FidelityStatus = Literal["verified", "unverified", "not_applicable"]
+EventKind = Literal["routing", "retrieval", "generation", "fidelity", "token", "done"]
+
+@dataclass(slots=True)
+class SourceRef:
+    """Referencia mínima de una fuente mostrable por la UI."""
+
+    source: str
+    doc_type: str = ""
+    section: str = ""
+
+
+@dataclass(slots=True)
+class TurnResult:
+    """Contrato externo de salida de chat_core.handle_turn()."""
+
+    text: str
+    should_exit: bool = False
+    severity: TurnSeverity = "normal"
+    route: str = ""
+    fidelity: FidelityStatus = "not_applicable"
+    sources: list[SourceRef] = field(default_factory=list)
+    cached: bool = False
+
+
+
+
+
+@dataclass(slots=True)
+class TurnEvent:
+    """Evento incremental para streaming o feedback de progreso."""
+
+    kind: EventKind
+    message: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
 
 class RagResult(TypedDict):
     """Contrato de retorno de _decide_rag() en intelligence.py."""

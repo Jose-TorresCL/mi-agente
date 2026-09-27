@@ -1,10 +1,11 @@
 from pathlib import Path
 from datetime import datetime
-
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from rich.rule import Rule
+from rich.markdown import Markdown
+from app.schemas import TurnResult
 
 console = Console()
 DEBUG_RETRIEVAL = True
@@ -226,39 +227,67 @@ def mostrar_briefing(briefing: dict) -> None:
     console.print()
 
 
-# ──────────────────────────────────────────────
-# Formateo de respuesta
-# ──────────────────────────────────────────────
-
-def format_answer(answer: str) -> str:
-    """Devuelve la respuesta con prefijo del asistente."""
-    return f"\nLautaro: {answer}\n"
-
-
-# ──────────────────────────────────────────────
-# Fuentes
-# ──────────────────────────────────────────────
-
-def print_sources(docs) -> None:
-    if not docs:
+def _print_result_sources(result: TurnResult) -> None:
+    if not result.sources:
         return
 
     console.print("[dim]Basado en:[/dim]")
     seen = set()
     idx = 1
 
-    for d in docs:
-        src = d.metadata.get("source", "desconocido")
-        name = Path(src).name if src != "desconocido" else src
-        doc_type = d.metadata.get("doc_type", "sin_tipo")
-        section = d.metadata.get("section", "sin_seccion")
+    for src_ref in result.sources:
+        src = src_ref.source or "unknown"
+        name = Path(src).name if src != "unknown" else src
+        doc_type = src_ref.doc_type or "unknown_type"
+        section = src_ref.section or "unknown_section"
 
         key = (src, doc_type, section)
         if key not in seen:
-            console.print(f"  {idx}. {name} | {doc_type} | {section}")
+            console.print(f" {idx}. {name} | {doc_type} | {section}")
             seen.add(key)
             idx += 1
 
+def _print_result_meta(result: TurnResult) -> None:
+    partes: list[str] = []
+
+    if result.route:
+        partes.append(result.route)
+    if result.fidelity == "verified":
+        partes.append("[green]verified[/green]")
+    elif result.fidelity == "unverified":
+        partes.append("[yellow]unverified[/yellow]")
+    if result.cached:
+        partes.append("cache")
+    if result.sources:
+        partes.append(f"{len(result.sources)} fuente(s)")
+    if partes:
+        console.print(" [dim]" + " · ".join(partes) + "[/dim]")
+
+def render_result(result: TurnResult) -> None:
+    """Render único para cualquier TurnResult proveniente de chat_core."""
+
+    if result.severity == "error":
+        print_error(result.text)
+        return
+
+    markdown = Markdown(result.text or "")
+
+    console.print()
+    console.print("[bold cyan]Lautaro:[/bold cyan]")
+    if result.severity == "warning":
+        console.print(
+            Panel(
+                markdown,
+                title="⚠️ Warning",
+                border_style="yellow",
+                padding=(0, 2),
+            )
+        )
+    else:
+        console.print(markdown)
+    _print_result_meta(result)
+    _print_result_sources(result)
+    console.print()
 
 # ──────────────────────────────────────────────
 # Debug retrieval (solo en desarrollo) — ahora en panel

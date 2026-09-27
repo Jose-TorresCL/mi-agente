@@ -62,7 +62,7 @@ def record_turn(
     cached: bool = False,
     num_docs: int = 0,
     fidelity_ms: int = 0,
-    fidelity_status: str = "not_run",
+    fidelity_status: str = "not_applicable",
 ) -> None:
     """Registra las métricas de un turno completado en metrics.jsonl.
 
@@ -70,7 +70,7 @@ def record_turn(
     el acumulador de sesión en memoria (_SESSION_METRICS).
 
     Args:
-        route:        Carril de decisión (ej. 'rag', 'memory:tasks', 'exit').
+        route: Carril de decisión canónico del turno (ej. 'rag', 'memory:tasks', 'exit').
         intent_type:  Tipo de intención detectada (puede coincidir con route
                       o ser más específico, ej. 'multi:tasks+work_state').
         channel:      Canal de entrada ('cli', 'telegram'). Por defecto 'cli'.
@@ -81,6 +81,8 @@ def record_turn(
         num_docs:     Número de chunks recuperados del retriever.
 
     Nunca lanza excepciones — los errores de escritura se loguean como WARNING.
+    Debe recibir los mismos valores canónicos que luego consume la UI
+    a través de TurnResult / metadata del turno.
     """
     baseline_id, metric_schema_version = _get_active_baseline()
 
