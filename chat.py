@@ -29,33 +29,26 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import BaseMessage
 
-from app.config import CHROMA_DIR, OLLAMA_URL, MODEL_NAME
+from app.config import CHROMA_DIR, OLLAMA_URL, MODEL_NAME, EMBEDDING_MODEL
 from app.indexing_core import needs_reindex, run_full_index
 from app.chat_core import handle_turn
 from app.chat_ui import (
     print_welcome,
-    format_answer,
     mostrar_briefing,
     console,
     with_status,
     print_error,
-    print_warning,
+    render_result,
 )
 from app.memory_manager import get_session_briefing
 from app.logger import get_logger
 
 log = get_logger(__name__)
 
-EMBED_MODEL = "nomic-embed-text"
-
-# Marcadores en la respuesta que indican fallback/duda de fidelidad.
-# Ajusta estos strings a los que realmente emite chat_core/fidelity_check.
-_FIDELITY_WARNING_MARKERS = ("No pude verificar", "Tómala con cautela")
-
 
 def _load_vectorstore() -> Chroma:
     """Carga el vectorstore existente sin re-indexar."""
-    embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_URL)
+    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_URL)
     return Chroma(
         persist_directory=CHROMA_DIR,
         embedding_function=embeddings,
@@ -109,12 +102,7 @@ def _session_close() -> None:
     _stop_llm_model()
 
 
-def _print_response(response: str) -> None:
-    """Elige panel de warning o respuesta normal según el contenido."""
-    if any(marker in response for marker in _FIDELITY_WARNING_MARKERS):
-        print_warning(response)
-    else:
-        console.print(format_answer(response))
+
 
 
 def main() -> None:
@@ -142,7 +130,7 @@ def main() -> None:
 
         try:
             with with_status("Lautaro está pensando..."):
-                response, should_exit = handle_turn(
+                result = handle_turn(
                     user_input,
                     chat_history,
                     vectordb,
@@ -154,14 +142,12 @@ def main() -> None:
             print_error("No pude generar una respuesta.", detalle=str(exc))
             continue
 
-        if should_exit:
+        if result.should_exit:
             _session_close()
             console.print("\n[bold cyan]👋 ¡Hasta luego![/bold cyan]")
             break
 
-        if response:
-            _print_response(response)
-
+        render_result(result)
 
 if __name__ == "__main__":
     main()

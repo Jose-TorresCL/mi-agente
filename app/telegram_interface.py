@@ -32,7 +32,7 @@ Comandos disponibles:
   /reset  — borra el historial en RAM del usuario actual.
 
 Prerequisitos para arrancar:
-  - Ollama corriendo en localhost:11434 con el modelo configurado en app/config.py.
+  - Ollama corriendo en localhost:11434 con el modelo configurado en app/config.py.|
   - ChromaDB indexado (ejecutar python indexacion.py si es la primera vez).
   - .env con TELEGRAM_TOKEN definido.
 
@@ -211,7 +211,7 @@ def main() -> None:
     Si TOKEN es None el arranque fallará con InvalidToken de la librería.
     """
     if not TOKEN:
-        raise RuntimeError(
+        raise ValueError(
             "TELEGRAM_TOKEN no está definido. "
             "Agrega TELEGRAM_TOKEN=<tu_token> en el archivo .env"
         )

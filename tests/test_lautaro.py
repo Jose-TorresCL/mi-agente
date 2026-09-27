@@ -128,16 +128,11 @@ def test_tools():
 # ═══════════════════════════════════════════════════════════════════════════
 def test_cache_semantico():
     seccion("3. Caché semántica (umbral 0.82)")
-    from app.semantic_cache import cache_lookup, cache_save, cache_invalidate, cache_stats
+    from app.semantic_cache import cache_lookup, cache_save, cache_stats
 
     pregunta_original = "¿cuál es el objetivo principal de Lautaro?"
     pregunta_similar  = "¿cuál es el objetivo de Lautaro?"
     pregunta_distinta = "¿qué es un transformer en deep learning?"
-
-    try:
-        cache_invalidate(pregunta_original)
-    except Exception:
-        pass
 
     if cache_lookup(pregunta_original) is None:
         ok("3a — Pregunta nueva no tiene caché (correcto)")

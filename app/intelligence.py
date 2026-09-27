@@ -51,6 +51,7 @@ from app.prompts import (
     IDENTITY_MSG,
     UNSUPPORTED_MSG,
     MEMORY_NOT_FOUND_MSG,
+    build_memory_not_found_msg,
 )
 from app.tool_helpers import list_project_files, handle_list_files
 from app.formatters import (
@@ -60,6 +61,8 @@ from app.formatters import (
     format_episodes_context,
 )
 from app.schemas import TurnContext, DecisionResult
+import re
+from app.text_utils import _normalize
 
 log = get_logger(__name__)
 
@@ -74,9 +77,52 @@ _IDENTITY_KEYWORDS         = {"quién eres", "quien eres", "cómo te llamas", "c
 _MEMORY_HISTORY_TURNS      = 3
 _MIN_EXPERIENCE_SCORE      = 0.70
 
+_RE_ULTIMAS_N = re.compile(r'\b(\d+)\b')
+_RECENT_EPISODE_SIGNALS = {"ultima", "ultimas", "reciente", "recientes", "pasadas"}
+
+def _is_recent_episode_query(question: str) -> bool:
+    q_lower = _normalize(question)
+    return any(sig in q_lower for sig in _RECENT_EPISODE_SIGNALS)
+
+
+_STRUCTURED_TASKS_SIGNALS = {
+    "lista", "listar", "listame", "muéstrame", "muestrame",
+    "cuantas", "cuántas", "cuantos", "cuántos",
+    "mas importante", "más importante", "mayor prioridad",
+    "pendientes", "abiertas",
+}
+_STRUCTURED_FACTS_SIGNALS = {
+    "fase", "version", "stack", "tecnologias",
+    "hechos", "datos del proyecto", "nombre del proyecto",
+    "lista", "listar", "listame", "muestrame",
+}
+
+def _is_structured_tasks_query(question: str) -> bool:
+    """True si la consulta sobre tareas es mecánica (listar/contar/ordenar
+    por campo), no de juicio. Mismo patrón que _is_recent_episode_query."""
+    q = _normalize(question)
+    return any(sig in q for sig in _STRUCTURED_TASKS_SIGNALS)
+
+
+def _is_structured_facts_query(question: str) -> bool:
+    """True si la consulta sobre facts es mecánica (leer/listar campos).
+    A diferencia de tasks, aquí la señal de razonamiento gana:
+    'por qué estamos en esta fase' debe ir al LLM."""
+    if _has_reasoning_signal(question):
+        return False
+    q = _normalize(question)
+    return any(sig in q for sig in _STRUCTURED_FACTS_SIGNALS)
+
+def _is_personal_reasoning(question: str) -> bool:
+    q_lower = question.lower()
+    has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
+    has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
+    return has_signal and has_pronoun
+
+
 _REASONING_SIGNALS = {
     "recomendar", "recomendas", "recomiendas", "recomendarías",
-    "mejor", "primero", "atacar", "prioridad", "priorizar",
+    "mejor", "primero", "prioridad", "priorizar",
     "empezar", "empezaría", "debería", "deberíamos", "deberia", "deberiamos",
     "conviene", "convendría",
     "importante", "más importante",
@@ -110,6 +156,55 @@ _SAFE_MATH_OPS: dict = {
     ast.UAdd: operator.pos,
 }
 
+# Subtipos de consultas sobre tareas.
+#
+# Las frases deben estar normalizadas porque _normalize() elimina tildes,
+# normaliza mayúsculas/minúsculas y unifica espacios.
+_TASK_PRIORITY_FACT_SIGNALS = {
+    "cual es la de mas alta prioridad",
+    "cual tiene mayor prioridad",
+    "cuales son las tareas mas importantes",
+    "que tarea es mas importante",
+    "hay tareas de alta prioridad",
+    "tengo tareas de alta prioridad",
+}
+
+_TASK_RECOMMENDATION_SIGNALS = {
+    "por cual empiezo",
+    "por cual tarea empiezo",
+    "que ataco primero",
+    "cual ataco primero",
+    "que me recomendas",
+    "que me recomiendas",
+    "cual me conviene",
+    "que deberia hacer primero",
+}
+
+_TASK_ID_REQUEST_SIGNALS = {
+    "id de las tareas",
+    "ids de las tareas",
+    "identificador de las tareas",
+    "identificadores de las tareas",
+    "codigo de las tareas",
+    "codigos de las tareas",
+}
+
+
+def _contains_any_phrase(question: str, phrases: set[str]) -> bool:
+    q = _normalize(question)
+    return any(phrase in q for phrase in phrases)
+
+
+def _is_task_priority_fact_query(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_PRIORITY_FACT_SIGNALS)
+
+
+def _is_task_recommendation_query(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_RECOMMENDATION_SIGNALS)
+
+
+def _is_task_id_request(question: str) -> bool:
+    return _contains_any_phrase(question, _TASK_ID_REQUEST_SIGNALS)
 
 # ──────────────────────────────────────────────
 class MemoryContext(TypedDict):
@@ -286,11 +381,11 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
     if len(intents) > 1:
         composed = get_composed_context(intents)
         if not composed.strip():
-            return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
-                                 sources=intents, needs_llm=False)
+            return MemoryContext(context_text="", fallback=build_memory_not_found_msg(question, intent="memory"),
+                                  sources=intents, needs_llm=False)
         return MemoryContext(context_text=composed,
-                             fallback=f"Información de memoria:\n{composed}",
-                             sources=intents, needs_llm=True)
+                              fallback=f"Información de memoria:\n{composed}",
+                              sources=intents, needs_llm=True)
 
     kind = intents[0]
 
@@ -307,10 +402,12 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         if not t:
             return MemoryContext(context_text="", fallback="No encontré tareas registradas.",
                                  sources=["tasks"], needs_llm=False)
+        is_structured = _is_structured_tasks_query(question)
+        answer = format_tasks_answer(t, question=question)
         return MemoryContext(
-            context_text=format_tasks_answer(t, question=question),
-            fallback=format_tasks_answer(t, question=question),
-            sources=["tasks"],
+            context_text=answer,
+            fallback=answer,
+            sources=["tasks:list"] if is_structured else ["tasks"],
             needs_llm=False,
         )
 
@@ -319,10 +416,15 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         if not f:
             return MemoryContext(context_text="", fallback="No encontré hechos del proyecto.",
                                  sources=["project_facts"], needs_llm=False)
+        is_structured = _is_structured_facts_query(question)
         context_text = "\n".join(f"- {k}: {v}" for k, v in f.items())
-        return MemoryContext(context_text=context_text,
-                             fallback="**Hechos del proyecto:**\n" + context_text,
-                             sources=["project_facts"], needs_llm=True)
+        formatted = f"Hechos del proyecto:\n{context_text}"
+        return MemoryContext(
+            context_text=context_text,
+            fallback=formatted,
+            sources=["project_facts:list"] if is_structured else ["project_facts"],
+            needs_llm=not is_structured,
+        )
 
     if kind == "work_state":
         w = get_work_state()
@@ -343,37 +445,58 @@ def _retrieve_memory_context(question: str, intents: list[str]) -> MemoryContext
         context_text = "\n".join(context_lines)
         return MemoryContext(context_text=context_text,
                              fallback="**Estado de trabajo:**\n" + context_text,
-                             sources=["work_state"], needs_llm=True)
-
+                             sources=["work_state"], needs_llm=False)
     if kind == "episode":
+
+        _EMPTY_MARKER = "Resumen no disponible"
+
+        if _is_recent_episode_query(question):
+            n_match = _RE_ULTIMAS_N.search(question)
+            n = int(n_match.group(1)) if n_match else 3
+            try:
+                from app.episode_store import get_recent_episodes
+                recent = get_recent_episodes(n)
+            except Exception as exc:
+                log.warning("[episode:recent] get_recent_episodes falló: %s", exc)
+                recent = []
+
+            recent_with_content = [ep for ep in recent
+                                    if _EMPTY_MARKER not in ep.get("summary", "")]
+            if recent_with_content:
+                context_text = format_episodes_context(recent_with_content)
+                return MemoryContext(context_text="", fallback=context_text,
+                                      sources=["episode:recent"], needs_llm=False)
+            return MemoryContext(context_text="",
+                                  fallback="No hay sesiones anteriores registradas.",
+                                  sources=["episode:recent"], needs_llm=False)
+
         episodes: list[dict] = []
         try:
             from app.episode_store import search_episodes
             episodes = search_episodes(question, k=3)
         except Exception as exc:
-            log.warning("[episode] search_episodes falló: %s", exc)
+            log.warning("[episode:semantic] search_episodes falló: %s", exc)
 
-        _EMPTY_MARKER = "Resumen no disponible"
         episodes_with_content = [ep for ep in episodes
                                   if _EMPTY_MARKER not in ep.get("summary", "")]
         if episodes_with_content:
             context_text = format_episodes_context(episodes_with_content)
             return MemoryContext(context_text=context_text,
-                                 fallback=f"Sesiones encontradas:\n{context_text}",
-                                 sources=["episode"], needs_llm=True)
+                                  fallback=f"Sesiones encontradas:\n{context_text}",
+                                  sources=["episode:semantic"], needs_llm=True)
 
         json_context = get_context_for("episode")
         if json_context:
             return MemoryContext(context_text="", fallback=json_context,
-                                 sources=["episode"], needs_llm=False)
+                                 sources=["episode:semantic"], needs_llm=False)
         return MemoryContext(
             context_text="",
             fallback="No encontré sesiones anteriores registradas con información relevante.",
-            sources=["episode"], needs_llm=False)
+            sources=["episode:semantic"], needs_llm=False)
 
     log.debug("_retrieve_memory_context: tipo no reconocido '%s'", kind)
-    return MemoryContext(context_text="", fallback=MEMORY_NOT_FOUND_MSG,
-                         sources=[kind], needs_llm=False)
+    return MemoryContext(context_text="", fallback=build_memory_not_found_msg(question, intent=kind),
+                          sources=[kind], needs_llm=False)
 
 
 def _synthesize_memory_answer(
@@ -400,12 +523,109 @@ def _has_reasoning_signal(question: str) -> bool:
     q_lower = question.lower()
     return any(signal in q_lower for signal in _REASONING_SIGNALS)
 
+def _pending_tasks(tasks_data: dict) -> list[dict]:
+    """Devuelve solo tareas abiertas de la memoria operacional."""
+    return [
+        task
+        for task in tasks_data.get("tasks", [])
+        if task.get("status") == "pending"
+    ]
 
-def _is_personal_reasoning(question: str) -> bool:
-    q_lower = question.lower()
-    has_signal  = any(signal in q_lower for signal in _REASONING_SIGNALS)
-    has_pronoun = any(pronoun in q_lower for pronoun in _PERSONAL_PRONOUNS)
-    return has_signal and has_pronoun
+
+def _tasks_with_priority(tasks_data: dict, priority: str) -> list[dict]:
+    """Filtra tareas abiertas según la prioridad persistida."""
+    return [
+        task
+        for task in _pending_tasks(tasks_data)
+        if task.get("priority") == priority
+    ]
+
+
+def _format_task_lines(tasks: list[dict], *, include_id: bool = False) -> str:
+    """Formatea tareas estructuradas sin usar el LLM."""
+    lines: list[str] = []
+
+    for task in tasks:
+        title = str(task.get("title", "")).strip()
+        task_id = str(task.get("id", "")).strip()
+
+        if not title:
+            continue
+
+        prefix = f"{task_id} — " if include_id and task_id else ""
+        lines.append(f"· {prefix}{title}")
+
+    return "\n".join(lines)
+
+
+def _format_task_priority_answer(tasks_data: dict) -> str:
+    """Devuelve las tareas pendientes con mayor prioridad registrada."""
+    high = _tasks_with_priority(tasks_data, "high")
+
+    if high:
+        return (
+            f"Tenés {len(high)} tarea(s) abierta(s) de alta prioridad:\n"
+            f"{_format_task_lines(high, include_id=True)}"
+        )
+
+    medium = _tasks_with_priority(tasks_data, "medium")
+
+    if medium:
+        return (
+            "No tenés tareas abiertas de alta prioridad. "
+            f"Tenés {len(medium)} de prioridad media:\n"
+            f"{_format_task_lines(medium, include_id=True)}"
+        )
+
+    return "No encontré tareas abiertas con prioridad alta o media."
+
+
+def _format_task_ids_answer(tasks_data: dict) -> str:
+    """Lista pendientes con sus IDs para permitir acciones posteriores."""
+    pending = _pending_tasks(tasks_data)
+
+    if not pending:
+        return "No tenés tareas pendientes."
+
+    return (
+        f"Tenés {len(pending)} tarea(s) pendiente(s):\n"
+        f"{_format_task_lines(pending, include_id=True)}"
+    )
+
+
+def _format_task_recommendation_answer(tasks_data: dict) -> str:
+    """Recomienda condicionalmente o explica los criterios que faltan."""
+    high = _tasks_with_priority(tasks_data, "high")
+    priority_summary = _format_task_priority_answer(tasks_data)
+
+    if len(high) == 1:
+        task = high[0]
+        title = str(task.get("title", "")).strip()
+        task_id = str(task.get("id", "")).strip()
+        label = f"{task_id} — {title}" if task_id else title
+
+        return (
+            "Por prioridad registrada, la candidata para empezar es:\n"
+            f"· {label}\n\n"
+            "No puedo asegurar que sea la mejor decisión sin conocer "
+            "dependencias, urgencia, esfuerzo e impacto. Si no está bloqueada "
+            "por otra tarea, es un buen punto de partida."
+        )
+
+    if len(high) > 1:
+        return (
+            f"{priority_summary}\n\n"
+            "No elijo una automáticamente porque hay varias tareas de alta "
+            "prioridad y no tengo registrados impacto, urgencia, esfuerzo ni "
+            "dependencias. Decime si una bloquea a otra o cuál tiene más "
+            "impacto, y las ordenamos."
+        )
+
+    return (
+        f"{priority_summary}\n\n"
+        "Para recomendar por cuál empezar necesito al menos una señal extra: "
+        "impacto, urgencia, bloqueo, dependencia o esfuerzo estimado."
+    )
 
 
 def _decide_memory(
@@ -413,33 +633,71 @@ def _decide_memory(
     intents: list[str],
     chat_history: list | None = None,
 ) -> str:
+    """Resuelve una consulta de memoria sin cruzar al carril RAG."""
     log.debug("R5-MoA: intents recibidos=%s para '%s'", intents, question[:60])
 
     if not intents:
-        return MEMORY_NOT_FOUND_MSG
+        return build_memory_not_found_msg(question, intent="memory")
+
+    # Consultas especiales sobre tareas: se resuelven usando una única
+    # lectura de tasks.json y nunca pasan por síntesis LLM.
+    #
+    # Para una lista normal ("qué tareas tengo pendientes"), no llamamos
+    # get_tasks aquí: _retrieve_memory_context() lo hará una sola vez.
+    is_task_special_query = (
+        intents == ["tasks"]
+        and (
+            _is_task_id_request(question)
+            or _is_task_priority_fact_query(question)
+            or _is_task_recommendation_query(question)
+        )
+    )
+
+    if is_task_special_query:
+        tasks_data = get_tasks()
+
+        if _is_task_id_request(question):
+            return _format_task_ids_answer(tasks_data)
+
+        if _is_task_priority_fact_query(question):
+            return _format_task_priority_answer(tasks_data)
+
+        return _format_task_recommendation_answer(tasks_data)
 
     mem_ctx: MemoryContext = _retrieve_memory_context(question, intents)
-    log.debug("R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
-              mem_ctx["sources"], mem_ctx["needs_llm"], len(mem_ctx["context_text"]))
+    log.debug(
+        "R5-MoA: recuperador [sources=%s needs_llm=%s ctx_len=%d]",
+        mem_ctx["sources"],
+        mem_ctx["needs_llm"],
+        len(mem_ctx["context_text"]),
+    )
 
     if mem_ctx["needs_llm"]:
         return _synthesize_memory_answer(
-            question, mem_ctx["context_text"], mem_ctx["fallback"],
+            question,
+            mem_ctx["context_text"],
+            mem_ctx["fallback"],
             chat_history=chat_history,
         )
 
+    if any(source.endswith(":list") for source in mem_ctx["sources"]):
+        return mem_ctx["fallback"]
+
     if _has_reasoning_signal(question):
         context_for_llm = mem_ctx["context_text"] or mem_ctx["fallback"]
+
         if context_for_llm.strip():
-            log.debug("[Fix3] señal de razonamiento detectada — forzando síntesis LLM")
+            log.debug(
+                "[memory] señal de razonamiento detectada — usando síntesis LLM"
+            )
             return _synthesize_memory_answer(
-                question, context_for_llm, mem_ctx["fallback"],
+                question,
+                context_for_llm,
+                mem_ctx["fallback"],
                 chat_history=chat_history,
             )
 
     return mem_ctx["fallback"]
-
-
 # ──────────────────────────────────────────────
 # R6-RAG
 # ──────────────────────────────────────────────
@@ -487,7 +745,7 @@ def _generate_rag_answer(
     user_input: str,
     rag_ctx: RagContext,
     chat_history: list,
-) -> tuple[str, list, int, bool, float]:
+) -> tuple[str, list, int, bool, float, int, str]:
     chat_history_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Lautaro'}: {m.content}"
         for m in chat_history
@@ -503,7 +761,10 @@ def _generate_rag_answer(
     })
     llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
 
+    t_fid_start = time.perf_counter()
+
     is_faithful, score = verify_fidelity(answer, rag_ctx["source_docs"], question=user_input)
+    fidelity_ms = int((time.perf_counter() - t_fid_start) * 1000)
 
     if score == -1.0:
         # Respuesta no verificada: se antepone advertencia explícita.
@@ -512,12 +773,14 @@ def _generate_rag_answer(
         warning = "⚠️ No pude verificar esta respuesta contra los documentos (embeddings ocupados). Tómala con cautela:\n\n"
         answer = warning + answer
         is_faithful = True  # score=-1.0 ya quedó registrado en logs vía log_fidelity_uncertain
+        fidelity_status = "uncertain"
     elif not is_faithful:
         log.warning("[R6-RAG] Respuesta bloqueada por fidelidad (score=%.3f): %s",
                     score, user_input[:60])
-        return NO_EVIDENCE_MSG, rag_ctx["source_docs"], llm_ms, False, score
-
-    return answer, rag_ctx["source_docs"], llm_ms, True, score
+        return NO_EVIDENCE_MSG, rag_ctx["source_docs"], llm_ms, False, score, fidelity_ms, "blocked"
+    else:
+            fidelity_status = "ok"
+    return answer, rag_ctx["source_docs"], llm_ms, True, score, fidelity_ms, fidelity_status
 
 
 def _decide_rag(
@@ -525,16 +788,16 @@ def _decide_rag(
     vectordb: Any,
     chat_history: list,
     route: str,
-) -> tuple[str, list, int, int, bool]:
+) -> tuple[str, list, int, int, bool, int, str]:
     is_identity = any(kw in user_input.lower() for kw in _IDENTITY_KEYWORDS)
 
     hit = _lookup_rag_cache(user_input, is_identity)
     if hit is not None:
-        return hit, [], 0, 0, True
+        return hit, [], 0, 0, True, 0, "skipped_cache"
 
     rag_ctx = _retrieve_rag_context(user_input, vectordb, route)
 
-    answer, source_docs, llm_ms, is_faithful, score = _generate_rag_answer(
+    (answer, source_docs, llm_ms, is_faithful, score,fidelity_ms, fidelity_status) = _generate_rag_answer(
         user_input, rag_ctx, chat_history
     )
 
@@ -555,8 +818,7 @@ def _decide_rag(
         if reasons:
             log.debug("[R6-RAG] No cacheado (%s)", ", ".join(reasons))
 
-    return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False
-
+    return answer, source_docs, rag_ctx["retrieval_ms"], llm_ms, False, fidelity_ms, fidelity_status
 
 # ──────────────────────────────────────────────
 def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> str:
@@ -569,7 +831,7 @@ def _compress_history(chat_history: list, max_line: int = _HISTORY_LINE_MAX) -> 
     return "\n".join(lines)
 
 
-def _decide_exit(chat_history: list) -> DecisionResult:
+def _decide_exit(chat_history: list, channel: str = "cli") -> DecisionResult:
     turns = len(chat_history) // 2
     summary = "Resumen no disponible (sesión cerrada sin tiempo para generar)."
 
@@ -590,7 +852,7 @@ def _decide_exit(chat_history: list) -> DecisionResult:
         else:
             log.warning("No se pudo generar resumen de sesión")
 
-    record_episode(summary=summary, turns=turns)
+    record_episode(summary=summary, turns=turns, channel=channel)
     log.info("Episodio guardado correctamente (turns=%d)", turns)
     return DecisionResult(
         route="exit",
@@ -625,11 +887,14 @@ def process_turn(
         route = route_or_ctx
         channel = "cli"
 
+    if user_input is None:
+        user_input = ""
+
     if chat_history is None:
         chat_history = []
 
     if route == "exit":
-        result = _decide_exit(chat_history)
+        result = _decide_exit(chat_history, channel=channel)
         _record_metric(route="exit", intent_type="exit", channel=channel)
         return result
 
@@ -678,7 +943,7 @@ def process_turn(
             log.debug("[memory] intents detectados: %s", intents)
         answer = _decide_memory(user_input, intents, chat_history=chat_history)
         llm_ms = int((time.perf_counter() - t0) * 1000)
-        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel)
+        _record_metric(route="memory", intent_type="memory", llm_ms=llm_ms, channel=channel, tokens_est=int(len(answer.split()) * 1.3))
         return DecisionResult(
             route="memory", response=answer, cached=False, source="memory",
             source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
@@ -686,7 +951,7 @@ def process_turn(
 
     if route == "math":
         answer = _decide_math(user_input)
-        _record_metric(route="math", intent_type="math", channel=channel)
+        _record_metric(route="math", intent_type="math", channel=channel, tokens_est=int(len(answer.split()) * 1.3))
         return DecisionResult(
             route="math", response=answer, cached=False, source="direct",
             source_docs=[], retrieval_ms=0, llm_ms=0, tokens_est=0,
@@ -703,14 +968,14 @@ def process_turn(
             source_docs=[], retrieval_ms=0, llm_ms=llm_ms, tokens_est=0,
         )
 
-    answer, source_docs, retrieval_ms, llm_ms, cached = _decide_rag(
-        user_input, vectordb, chat_history, route
-    )
+    (answer, source_docs, retrieval_ms, llm_ms, cached, fidelity_ms, fidelity_status) = _decide_rag(user_input, vectordb, chat_history, route)
     _record_metric(
         route="rag", intent_type="rag",
         num_docs=len(source_docs), retrieval_ms=retrieval_ms,
         llm_ms=llm_ms, channel=channel,
-    )
+        cached=cached,tokens_est=int(len(answer.split()) * 1.3),
+        fidelity_ms=fidelity_ms, fidelity_status=fidelity_status,)
+    
     return DecisionResult(
         route="rag", response=answer, cached=cached, source="rag",
         source_docs=source_docs, retrieval_ms=retrieval_ms,

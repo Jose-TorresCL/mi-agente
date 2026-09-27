@@ -92,11 +92,23 @@ def test_tool_update_work_state_returns_tool_result():
 def test_tool_update_work_state_empty_input():
     """Contrato: tool_update_work_state sin kwargs (solo texto="") no explota."""
     result = tool_update_work_state()
-    
+
     # Debe ser falso porque no hay cambios que hacer
     assert isinstance(result, dict)
     assert "ok" in result
     print("✓ test_tool_update_work_state_empty_input: PASS")
+
+
+def test_tool_update_work_state_explicit_prefixes():
+    """El parser debe soportar prefijos explícitos de work_state (foco a / siguiente paso a)."""
+    result = tool_update_work_state("foco a revisar fidelity_check y siguiente paso a correr tests")
+
+    assert isinstance(result, dict)
+    assert result.get("ok") is True
+    cambios = result.get("data", {}).get("cambios", [])
+    assert any("current_focus" in cambio for cambio in cambios)
+    assert any("next_step" in cambio for cambio in cambios)
+    print("✓ test_tool_update_work_state_explicit_prefixes: PASS")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ Aplicar documentación en dos fases, priorizando módulos críticos antes que so
 `app/memory_context.py`; creación de ADR-009.
 
 Criterios adoptados para cada archivo:
+
 - Docstring de módulo con: responsabilidad, fuentes/destinos, prerequisitos y uso.
 - Docstrings de funciones con: Args, Returns y decisiones de diseño no obvias.
 - Comentarios inline solo donde la lógica no es autoexplicativa.
@@ -42,16 +43,19 @@ Criterios adoptados para cada archivo:
 ## Alternativas descartadas
 
 ### A. Documentar solo con comentarios `#` inline
+
 Descartado: los comentarios inline no son descubribles desde el exterior del módulo
 (no aparecen en `help()`, IDEs ni generadores de docs). Los docstrings son la
 forma estándar en Python para documentación navegable.
 
 ### B. Generar documentación automática con herramientas (Sphinx, pdoc)
+
 Descartado para esta fase: el proyecto es local y pequeño. La documentación
 automática agrega complejidad de setup sin beneficio inmediato. Se revisa en
 Fase 3 si el equipo crece.
 
 ### C. Documentar todos los archivos en un solo commit masivo
+
 Descartado: un commit masivo mezcla cambios de código con documentación y dificulta
 el `git bisect`. Se prefirió un commit por fase para mantener historial limpio.
 
@@ -60,6 +64,7 @@ el `git bisect`. Se prefirió un commit por fase para mantener historial limpio.
 ## Consecuencias
 
 ### Positivas
+
 - Cualquier desarrollador puede entender el rol de cada módulo leyendo su docstring.
 - `reemplazar_langchain_docs.py` ahora documenta explícitamente que requiere red y
   que es destructivo (sobreescribe archivos), evitando ejecuciones accidentales.
@@ -72,6 +77,7 @@ el `git bisect`. Se prefirió un commit por fase para mantener historial limpio.
   `build_memory_context()` y la decisión de contexto selectivo por carril.
 
 ### Negativas / Riesgos
+
 - Los docstrings añaden ~200 líneas al repositorio sin cambiar comportamiento.
   Riesgo menor: si el código cambia sin actualizar los docstrings, la documentación
   queda desincronizada. Mitigación: regla de PR — ningún módulo modificado llega
@@ -97,9 +103,11 @@ el `git bisect`. Se prefirió un commit por fase para mantener historial limpio.
 ## Notas de implementación
 
 - La herramienta `interrogate` puede verificar cobertura de docstrings:
+
   ```bash
   pip install interrogate
   interrogate app/ --fail-under 70 --verbose
   ```
+
 - Umbral inicial: 70%. Meta a 4 semanas: 85%.
 - Los archivos en `storage/` y `data/` no requieren docstrings (no son módulos Python).

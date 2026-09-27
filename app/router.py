@@ -35,14 +35,18 @@ from app.router_config import (
     _EXIT_WORDS,
     _WRITE_LANES,
     _READ_VERBS,
+    _RE_RECENT_EPISODE,
     TOOL_LIST_KEYWORDS,
     TOOL_READ_KEYWORDS,
     MEMORY_PROFILE_KEYWORDS,
     MEMORY_WORK_STATE_KEYWORDS,
     MEMORY_TASKS_KEYWORDS,
+    _TASK_PRIORITY_QUERY_PHRASES,
+    _TASK_RECOMMENDATION_QUERY_PHRASES,
     _TASK_SUGGESTION_SIGNALS,
     MEMORY_PROJECT_FACTS_KEYWORDS,
     MEMORY_EPISODE_KEYWORDS,
+    TRIVIAL_CONVERSATIONAL_KEYWORDS,
     AGENT_IDENTITY_KEYWORDS,
     TOOL_SAVE_FACT_KEYWORDS,
     TOOL_SAVE_NOTE_KEYWORDS,
@@ -77,25 +81,6 @@ EMBED_THRESHOLD = intent_index.EMBED_THRESHOLD
 EMBED_TOP_K = intent_index.EMBED_TOP_K
 
 
-_GREETING_KEYWORDS = {
-    "hola",
-    "holi",
-    "buenas",
-    "buenos dias",
-    "buen día",
-    "buen dia",
-    "buenas tardes",
-    "buenas noches",
-    "gracias",
-    "muchas gracias",
-    "ok",
-    "oki",
-    "dale",
-    "listo",
-    "perfecto",
-}
-
-
 def _has_read_verb(q_normalized: str) -> bool:
     return any(verb in q_normalized for verb in _READ_VERBS)
 
@@ -106,27 +91,85 @@ def _has_task_suggestion_signal(q: str) -> bool:
 
 def _is_greeting_or_trivial(question: str) -> bool:
     q = " ".join(_normalize(question).split())
-    return q in _GREETING_KEYWORDS
+    return q in TRIVIAL_CONVERSATIONAL_KEYWORDS
+
+
+def matches_recent_episode_query(q: str) -> bool:
+    """True si la consulta pregunta por las últimas N sesiones/conversaciones."""
+    return bool(_RE_RECENT_EPISODE.search(q))
+
+
+def is_market_pattern_query(q: str) -> bool:
+    """Detecta consultas de mercado por patrón composicional (precio/indicador + crypto)."""
+    q_lower = q.lower()
+    price_signals = ["precio", "cuanto vale", "cuanto esta", "valor de"]
+    indicator_signals = ["rsi", "ema", "atr", "macd", "bollinger"]
+    crypto_signals = ["btc", "eth", "bitcoin", "ethereum", "cripto", "crypto", "bnb", "sol"]
+    market_signals = ["mercado", "trading", "senal", "señal"]
+
+    has_price = any(p in q_lower for p in price_signals)
+    has_indicator = any(i in q_lower for i in indicator_signals)
+    has_crypto = any(c in q_lower for c in crypto_signals)
+    has_market = any(m in q_lower for m in market_signals)
+
+    return (has_price or has_indicator) and (has_crypto or has_market)
 
 
 def classify_memory_query(question: str) -> str | None:
+    """Clasifica consultas de memoria resueltas por keywords.
+
+    Orden de precedencia:
+    1. Episodios recientes.
+    2. Perfil y estado operativo.
+    3. Consultas explícitas sobre tareas actuales.
+    4. Hechos del proyecto y episodios históricos.
+
+    Las frases específicas de prioridad/recomendación de tareas se evalúan
+    antes de las señales generales de sugerencia. Esto evita que consultas
+    como "por cuál empiezo" o "cuál es la de más alta prioridad" caigan
+    en embeddings/RAG o en el carril general memory:reasoning.
+    """
     q = _normalize(question)
+
+    if matches_recent_episode_query(q):
+        return "episode"
+
     if any(k in q for k in MEMORY_PROFILE_KEYWORDS):
         return "profile"
+
     if any(k in q for k in MEMORY_WORK_STATE_KEYWORDS):
         return "work_state"
+
+    # Consultas operativas sobre tareas:
+    # prioridad factual y recomendación se resuelven desde tasks.json.
+    # Deben ganar antes de la exclusión para sugerencias abiertas.
+    if any(k in q for k in _TASK_PRIORITY_QUERY_PHRASES):
+        return "tasks"
+
+    if any(k in q for k in _TASK_RECOMMENDATION_QUERY_PHRASES):
+        return "tasks"
+
+    # Consultas mecánicas: listar, contar o mostrar tareas.
+    # La exclusión evita capturar frases abiertas como
+    # "qué más podríamos implementar".
     if any(k in q for k in MEMORY_TASKS_KEYWORDS) and not _has_task_suggestion_signal(q):
         return "tasks"
+
     if any(k in q for k in MEMORY_PROJECT_FACTS_KEYWORDS):
         return "project_facts"
+
     if any(k in q for k in MEMORY_EPISODE_KEYWORDS):
         return "episode"
+
     return None
 
 
 def _is_question(text: str) -> bool:
+    # Mejora de clasificación semántica: además de ¿/? también cubre preguntas
+    # implícitas que empiezan con "que", "qué", "cual", "cuál", "por qué" o
+    # "porque", ayudando a detectar consultas con intención de pregunta.
     stripped = text.strip()
-    return stripped.startswith(("¿", "?")) or stripped.endswith("?")
+    return stripped.startswith(("¿", "?", "que ", "qué ", "cual ", "cuál ", "por qué", "porque")) or stripped.endswith("?")
 
 
 def _handle_unsupported(question: str) -> str:
@@ -143,6 +186,7 @@ def _handle_unsupported(question: str) -> str:
 
 def _route_by_keywords(question: str) -> str | None:
     from app.tools import extract_file_path
+    import re
 
     q = _normalize(question)
 
@@ -156,7 +200,17 @@ def _route_by_keywords(question: str) -> str | None:
         return "tool_save_fact"
     if any(k in q for k in TOOL_CREATE_TASK_KEYWORDS):
         return "tool_create_task"
-    if any(k in q for k in TOOL_COMPLETE_TASK_KEYWORDS) or _COMPLETE_TASK_PATTERN.search(q):
+    # Si la consulta es explícitamente una lectura de una tarea por ID, no debe
+    # ser reinterpretada por el patrón de cierre ni por embeddings.
+    if _has_read_verb(q) and re.search(r"\bt-\d+\b", q, re.IGNORECASE):
+        return "tool_read_file"
+    # La expresión _COMPLETE_TASK_PATTERN se define en router_config.py,
+    # pero su aplicación efectiva ocurre aquí en router.py para mantener
+    # router_config.py como módulo de datos sin lógica de routing.
+    if (
+        _COMPLETE_TASK_PATTERN.search(q)
+        and not any(token in q for token in ("lee", "mostrar"))
+    ):
         return "tool_complete_task"
     if any(k in q for k in TOOL_SET_SESSION_GOAL_KEYWORDS):
         return "tool_set_session_goal"
@@ -178,18 +232,22 @@ def _route_by_keywords(question: str) -> str | None:
     if any(k in q for k in AGENT_IDENTITY_KEYWORDS):
         return "identity"
 
-    if any(k in q for k in MEMORY_REASONING_KEYWORDS):
-        return "memory:work_state"
-
     memory_subtype = classify_memory_query(question)
     if memory_subtype is not None:
         return f"memory:{memory_subtype}"
+
+    if any(k in q for k in MEMORY_REASONING_KEYWORDS):
+        # memory:work_state = estado actual + siguiente paso; memory:reasoning = juicio/prioridad.
+        return "memory:reasoning"
 
     if any(k in q for k in TOOL_SAVE_NOTE_KEYWORDS):
         return "tool_save_fact"
 
     if any(k in q for k in MATH_KEYWORDS) or _RE_MATH_EXPR.match(q):
         return "math"
+
+    if is_market_pattern_query(q):
+        return "tool_analizar_mercado"
 
     if any(k in q for k in TOOL_ANALIZAR_MERCADO_KEYWORDS):
         return "tool_analizar_mercado"

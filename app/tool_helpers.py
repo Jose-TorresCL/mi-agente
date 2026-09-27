@@ -86,7 +86,19 @@ _VALUE_PREFIXES = [
 # pero acepta typos comunes (ej: 'chat.core.py' → 'chat_core.py' = 0.89)
 _FUZZY_THRESHOLD = 0.75
 
-# Keywords de conteo para handle_list_files
+# Constantes de config.py sin extensión — no matchean por nombre de archivo.
+# Ej: 'PROJECT_FACTS_FILE' no tiene punto ni extensión, extract_file_path()
+# necesita reconocerlas por separado antes de intentar match por extensión.
+_KNOWN_CONFIG_CONSTANTS = {
+    "PROJECT_FACTS_FILE": "storage/project_facts.json",
+    "PROFILE_FILE": "storage/profile.json",
+    "TASKS_FILE": "storage/tasks.json",
+    "WORK_STATE_FILE": "storage/work_state.json",
+    "EPISODIC_MEMORY_FILE": "storage/episodic_memory.json",
+}
+_RE_CONFIG_CONSTANT = re.compile(r'\b[A-Z][A-Z_]{2,}\b')
+
+ # Keywords de conteo para handle_list_files
 _COUNT_KEYWORDS = {"cuántos", "cuantos", "cuántas", "cuantas", "cuanto", "cuánto"}
 
 
@@ -201,12 +213,19 @@ def extract_file_path(text: str) -> str | None:
     """Extrae una ruta de archivo del texto del usuario.
 
     Orden de búsqueda:
+      0. [Nuevo] Constante de config.py en MAYUSCULAS (ej. PROJECT_FACTS_FILE)
       1. Marcadores de ruta explícita (data/, app/, storage/, docs/, tests/)
       2. Nombre de archivo puro → busca en storage/, app/, data/docs/, raíz
       3. [Tarea 7] Fuzzy matching → si no existe, busca el más parecido
     """
     cleaned = text.strip()
     lower_text = cleaned.lower()
+     # ── 0. Constante de config.py conocida ──────────────────────
+    const_match = _RE_CONFIG_CONSTANT.search(cleaned)
+    if const_match:
+        resolved = _KNOWN_CONFIG_CONSTANTS.get(const_match.group(0))
+        if resolved:
+            return resolved
 
     # ── 1. Ruta explícita con marcador de directorio ────────────
     markers = [

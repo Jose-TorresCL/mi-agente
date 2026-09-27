@@ -23,7 +23,6 @@ INTENT_DIR      = Path("storage/intent_index")
 EMBED_MODEL     = "nomic-embed-text"
 EMBED_THRESHOLD = 0.70
 EMBED_TOP_K     = 1
-
 _intent_db         = None
 _intent_embeddings = None
 
@@ -48,6 +47,7 @@ def get_intent_db():
             _intent_embeddings = OllamaEmbeddings(
                 model=EMBED_MODEL,
                 base_url=OLLAMA_URL,
+                keep_alive=-1,
             )
             _intent_db = Chroma(
                 persist_directory=str(INTENT_DIR),

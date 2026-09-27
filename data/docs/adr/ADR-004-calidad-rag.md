@@ -100,6 +100,7 @@ para trazabilidad.
 ## Consecuencias
 
 **Positivas:**
+
 - Preguntas similares ya vistas en la sesión se responden en <100ms.
 - El fidelity check elimina alucinaciones silenciosas: el usuario recibe
   una respuesta honesta de "no encontré información" en lugar de inventada.
@@ -107,6 +108,7 @@ para trazabilidad.
   manualmente los 251 chunks actuales.
 
 **Trade-offs:**
+
 - La caché en RAM se pierde al reiniciar el agente.
 - El fidelity check puede rechazar respuestas válidas si el LLM es conciso.
   El umbral de 30 chars es conservador y podría ajustarse.
@@ -120,3 +122,28 @@ para trazabilidad.
 - `app/rag_pipeline.py` — fidelity check integrado
 - `app/indexing_core.py` — lista de exclusión y log `[indexing] EXCLUIDO`
 - `app/intelligence.py` — punto de integración de los tres mecanismos
+
+## Actualización 2026-08-07 — causa raíz del fallo de verificación
+
+**Causa raíz:** `semantic_cache` estaba usando `llama3.2` (modelo de
+generación) para calcular embeddings en vez de `nomic-embed-text`. Las
+salidas de un modelo generativo no son embeddings semánticos comparables,
+así que la similitud de coseno no medía lo que creíamos.
+
+**Fix aplicado:**
+
+- Variable `EMBEDDING_MODEL` explícita apuntando a `nomic-embed-text`.
+- Uso del endpoint `/api/embed` (no `/api/generate`).
+- Verificación con scores reales: [pega aquí los scores del log de esa sesión]
+
+**Lección:** todo componente que calcule embeddings debe declarar su modelo
+explícitamente; heredar "el modelo cargado por defecto" es una trampa
+silenciosa.
+
+## Actualización 2026-09-01 — caso límite conocido: marco narrativo inventado
+
+Fidelity valida contenido factual, no el marco narrativo. Caso real (sesión
+31/08): respuesta sobre el router híbrido factualmente correcta pero con
+marco inventado ("mencionaste que...") que el checker dejó pasar.
+Registrado como T-0831211011 — requiere detección de marco, fuera del
+alcance del checker actual.

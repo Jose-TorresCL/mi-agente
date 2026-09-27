@@ -1,126 +1,146 @@
-"""Tests de fidelity_check — casos borde documentados.
+"""
+Tests de fidelity_check — casos borde documentados.
 
-Cobre los casos que justifican el umbral dinámico y la lógica de números.
-No requieren Ollama. Usan la función check_fidelity() directamente.
+Cubre los casos que justifican el umbral dinámico y la validación numérica.
+No requiere Ollama activo: los casos que alcanzan embeddings usan mocks.
 
 Ejecución:
-  pytest tests/test_fidelity_edge_cases.py -v
+    pytest tests/test_fidelity_edge_cases.py -v
 """
-import pytest
 
-try:
-    from app.fidelity_check import check_fidelity
-except ImportError:
-    pytest.skip("fidelity_check no disponible", allow_module_level=True)
+from __future__ import annotations
+
+from app import fidelity_check
+from app.fidelity_check import _dynamic_threshold, verify_fidelity
 
 
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
 
+
 def _make_chunks(texts: list[str]) -> list:
-    """Crea objetos mínimos con .page_content para check_fidelity."""
+    """Crea objetos mínimos con .page_content."""
+
     class FakeDoc:
-        def __init__(self, text):
+        def __init__(self, text: str):
             self.page_content = text
-    return [FakeDoc(t) for t in texts]
+
+    return [FakeDoc(text) for text in texts]
+
+
+def _mock_embeddings(monkeypatch) -> None:
+    """Evita llamadas HTTP a Ollama y produce similitud máxima."""
+
+    def fake_get_embedding(
+        text: str,
+        timeout=None,
+        retry_delays=None,
+        max_attempts=None,
+    ) -> list[float]:
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(
+        fidelity_check,
+        "get_embedding",
+        fake_get_embedding,
+    )
 
 
 # ─────────────────────────────────────────────
 # Caso 1: sin chunks → siempre bloquear
 # ─────────────────────────────────────────────
 
+
 def test_no_chunks_always_blocked():
-    """Sin chunks de contexto no hay forma de verificar fidelidad — siempre bloquea."""
-    result = check_fidelity(
-        question="qué es un embedding",
+    """Sin contexto recuperado no hay evidencia para validar."""
+    ok, score = verify_fidelity(
         answer="Un embedding es una representación vectorial.",
-        chunks=[]
+        source_docs=[],
+        question="¿Qué es un embedding?",
     )
-    assert result["pass"] is False, "Sin chunks debería bloquear siempre."
+
+    assert ok is False
+    assert score == 0.0
 
 
 # ─────────────────────────────────────────────
 # Caso 2: número inventado → bloquear
 # ─────────────────────────────────────────────
 
+
 def test_invented_number_blocked():
-    """Si la respuesta tiene un número que no aparece en los chunks, bloquear."""
-    chunks = _make_chunks(["El proyecto tiene 5 archivos de configuración."])
-    result = check_fidelity(
-        question="cuántos archivos de configuración tiene el proyecto",
-        answer="El proyecto tiene 42 archivos de configuración.",  # 42 inventado
-        chunks=chunks
-    )
-    assert result["pass"] is False, (
-        "Número '42' no está en los chunks — debería bloquearse."
+    """Un número que no está en los chunks debe bloquearse."""
+    chunks = _make_chunks(
+        ["El proyecto tiene 5 archivos de configuración."]
     )
 
-
-# ─────────────────────────────────────────────
-# Caso 3: número correcto → pasar
-# ─────────────────────────────────────────────
-
-def test_correct_number_passes():
-    """Si el número de la respuesta está en los chunks, puede pasar."""
-    chunks = _make_chunks(["El proyecto tiene 5 archivos de configuración."])
-    result = check_fidelity(
-        question="cuántos archivos de configuración tiene el proyecto",
-        answer="El proyecto tiene 5 archivos de configuración.",
-        chunks=chunks
-    )
-    # No exigimos pass=True (puede fallar por umbral bajo), pero sí que no sea
-    # bloqueado exclusivamente por el número.
-    # Verificamos que el campo de fidelidad numérica sea positivo.
-    assert result.get("numeric_ok") is not False, (
-        "El número '5' está en chunks — no debería bloquearse por chequeo numérico."
+    ok, score = verify_fidelity(
+        answer="El proyecto tiene 42 archivos de configuración.",
+        source_docs=chunks,
+        question="¿Cuántos archivos de configuración tiene el proyecto?",
     )
 
+    assert ok is False
+    assert score == 0.0
+
 
 # ─────────────────────────────────────────────
-# Caso 4: respuesta corta sin chunks → bloquear (fix 6C)
+# Caso 3: número respaldado → pasar
 # ─────────────────────────────────────────────
 
-def test_short_answer_no_chunks_blocked():
-    """Respuesta corta + sin chunks = bloqueado (Fix 6C)."""
-    result = check_fidelity(
-        question="ok",
-        answer="ok",
-        chunks=[]
+
+def test_supported_number_passes(monkeypatch):
+    """Un número presente en el contexto no debe bloquearse."""
+    _mock_embeddings(monkeypatch)
+
+    answer = "El proyecto tiene 5 archivos de configuración."
+    chunks = _make_chunks([answer])
+
+    ok, score = verify_fidelity(
+        answer=answer,
+        source_docs=chunks,
+        question="¿Cuántos archivos de configuración tiene el proyecto?",
     )
-    assert result["pass"] is False
+
+    assert ok is True
+    assert score == 1.0
 
 
 # ─────────────────────────────────────────────
-# Caso 5: respuesta vacía → bloquear
+# Caso 4: respuesta vacía → bloquear
 # ─────────────────────────────────────────────
 
-def test_empty_answer_blocked():
-    """Una respuesta vacía nunca debe pasar fidelidad."""
+
+def test_empty_answer_is_blocked():
+    """Una respuesta vacía no debe considerarse fiel."""
     chunks = _make_chunks(["Información relevante aquí."])
-    result = check_fidelity(
-        question="qué dice el documento",
+
+    ok, score = verify_fidelity(
         answer="",
-        chunks=chunks
+        source_docs=chunks,
+        question="¿Qué dice el documento?",
     )
-    assert result["pass"] is False
+
+    assert ok is False
+    assert score == 0.0
 
 
 # ─────────────────────────────────────────────
-# Caso 6: umbral dinámico — pregunta larga más exigente
+# Caso 5: umbral dinámico
 # ─────────────────────────────────────────────
 
-def test_dynamic_threshold_applied():
-    """El umbral debe ser diferente para preguntas cortas vs largas.
-    Solo verifica que check_fidelity acepta el parámetro y no rompe.
-    """
-    chunks = _make_chunks(["El router híbrido tiene tres capas: keywords, embeddings y fallback."])
-    short_q = "router"
-    long_q = "cómo funciona exactamente el router híbrido y cuáles son sus tres capas de clasificación"
 
-    result_short = check_fidelity(short_q, "El router tiene capas.", chunks)
-    result_long  = check_fidelity(long_q,  "El router tiene capas.", chunks)
+def test_dynamic_threshold_depends_on_question_length():
+    """Preguntas más largas requieren mayor similitud."""
 
-    # Ambos deben devolver un dict con campo 'pass' — no debe crashear.
-    assert "pass" in result_short
-    assert "pass" in result_long
+    assert _dynamic_threshold("router") == 0.40
+
+    assert _dynamic_threshold(
+        "qué es un router híbrido"
+    ) == 0.55
+
+    assert _dynamic_threshold(
+        "cómo funciona exactamente el router híbrido y cuáles son "
+        "sus tres capas de clasificación"
+    ) == 0.60

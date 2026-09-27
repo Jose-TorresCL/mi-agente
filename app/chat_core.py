@@ -1,99 +1,131 @@
-"""Núcleo de la sesión de chat — orquestador de turno por turno.
-
-Responsabilidades:
-  - Inicializar la sesión (vectordb, historial, estado).
-  - Construir el TurnContext para cada turno y delegarlo a intelligence.py.
-  - Actualizar el historial de conversación después de cada turno.
-  - Emitir el resumen episódico al cerrar la sesión.
-
-NO conoce la UI (chat_ui.py, telegram_bot.py) — solo recibe strings
-y devuelve strings. La capa de presentación es responsabilidad del llamador.
-
-Contrato público:
-  run_session(channel)          → bucle interactivo de CLI
-  handle_turn(ctx) → str        → procesa un turno y devuelve la respuesta
-"""
 from __future__ import annotations
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.intelligence import process_turn
 from app.logger import get_logger
 from app.memory_manager import main_memory_flow
-from app.schemas import TurnContext
+from app.metrics import record_turn
+from app.schemas import DecisionResult, SourceRef, TurnContext, TurnResult
+from app.session_state import SessionState
+
 
 log = get_logger(__name__)
 
-_MAX_HISTORY = 20   # líneas totales (10 turnos usuario+asistente)
+_MAX_HISTORY = 20
 
 
 def _init_vectordb():
-    """Inicializa y devuelve el vectorstore Chroma.
-
-    Importación tardía para evitar cargar Chroma en tests unitarios
-    que no necesitan el vectordb. Devuelve None si Chroma no está
-    disponible o si el índice todavía no existe.
-
-    Returns:
-        Instancia de Chroma lista para consultar, o None si falla.
-    """
     try:
-        from app.indexing_core import load_vectordb
-        return load_vectordb()
+        from app.indexing_core import build_vectorstore
+
+        return build_vectorstore()
     except Exception as exc:
         log.warning("No se pudo cargar vectordb: %s", exc)
         return None
 
 
 def _trim_history(history: list, max_lines: int = _MAX_HISTORY) -> list:
-    """Recorta el historial al máximo de líneas configurado.
-
-    Mantiene siempre los mensajes más recientes (últimos max_lines).
-    Necesario para no superar el context window del LLM en sesiones largas.
-
-    Args:
-        history:   Lista de HumanMessage / AIMessage de LangChain.
-        max_lines: Máximo de mensajes a conservar. Por defecto _MAX_HISTORY (20).
-
-    Returns:
-        Lista con como máximo max_lines mensajes (los más recientes).
-    """
     if len(history) > max_lines:
         return history[-max_lines:]
     return history
 
+
+def _map_source_docs_to_refs(source_docs: list) -> list[SourceRef]:
+    mapped: list[SourceRef] = []
+
+    for doc in source_docs or []:
+        metadata = getattr(doc, "metadata", {}) or {}
+
+        mapped.append(
+            SourceRef(
+                source=metadata.get("source", "desconocido"),
+                doc_type=metadata.get("doc_type", ""),
+                section=metadata.get("section", ""),
+            )
+        )
+
+    return mapped
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimación simple y estable para métricas locales."""
+    if not text:
+        return 0
+
+    return int(len(text.split()) * 1.3)
+
+
+def _record_turn_metrics(
+    *,
+    route: str,
+    intent_type: str,
+    channel: str,
+    retrieval_ms: int,
+    llm_ms: int,
+    fidelity_ms: int,
+    fidelity_status: str,
+    cached: bool,
+    num_docs: int,
+    response: str,
+) -> None:
+    """Adaptador entre handle_turn() y el contrato actual de record_turn()."""
+    try:
+        record_turn(
+            route=route,
+            intent_type=intent_type,
+            channel=channel,
+            retrieval_ms=retrieval_ms,
+            llm_ms=llm_ms,
+            tokens_est=_estimate_tokens(response),
+            cached=cached,
+            num_docs=num_docs,
+            fidelity_ms=fidelity_ms,
+            fidelity_status=fidelity_status,
+        )
+    except Exception as exc:
+        log.warning("No se pudo registrar métricas del turno: %s", exc)
+
+def normalize_severity(value: str | None) -> str:
+    mapping = {
+        None: "normal",
+        "normal": "normal",
+        "warning": "warning",
+        "warn": "warning",
+        "peligro": "warning",
+        "error": "error",
+    }
+    return mapping.get(str(value).strip().lower(), "normal")
+
+
+def normalize_fidelity(value: str | None) -> str:
+    mapping = {
+        None: "not_applicable",
+        "verified": "verified",
+        "verificado": "verified",
+        "unverified": "unverified",
+        "no_verificado": "unverified",
+        "unverifiable": "unverified",
+        "not_applicable": "not_applicable",
+        "not-applicable": "not_applicable",
+        "no_aplicable": "not_applicable",
+        "notapplicable": "not_applicable",
+        "notrun": "not_applicable",
+    }
+    return mapping.get(str(value).strip().lower(), "not_applicable")
 
 def handle_turn(
     user_input: str,
     chat_history: list,
     vectordb,
     channel: str = "cli",
-    session: session_state.SessionState | None = None,
-) -> tuple[str, bool]:
-    """Procesa un turno completo y devuelve la respuesta del asistente.
-
-    Construye el TurnContext, invoca process_turn() de intelligence.py
-    y actualiza el historial de conversación con el par usuario/asistente.
-
-    Args:
-        user_input:   Texto del mensaje del usuario.
-        chat_history: Lista mutable de mensajes (se modifica in-place).
-        vectordb:     Instancia de Chroma o None si no está disponible.
-        channel:      Canal de origen ('cli', 'telegram'). Por defecto 'cli'.
-        session:      Estado de sesión opcional (para tracking de estadísticas).
-
-    Returns:
-        Tuple (response, should_exit):
-          response     → str con la respuesta del asistente.
-          should_exit  → True si el carril fue 'exit' y la sesión debe cerrarse.
-
-    Nunca lanza excepciones — los errores se capturan y se devuelve un
-    mensaje de error genérico al usuario.
-    """
+    session: SessionState | None = None,
+) -> TurnResult:
     from app.router import route_query
 
     try:
         route = route_query(user_input)
+
         ctx = TurnContext(
             route=route,
             query=user_input,
@@ -101,48 +133,125 @@ def handle_turn(
             chat_history=chat_history,
             channel=channel,
         )
-        result = process_turn(ctx)
-        response = result["response"]
-        should_exit = result["route"] == "exit"
+
+        result: DecisionResult = process_turn(ctx)
+
+        response = result.get("response", "")
+        final_route = result.get("route", route)
+        should_exit = final_route == "exit"
+        source_docs = result.get("source_docs", [])
+        sources = _map_source_docs_to_refs(source_docs)
+
+        metadata = result.get("metadata", {}) or {}
+
+        retrieval_ms = int(metadata.get("retrieval_ms", result.get("retrieval_ms", 0)) or 0)
+        llm_ms = int(metadata.get("llm_ms", result.get("llm_ms", 0)) or 0)
+        fidelity_ms = int(metadata.get("fidelity_ms", 0) or 0)
+
+        severity = normalize_severity(metadata.get("severity"))
+        fidelity_status = normalize_fidelity(metadata.get("fidelity_status"))
+        intent_type = metadata.get("intent_type", final_route)
+        cached = bool(result.get("cached", False))
+        num_docs = len(source_docs)
+
+        turn_result = TurnResult(
+            text=response,
+            should_exit=should_exit,
+            severity=severity,
+            route=final_route,
+            fidelity=fidelity_status,
+            sources=sources,
+            cached=cached,
+        )
+
+        if session is not None and not should_exit:
+            session.track_turn(final_route, tareas_nuevas=0)
 
         if not should_exit:
             chat_history.append(HumanMessage(content=user_input))
             chat_history.append(AIMessage(content=response))
-            _trim_history(chat_history)
 
-        return response, should_exit
+            trimmed = _trim_history(chat_history)
+            if trimmed is not chat_history:
+                chat_history[:] = trimmed
+
+        _record_turn_metrics(
+            route=final_route,
+            intent_type=intent_type,
+            channel=channel,
+            retrieval_ms=retrieval_ms,
+            llm_ms=llm_ms,
+            fidelity_ms=fidelity_ms,
+            fidelity_status=fidelity_status,
+            cached=cached,
+            num_docs=num_docs,
+            response=response,
+        )
+
+        return turn_result
 
     except Exception as exc:
         log.error("handle_turn error inesperado: %s", exc, exc_info=True)
-        return "Ocurrió un error interno. Por favor, intenta de nuevo.", False
+
+        _record_turn_metrics(
+            route="error",
+            intent_type="error",
+            channel=channel,
+            retrieval_ms=0,
+            llm_ms=0,
+            fidelity_ms=0,
+            fidelity_status="not_applicable",
+            cached=False,
+            num_docs=0,
+            response="",
+        )
+
+        return TurnResult(
+            text="Ocurrió un error interno. Por favor, intenta de nuevo.",
+            should_exit=False,
+            severity="error",
+            route="error",
+            fidelity="not_applicable",
+            sources=[],
+            cached=False,
+        )
+
+
+def handle_turn_legacy(
+    user_input: str,
+    chat_history: list,
+    vectordb,
+    channel: str = "cli",
+    session: SessionState | None = None,
+) -> tuple[str, bool]:
+    """Compatibilidad temporal para consumidores que aún esperan tupla.
+
+    Eliminar cuando CLI, Telegram y scripts migren completamente a TurnResult.
+    """
+    result = handle_turn(
+        user_input=user_input,
+        chat_history=chat_history,
+        vectordb=vectordb,
+        channel=channel,
+        session=session,
+    )
+
+    return result.text, result.should_exit
 
 
 def run_session(channel: str = "cli") -> None:
-    """Inicia y mantiene el bucle de sesión interactiva desde CLI.
-
-    Secuencia de arranque:
-      1. Inicializa vectordb (Chroma).
-      2. Ejecuta main_memory_flow() para sugerir tareas desde episodios.
-      3. Entra en el bucle interactivo: leer input → handle_turn → imprimir.
-      4. Cierra al recibir señal de exit o KeyboardInterrupt.
-
-    Args:
-        channel: Canal de la sesión ('cli' por defecto). Se pasa a handle_turn
-                 para que las métricas reflejen el canal correcto.
-
-    Esta función es el punto de entrada para `python -m app.chat_core`
-    y para scripts de prueba manual. La UI de Telegram usa handle_turn
-    directamente sin llamar a run_session.
-    """
-    vectordb     = _init_vectordb()
+    vectordb = _init_vectordb()
     chat_history: list = []
-    session      = SessionState()
+    session = SessionState()
 
-    # Flujo de mantenimiento de memoria al arranque
     try:
         new_tasks = main_memory_flow()
+
         if new_tasks:
-            log.info("main_memory_flow: %d tarea(s) nueva(s) registrada(s)", new_tasks)
+            log.info(
+                "main_memory_flow: %d tarea(s) nueva(s) registrada(s)",
+                new_tasks,
+            )
     except Exception as exc:
         log.warning("main_memory_flow falló al arrancar (no bloquea): %s", exc)
 
@@ -157,14 +266,15 @@ def run_session(channel: str = "cli") -> None:
 
         if not user_input:
             continue
-
-        response, should_exit = handle_turn(
-            user_input, chat_history, vectordb,
-            channel=channel, session=session,
+        result = handle_turn(
+            user_input=user_input,
+            chat_history=chat_history,
+            vectordb=vectordb,
+            channel=channel,
+            session=session,
         )
-        print(f"Lautaro: {response}")
-
-        if should_exit:
+        print(f"Lautaro: {result.text}")
+        if result.should_exit:
             break
 
-    log.info("Sesión terminada. Turnos: %d", session.turns if session else 0)
+    log.info("Sesión terminada. Turnos=%d", session.turns)

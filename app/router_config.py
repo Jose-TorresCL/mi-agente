@@ -57,8 +57,8 @@ MEMORY_WORK_STATE_KEYWORDS = [
     "en que vamos", "que sigue",
     "en que estoy", "que estoy haciendo",
     "ultimo paso", "en que quedamos",
-    "que hago hoy", "cual es el plan",
-    "que hicimos", "en que estamos",
+    "que hicimos", "en que estamos", "que hago hoy",
+    "cual es el plan",
     "cual es mi foco", "que estoy trabajando",
     "que estaba haciendo", "a que me dedico ahora",
     "que bloquea", "que esta bloqueando", "que esta frenando",
@@ -82,6 +82,35 @@ MEMORY_TASKS_KEYWORDS = [
     "que tareas hice",
     "lista todas las tareas", "todas las tareas",
 ]
+_TASK_PRIORITY_QUERY_PHRASES = [
+    "cual es la de mas alta prioridad",
+    "cual tiene mayor prioridad",
+    "cuales son las tareas mas importantes",
+    "que tarea es mas importante",
+    "hay tareas de alta prioridad",
+    "tengo tareas de alta prioridad",
+]
+
+_TASK_RECOMMENDATION_QUERY_PHRASES = [
+    # Consultas breves que ya implican elegir una tarea.
+    "por cual empiezo",
+    "por cual tarea empiezo",
+    "que ataco primero",
+    "cual ataco primero",
+    "que me recomendas atacar primero",
+    "que me recomiendas atacar primero",
+
+    # Variantes explícitas sobre una tarea.
+    "por cual tarea me recomiendas empezar",
+    "con cual tarea me conviene partir",
+    "cual tarea me conviene partir",
+    "cual tarea me conviene empezar",
+    "cual tarea deberia empezar",
+    "que tarea me conviene",
+    "que tarea deberia empezar",
+    "que tarea me conviene ahora",
+    "cual tarea deberia empezar ahora",
+]
 
 _TASK_SUGGESTION_SIGNALS = [
     "podriamos", "podrias",
@@ -98,6 +127,11 @@ MEMORY_PROJECT_FACTS_KEYWORDS = [
     "que sprint", "sprint actual",
 ]
 
+_RE_RECENT_EPISODE = re.compile(
+    r"ultimas?\s+(\d+\s+)?(sesiones|conversaciones|veces)",
+    re.IGNORECASE,
+)
+
 MEMORY_EPISODE_KEYWORDS = [
     "que aprendi", "que aprendimos",
     "sesion anterior", "ultima sesion",
@@ -105,7 +139,8 @@ MEMORY_EPISODE_KEYWORDS = [
     "que hicimos antes", "que trabajamos",
     "historial de sesiones", "episodios anteriores",
     "que avance", "que avanzamos",
-    "ultima vez que",
+    "ultima vez que","alguna vez", "hablamos de", "hablamos sobre",
+    "hemos hablado", "ya habiamos",
     "briefing", "dame un briefing",
     "retomar el trabajo", "retomar trabajo", "retomar la sesion",
     "desde el ultimo episodio", "desde el ultimo episodio sugiere",
@@ -114,6 +149,26 @@ MEMORY_EPISODE_KEYWORDS = [
     "que paso en la sesion anterior", "que hicimos en la sesion anterior",
     "acciones concretas que deberia hacer hoy",
     "sugerencias desde el ultimo episodio",
+    "ultimas sesiones", "sesiones recientes", "sesiones pasadas",
+    "ultimas conversaciones", "conversaciones recientes",
+]
+
+TRIVIAL_CONVERSATIONAL_KEYWORDS = [
+    "hola",
+    "holi",
+    "buenas",
+    "buenos dias",
+    "buen día",
+    "buen dia",
+    "buenas tardes",
+    "buenas noches",
+    "gracias",
+    "muchas gracias",
+    "ok",
+    "oki",
+    "dale",
+    "listo",
+    "perfecto",
 ]
 
 AGENT_IDENTITY_KEYWORDS = [
@@ -164,8 +219,28 @@ TOOL_COMPLETE_TASK_KEYWORDS = [
     "como completada", "como completado",
 ]
 
+# Patrón de cierre de tareas.
+#
+# Se evalúa en router.py antes de memoria/episodios. Acepta:
+# - formas de voseo: "marcá", "cerrá", "finalizá";
+# - formas neutras: "marca", "cerrar", "finalizar";
+# - estados equivalentes: completada, terminada y finalizada;
+# - referencias por ID, ordinal o título.
+#
+# La pregunta debe contener una acción de escritura; por eso no captura
+# consultas como "qué tareas están terminadas".
 _COMPLETE_TASK_PATTERN = re.compile(
-    r"(marca|marcar|cierra|cerrar|completar|complete)\s+(t-\d+|la tarea|el issue|el paso)",
+    r"^(?:"
+    r"(?:marca(?:r)?(?:\s+(?:la\s+)?tarea)?(?:\s+(?:t[- ]?\d+|.+?))?\s+como\s+(?:completad[oa]|terminad[oa]|finalizad[oa])(?:\s+.*)?)"
+    r"|(?:marca(?:r)?\s+t[- ]?\d+(?:\s+.*)?)"
+    r"|(?:cerrar(?:\s+la)?\s+tarea(?:\s+pendiente)?(?:\s+.*)?)"
+    r"|(?:cierra(?:r)?\s+(?:la\s+)?tarea(?:\s+.*)?)"
+    r"|(?:finalizar(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:finaliza(?:r)?\s+(?:la\s+)?tarea(?:\s+.*)?)"
+    r"|(?:completar(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:complete(?:\s+la)?\s+tarea(?:\s+.*)?)"
+    r"|(?:marcar\s+como\s+(?:completad[oa]|terminad[oa]|finalizad[oa])(?:\s+.*)?)"
+    r")$",
     re.IGNORECASE,
 )
 
@@ -177,7 +252,9 @@ TOOL_UPDATE_WORK_STATE_KEYWORDS = [
     "foco a ", "foco en ",
     "mi foco es", "mi foco sera", "mi foco ahora es",
     "cambio de foco", "cambio el foco",
-    "ahora me enfoco en", "me enfoco en",
+    "ahora me enfoco en", "me enfoco en", "siguiente paso:", "siguiente paso es", "pon en siguiente paso",
+    "proximo paso:", "próximo paso:", "actualiza el siguiente paso",
+    "cambia el siguiente paso",
     "quiero enfocarme en", "voy a enfocarme en",
 ]
 
@@ -248,7 +325,6 @@ TOOL_ANALIZAR_MERCADO_KEYWORDS = [
     "consulta mercado", "ver mercado",
 ]
 
-
 TOOL_UNSUPPORTED_KEYWORDS = [
     "cuantas lineas",
     "lineas de codigo", "lineas tiene",
@@ -296,32 +372,20 @@ RAG_HINTS = [
 ]
 
 MEMORY_REASONING_KEYWORDS = [
+    # Consultas de razonamiento sobre el estado de trabajo en general.
+    #
+    # Las consultas que mencionan elegir, priorizar o recomendar una tarea
+    # concreta se resuelven en memory:tasks, donde se usa tasks.json real.
     "que me conviene hacer",
-    "que me conviene atacar",
-    "que me conviene primero",
-    "que deberia hacer primero",
-    "que deberia atacar primero",
-    "que deberia hacer hoy",
-    "que deberiamos hacer primero",
-    "que deberiamos atacar",
-    "por donde empiezo",
-    "por donde empezamos",
-    "por donde arranco",
-    "por donde arrancamos",
-    "que me recomendas hacer",
-    "que me recomendas atacar",
-    "que me recomiendarías",
-    "que es lo mas importante para mi",
-    "cual es lo mas importante para mi",
-    "que es lo primero que debo hacer",
-    "como priorizo mis tareas",
-    "como priorizamos",
-    "como ordeno mis tareas",
-    "que hago primero",
-    "que hacemos primero",
-    "cual es mi prioridad ahora",
-    "cuales son mis prioridades",
+    "que me conviene hacer ahora",
+    "que me recomiendas hacer",
+    "que me sugieres hacer hoy",
 ]
+
+_RE_TASK_RECOMMENDATION = re.compile(
+    r"(qué|cuál|por cuál).*(tarea|acción).*(empezar|hacer|conviene)",
+    re.IGNORECASE,
+)
 
 VALID_LANES = {
     "tool_list_files", "tool_read_file", "tool_save_fact",
@@ -329,7 +393,7 @@ VALID_LANES = {
     "tool_set_session_goal", "tool_plan_retoma", "tool_analizar_mercado",
     "memory",
     "memory:profile", "memory:work_state", "memory:tasks",
-    "memory:project_facts", "memory:episode",
+    "memory:project_facts", "memory:episode", "memory:reasoning",
     "rag", "identity",
     "unsupported",
     "math",
@@ -344,14 +408,18 @@ __all__ = [
     "_EXIT_WORDS",
     "_WRITE_LANES",
     "_READ_VERBS",
+    "_RE_RECENT_EPISODE",
     "TOOL_LIST_KEYWORDS",
     "TOOL_READ_KEYWORDS",
     "MEMORY_PROFILE_KEYWORDS",
     "MEMORY_WORK_STATE_KEYWORDS",
     "MEMORY_TASKS_KEYWORDS",
+    "_TASK_PRIORITY_QUERY_PHRASES",
+    "_TASK_RECOMMENDATION_QUERY_PHRASES",
     "_TASK_SUGGESTION_SIGNALS",
     "MEMORY_PROJECT_FACTS_KEYWORDS",
     "MEMORY_EPISODE_KEYWORDS",
+    "TRIVIAL_CONVERSATIONAL_KEYWORDS",
     "AGENT_IDENTITY_KEYWORDS",
     "TOOL_SAVE_FACT_KEYWORDS",
     "TOOL_SAVE_NOTE_KEYWORDS",

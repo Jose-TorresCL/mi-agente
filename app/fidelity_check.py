@@ -45,7 +45,7 @@ import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-
+from app.logger import get_logger
 
 FIDELITY_THRESHOLD = 0.55
 SHORT_ANSWER_WORDS = 7
@@ -70,8 +70,8 @@ _RE_YEAR = re.compile(r"^(19|20)\d{2}$")
 _RE_TASK_ID = re.compile(r"^\d{9,12}$")
 _RE_NUMBERS = re.compile(r"\b\d[\d.,]*\b")
 
-_EMBED_RETRY_SLEEP = 6
-_EMBED_RETRY_ATTEMPTS = 2
+EMBED_RETRY_SLEEP = 6
+EMBED_RETRY_ATTEMPTS = 2
 
 _TRIVIAL_QUESTION_PATTERNS = {
     "hola",
@@ -92,6 +92,42 @@ _TRIVIAL_QUESTION_PATTERNS = {
     "si",
     "no",
 }
+
+_UNSUPPORTED_NARRATIVE_PATTERNS = (
+    re.compile(
+        r"\b("
+        r"mencionaste|mencionas|dijiste|"
+        r"como dijiste|como mencionaste|"
+        r"como ya habías dicho"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b("
+        r"según lo que me dijiste|"
+        r"según lo que mencionaste|"
+        r"según tu mensaje|"
+        r"según tu último mensaje"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bsegún tu experiencia\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\btuviste problemas\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bacordamos que\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcomo hablamos antes\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 # ─────────────────────────────────────────────
@@ -205,6 +241,18 @@ def _is_trivial_question(question: str) -> bool:
     return False
 
 
+def _contains_unsupported_narrative_frame(answer: str) -> tuple[bool, str]:
+    """Detecta marcos narrativos inventados no respaldados por el contexto."""
+    if not answer or not answer.strip():
+        return False, ""
+
+    for pattern in _UNSUPPORTED_NARRATIVE_PATTERNS:
+        if pattern.search(answer):
+            return True, pattern.pattern
+
+    return False, ""
+
+
 def _build_context_text(chunks_texts: list[str], max_chars: int = _MAX_CONTEXT_CHARS) -> str:
     """Concatena chunks recuperados en un solo contexto corto."""
     parts: list[str] = []
@@ -229,6 +277,44 @@ def _prepare_text_for_embedding(text: str, max_chars: int = _FIDELITY_EMBED_MAX_
     if len(clean) <= max_chars:
         return clean
     return clean[:max_chars].rstrip()
+
+def _try_embed_with_short_backoff(text: str):
+    """Intenta obtener un embedding con backoff corto [0.0, 0.5, 1.0] segundos.
+
+    fidelity_check es el dueño del backoff corto. get_embedding() recibe un solo
+    intento interno por cada intento externo para evitar retries duplicados.
+    """
+    prepared_text = _prepare_text_for_embedding(text)
+    delays = [0.0, 0.5, 1.0]
+    for attempt, delay in enumerate(delays, start=1):
+        start = time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            embedding = get_embedding(
+                prepared_text,
+                timeout=_FIDELITY_EMBED_TIMEOUT,
+                retry_delays=[0.0],
+                max_attempts=1,
+            )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            if embedding is not None:
+                print(
+                    f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=ok dim={len(embedding)}"
+                )
+                return embedding
+            print(
+                f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=None"
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            print(
+                f"[fidelity:embed] intento={attempt} delay={delay:.1f}s chars={len(prepared_text)} elapsed={elapsed_ms}ms result=exception type={type(exc).__name__} msg={exc}"
+            )
+            embedding = None
+        if attempt < len(delays):
+            continue
+    return None
 
 
 def _check_numeric_claims(
@@ -259,12 +345,15 @@ def _check_numeric_claims(
     for num in answer_nums:
         normalized = _normalize_number_token(num)
         if normalized is None:
-            continue
-        if normalized not in normalized_chunks:
+            if num in corpus:
+                continue
             return False, f"número '{num}' no encontrado en los chunks"
 
-    return True, ""
+        if normalized in normalized_chunks:
+            continue
+        return False, f"número '{num}' no encontrado en los chunks"
 
+    return True, ""
 
 # ─────────────────────────────────────────────
 # API pública
@@ -325,7 +414,7 @@ def log_fidelity_uncertain(question: str, reason: str) -> None:
 
 
 def fidelity_stats() -> dict:
-    """Lee logs y devuelve un resumen de fidelidad."""
+    """Lee logs y devuelve un resumen de fidelidad con desglose por método."""
     def _count_lines(path: Path) -> int:
         if not path.exists():
             return 0
@@ -340,12 +429,51 @@ def fidelity_stats() -> dict:
     total = total_ok + total_blocked
     rejection_rate = (total_blocked / total) if total > 0 else 0.0
 
+    # Desglose mínimo recomendado para Fase 7 de observabilidad.
+    by_method = {
+        "short_bypass": 0,
+        "semantic_ok": 0,
+        "semantic_fail": 0,
+        "unverified": 0,
+        "blocked_no_docs": 0,
+    }
+
+    try:
+        for log_path in [SUCCESSES_LOG, FAILURES_LOG, UNCERTAIN_LOG]:
+            if not log_path.exists():
+                continue
+            for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                method = entry.get("method")
+                if method == "short_bypass":
+                    by_method["short_bypass"] += 1
+                elif method == "semantic":
+                    by_method["semantic_ok"] += 1
+                elif method == "semantic_flexible":
+                    by_method["semantic_ok"] += 1
+                elif method == "trivial_bypass":
+                    by_method["short_bypass"] += 1
+                elif entry.get("reason") and "sin chunks" in str(entry.get("reason", "")).lower():
+                    by_method["blocked_no_docs"] += 1
+                elif entry.get("reason") and "embed" in str(entry.get("reason", "")).lower():
+                    by_method["unverified"] += 1
+                elif method is None and log_path == FAILURES_LOG:
+                    by_method["semantic_fail"] += 1
+    except Exception:
+        pass
+
     return {
         "total_ok": total_ok,
         "total_blocked": total_blocked,
         "total_uncertain": total_uncertain,
         "total": total,
         "rejection_rate": round(rejection_rate, 4),
+        "by_method": by_method,
     }
 
 
@@ -363,10 +491,26 @@ def _validate_fidelity(
     """Valida la fidelidad utilizando el flujo actual con opción numérica o semántica."""
     threshold = _dynamic_threshold(question) if question else FIDELITY_THRESHOLD
 
+    if not answer or not answer.strip():
+        print("[fidelity:block] respuesta vacía — bloqueando")
+        log_fidelity_failure(question or answer, 0.0, threshold)
+        return False, 0.0
+
     if _is_trivial_question(question):
         print("[fidelity:skip] pregunta trivial/saludo, se omite verificación")
         log_fidelity_success(question or answer, 1.0, threshold, method="trivial_bypass")
         return True, 1.0
+
+    has_unsupported_narrative, narrative_reason = (
+        _contains_unsupported_narrative_frame(answer)
+    )
+
+    if has_unsupported_narrative:
+        print(
+            f"[fidelity:block:narrative] marco narrativo no soportado detectado ({narrative_reason}) — bloqueando"
+        )
+        log_fidelity_failure(question or answer, 0.0, threshold)
+        return False, 0.0
 
     if not source_docs:
         print("[fidelity:block] sin chunks — bloqueando")
@@ -405,41 +549,14 @@ def _validate_fidelity(
         log_fidelity_uncertain(question or answer, reason)
         return False, 0.0
 
-    answer_for_embed = _prepare_text_for_embedding(answer)
-    try:
-        ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-    except Exception:
-        reason = "error embed respuesta"
-        print(f"[fidelity:uncertain] {reason}")
-        if FIDELITY_EMERGENCY_MODE == "bypass":
-            return True, 1.0
-        log_fidelity_uncertain(question or answer, reason)
-        return False, 0.0
-
-    attempt = 0
-    while ans_embedding is None and attempt < _EMBED_RETRY_ATTEMPTS:
-        attempt += 1
-        print(
-            f"[fidelity:retry] embed devolvió None — intento {attempt}/{_EMBED_RETRY_ATTEMPTS}, "
-            f"reintentando en {_EMBED_RETRY_SLEEP}s"
-        )
-        time.sleep(_EMBED_RETRY_SLEEP)
-        try:
-            ans_embedding = get_embedding(answer_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-        except Exception:
-            ans_embedding = None
-
+    ans_embedding = _try_embed_with_short_backoff(answer)
     if ans_embedding is None:
-        reason = f"embed respuesta devolvió None tras {_EMBED_RETRY_ATTEMPTS} reintentos (Ollama ocupado post-LLM)"
+        reason = "embed respuesta devolvió None tras 3 intentos con backoff corto (Ollama ocupado post-LLM)"
         print(f"[fidelity:unverified] {reason}")
         log_fidelity_uncertain(question or answer, reason)
         return True, -1.0
 
-    context_for_embed = _prepare_text_for_embedding(context_text)
-    try:
-        context_embedding = get_embedding(context_for_embed, timeout=_FIDELITY_EMBED_TIMEOUT)
-    except Exception:
-        context_embedding = None
+    context_embedding = _try_embed_with_short_backoff(context_text)
 
     if context_embedding is None:
         reason = "no se obtuvo embedding del contexto concatenado"
